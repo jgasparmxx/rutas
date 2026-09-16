@@ -2169,17 +2169,18 @@ fun SettingsDialog(
                 // Fila 1: Aviso cercanía y Aceptación punto
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Av. Cerc.", color = ColorTextoPrincipal, fontSize = 11.sp)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Aviso Cerc.", color = ColorTextoPrincipal, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Metros para alertar", color = ColorTextoSecundario, fontSize = 9.sp, modifier = Modifier.padding(bottom = 2.dp))
                         TextField(
                             value = distance,
                             onValueChange = { distance = it.filter { char -> char.isDigit() } },
-                            modifier = Modifier.width(55.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
-                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 12.sp),
+                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 13.sp),
                             colors = TextFieldDefaults.colors(
                                 focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
                                 unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
@@ -2188,15 +2189,16 @@ fun SettingsDialog(
                             )
                         )
                     }
-                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Acep. Pto.", color = ColorTextoPrincipal, fontSize = 11.sp)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Acepta Pto.", color = ColorTextoPrincipal, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Radio para marcar (m)", color = ColorTextoSecundario, fontSize = 9.sp, modifier = Modifier.padding(bottom = 2.dp))
                         TextField(
                             value = arrivalTolerance,
                             onValueChange = { arrivalTolerance = it.filter { char -> char.isDigit() } },
-                            modifier = Modifier.width(55.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
-                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 12.sp),
+                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 13.sp),
                             colors = TextFieldDefaults.colors(
                                 focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
                                 unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
@@ -2207,20 +2209,23 @@ fun SettingsDialog(
                     }
                 }
 
+                Spacer(modifier = Modifier.height(8.dp))
+
                 // Fila 2: Tap manual y Timeout 911
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Tap Man.", color = ColorTextoPrincipal, fontSize = 11.sp)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Tap Manual", color = ColorTextoPrincipal, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Límite registro (m)", color = ColorTextoSecundario, fontSize = 9.sp, modifier = Modifier.padding(bottom = 2.dp))
                         TextField(
                             value = tapDistanceLimit,
                             onValueChange = { tapDistanceLimit = it.filter { char -> char.isDigit() } },
-                            modifier = Modifier.width(55.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
-                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 12.sp),
+                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 13.sp),
                             colors = TextFieldDefaults.colors(
                                 focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
                                 unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
@@ -2229,18 +2234,16 @@ fun SettingsDialog(
                             )
                         )
                     }
-                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Column {
-                            Text("T.O. 911", color = ColorTextoPrincipal, fontSize = 11.sp)
-                            Text("min", color = ColorTextoSecundario, fontSize = 9.sp)
-                        }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Espera 911", color = ColorTextoPrincipal, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Reactivar SOS (min)", color = ColorTextoSecundario, fontSize = 9.sp, modifier = Modifier.padding(bottom = 2.dp))
                         TextField(
                             value = emergencyTimeoutMinutes,
                             onValueChange = { emergencyTimeoutMinutes = it.filter { char -> char.isDigit() } },
-                            modifier = Modifier.width(55.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
-                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 12.sp),
+                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 13.sp),
                             colors = TextFieldDefaults.colors(
                                 focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
                                 unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
@@ -2259,17 +2262,18 @@ fun SettingsDialog(
                 // Fila 3: Rango búsqueda y Rango cercanía
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Rec. (d)", color = ColorTextoPrincipal, fontSize = 11.sp)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Reciente (d)", color = ColorTextoPrincipal, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Días atrás a buscar", color = ColorTextoSecundario, fontSize = 9.sp, modifier = Modifier.padding(bottom = 2.dp))
                         TextField(
                             value = rangoDiasSalidas,
                             onValueChange = { rangoDiasSalidas = it.filter { char -> char.isDigit() } },
-                            modifier = Modifier.width(55.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
-                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 12.sp),
+                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 13.sp),
                             colors = TextFieldDefaults.colors(
                                 focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
                                 unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
@@ -2278,15 +2282,16 @@ fun SettingsDialog(
                             )
                         )
                     }
-                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Cerca (km)", color = ColorTextoPrincipal, fontSize = 11.sp)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Cerca (km)", color = ColorTextoPrincipal, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Radio de búsqueda", color = ColorTextoSecundario, fontSize = 9.sp, modifier = Modifier.padding(bottom = 2.dp))
                         TextField(
                             value = rangoKmSalidas,
                             onValueChange = { rangoKmSalidas = it.filter { char -> char.isDigit() } },
-                            modifier = Modifier.width(55.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
-                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 12.sp),
+                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, color = ColorTextoPrincipal, fontSize = 13.sp),
                             colors = TextFieldDefaults.colors(
                                 focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
                                 unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,

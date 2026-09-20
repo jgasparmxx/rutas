@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Permiso de Internet para cargar el mapa -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Permiso para verificar si se está conectado a Wi-Fi antes de sincronizar -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Permiso para obtener las cuentas de Google del dispositivo (resolver identidad) -->
+    <uses-permission android:name="android.permission.GET_ACCOUNTS" />
+
+    <!-- Permisos de Bluetooth -->
+    <!-- Para Android 12+ (API 31+) -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+
+    <!-- Para Android 11 y anteriores -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
+    <!-- Permisos de localización requeridos para detectar baches -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    
+    <!-- Permiso para ejecutar el servicio en segundo plano (Foreground Service) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14 requiere especificar el tipo del Foreground Service (Location) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- Permiso para enviar notificaciones en Android 13+ (OBLIGATORIO) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
+    <!-- Permiso para hacer vibrar el dispositivo en alertas de cercanía -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    
+    <!-- Permiso y característica de Cámara para registrar puntos de ruta con fotos -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- Permiso para grabar audio y usar reconocimiento de voz -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:name=".BachesApplication"
+        android:allowBackup="true"
+        android:icon="@drawable/ic_launcher_tekins_baches"
+        android:label="Senderismo con Amigos"
+        android:roundIcon="@drawable/ic_launcher_tekins_baches"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+        <!-- Clave de la API de Google Maps -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="YOUR_API_KEY_HERE" />
+        
+        <!-- Actividad Principal (Pantalla de la App) -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Servicio de segundo plano para el rastreo de baches -->
+        <!-- Android 14+ requiere obligatoriamente registrar android:foregroundServiceType="location" -->
+        <service
+            android:name=".service.GpsTrackingService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- Actividades de la Biblioteca de Licencias de Google (se les asigna un tema compatible) -->
+        <activity
+            android:name="com.google.android.gms.oss.licenses.OssLicensesMenuActivity"
+            android:theme="@style/Theme.AppCompat.Light.DarkActionBar" />
+        <activity
+            android:name="com.google.android.gms.oss.licenses.OssLicensesActivity"
+            android:theme="@style/Theme.AppCompat.Light.DarkActionBar" />
+
+        <!-- FileProvider para compartir archivos de fotos temporales de la cámara de manera segura -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.gaspar.rutassendero.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/provider_paths" />
+        </provider>
+            
+    </application>
+
+</manifest>

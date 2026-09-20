@@ -156,6 +156,12 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
     private val _loadingAvailableOutings = MutableStateFlow(false)
     val loadingAvailableOutings: StateFlow<Boolean> = _loadingAvailableOutings.asStateFlow()
 
+    private val _routeStatsList = MutableStateFlow<List<Map<String, Any>>>(emptyList())
+    val routeStatsList: StateFlow<List<Map<String, Any>>> = _routeStatsList.asStateFlow()
+
+    private val _loadingRouteStats = MutableStateFlow(false)
+    val loadingRouteStats: StateFlow<Boolean> = _loadingRouteStats.asStateFlow()
+
     val calendarEventFlow = MutableSharedFlow<CalendarEventData>(replay = 0)
 
     private val _outingsProgress = MutableStateFlow<String?>(null)
@@ -169,6 +175,20 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
     private val _ownerEmailFlow = MutableStateFlow(prefs.ownerEmail)
 
     val agrupacionesList = MutableStateFlow<List<AgrupacionEntity>>(emptyList())
+
+    fun fetchRouteStats() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _loadingRouteStats.value = true
+            try {
+                val stats = com.gaspar.rutassendero.sync.CloudSyncManager.descargarEstadisticasRutas()
+                _routeStatsList.value = stats
+            } catch (e: Exception) {
+                Log.e("RutasViewModel", "Error fetching route stats", e)
+            } finally {
+                _loadingRouteStats.value = false
+            }
+        }
+    }
 
     fun fetchAgrupaciones() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -422,12 +442,8 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                     if (cloudSenderista.bloqueado) {
                         networkErrorMessage.value = "Este usuario se encuentra bloqueado. Actualización cancelada."
                         return@launch
-                    } else {
-                        // Actualiza los datos del teléfono con los de la nube
-                        finalProfileToSave = cloudSenderista.copy(fupdate = System.currentTimeMillis())
-                        if (finalProfileToSave.idBeacon.isNullOrBlank() && !profile.idBeacon.isNullOrBlank()) {
-                            finalProfileToSave = finalProfileToSave.copy(idBeacon = profile.idBeacon)
-                        }
+                    } else if (finalProfileToSave.idBeacon.isNullOrBlank() && !cloudSenderista.idBeacon.isNullOrBlank()) {
+                        finalProfileToSave = finalProfileToSave.copy(idBeacon = cloudSenderista.idBeacon)
                     }
                 }
             } catch (e: Exception) {

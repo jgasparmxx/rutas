@@ -240,6 +240,7 @@ fun MainScreen(
 
     // --- Controladores de Salidas ---
     var showSalidasDialog by remember { mutableStateOf(false) }
+    var showEstadisticasRutasDialog by remember { mutableStateOf(false) }
     var showUpcomingOutingWarningDialog by remember { mutableStateOf<com.gaspar.rutassendero.data.InvitacionAceptadaEntity?>(null) }
 
 
@@ -399,6 +400,8 @@ fun MainScreen(
     }
 
     var showDistanceVerificationDialog by remember { mutableStateOf(false) }
+    var mapForceRecomposeKey by remember { mutableStateOf(0) }
+
 
 
     
@@ -499,6 +502,43 @@ fun MainScreen(
                                         maxLines = 1,
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                     )
+                                    // Cálculo de avance
+                                    val totalDist = remember(selectedRoutePoints) { RouteStatsCalculator.calculateBeaconDistance(selectedRoutePoints) }
+                                    val passedPoints = remember(selectedRoutePoints, targetWaypoint) {
+                                        selectedRoutePoints.takeWhile { it.id != targetWaypoint?.id }
+                                    }
+                                    val passedDist = remember(passedPoints) { RouteStatsCalculator.calculateBeaconDistance(passedPoints) }
+                                    val lastPassedPoint = passedPoints.lastOrNull()
+                                    val distFromLast = remember(lastPassedPoint, location) {
+                                        if (lastPassedPoint != null && location != null) {
+                                            val loc1 = android.location.Location("").apply { 
+                                                latitude = lastPassedPoint.latitud 
+                                                longitude = lastPassedPoint.longitud 
+                                            }
+                                            loc1.distanceTo(location!!)
+                                        } else {
+                                            0f
+                                        }
+                                    }
+                                    val currentProgressDist = passedDist + distFromLast
+                                    val totalDistStr = if (totalDist > 0) "${totalDist.toInt()} m" else "?"
+                                    val percentage = if (totalDist > 0) ((currentProgressDist / totalDist) * 100).toInt().coerceIn(0, 100) else 0
+                                    
+                                    Text(
+                                        text = "${currentProgressDist.toInt()} m de $totalDistStr ($percentage%)",
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF0F172A), // Azul casi negro (Slate 900)
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                }
+                                
+                                IconButton(onClick = { mapForceRecomposeKey++ }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Recargar Mapa",
+                                        tint = Color.Black
+                                    )
                                 }
                                 
                                 val isVoiceGuidanceEnabled by viewModel.isVoiceGuidanceEnabled.collectAsState()
@@ -526,6 +566,13 @@ fun MainScreen(
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                     )
                                 }
+                                IconButton(onClick = { mapForceRecomposeKey++ }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Recargar Mapa",
+                                        tint = Color.Black
+                                    )
+                                }
                             }
                         }
                     }
@@ -536,42 +583,44 @@ fun MainScreen(
                         .fillMaxSize()
                         .padding(innerPadding)
                 ) {
-                    GoogleMapView(
-                        points = selectedRoutePoints,
-                        tracePoints = selectedRouteTrace,
-                        currentLocation = location,
-                        onPointClick = { punto ->
-                            if (isGuiding && targetWaypoint?.id == punto.id) {
-                                val currentLoc = location
-                                if (currentLoc != null) {
-                                    val targetLoc = Location("").apply {
-                                        latitude = punto.latitud
-                                        longitude = punto.longitud
-                                    }
-                                    val dist = currentLoc.distanceTo(targetLoc)
-                                    val limit = viewModel.prefs.tapDistanceLimit.toFloat()
-                                    if (dist <= limit) {
-                                        viewModel.advanceWaypointManually()
+                    androidx.compose.runtime.key(mapForceRecomposeKey) {
+                        GoogleMapView(
+                            points = selectedRoutePoints,
+                            tracePoints = selectedRouteTrace,
+                            currentLocation = location,
+                            onPointClick = { punto ->
+                                if (isGuiding && targetWaypoint?.id == punto.id) {
+                                    val currentLoc = location
+                                    if (currentLoc != null) {
+                                        val targetLoc = Location("").apply {
+                                            latitude = punto.latitud
+                                            longitude = punto.longitud
+                                        }
+                                        val dist = currentLoc.distanceTo(targetLoc)
+                                        val limit = viewModel.prefs.tapDistanceLimit.toFloat()
+                                        if (dist <= limit) {
+                                            viewModel.advanceWaypointManually()
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                "Demasiado lejos para marcar como visto (Distancia: ${dist.toInt()}m, Límite: ${limit.toInt()}m)",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                            selectedPuntoForDetail = punto
+                                        }
                                     } else {
-                                        Toast.makeText(
-                                            context,
-                                            "Demasiado lejos para marcar como visto (Distancia: ${dist.toInt()}m, Límite: ${limit.toInt()}m)",
-                                            Toast.LENGTH_LONG
-                                        ).show()
+                                        Toast.makeText(context, "Esperando señal de GPS...", Toast.LENGTH_SHORT).show()
                                         selectedPuntoForDetail = punto
                                     }
                                 } else {
-                                    Toast.makeText(context, "Esperando señal de GPS...", Toast.LENGTH_SHORT).show()
                                     selectedPuntoForDetail = punto
                                 }
-                            } else {
-                                selectedPuntoForDetail = punto
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize(),
-                        routeStartLat = selectedRoute?.latitudOrig,
-                        routeStartLng = selectedRoute?.longitudOrig
-                    )
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                            routeStartLat = selectedRoute?.latitudOrig,
+                            routeStartLng = selectedRoute?.longitudOrig
+                        )
+                    }
                 }
             }
         } else {
@@ -633,6 +682,7 @@ fun MainScreen(
                             }
                         },
                         onSalidasClick = { showSalidasDialog = true },
+                        onEstadisticasClick = { showEstadisticasRutasDialog = true },
                         onPerfilClick = { showSenderistaDialog = true },
                         isPointsListReversed = isPointsListReversed,
                         onPointsOrderChange = { reversed ->
@@ -645,20 +695,42 @@ fun MainScreen(
                             if (senderistaObj == null || senderistaObj.idBeacon.isNullOrBlank()) {
                                 Toast.makeText(context, "No se puede emitir 911 sin ID de Beacon.", Toast.LENGTH_SHORT).show()
                             } else {
-                                if (is911Active) {
-                                    viewModel.startBeaconEmission(
-                                        idBeacon = senderistaObj.idBeacon,
-                                        isEmergency = false,
-                                        onSuccess = { Toast.makeText(context, "Emergencia cancelada.", Toast.LENGTH_LONG).show() },
-                                        onFailure = { Toast.makeText(context, "Error al cancelar", Toast.LENGTH_LONG).show() }
-                                    )
+                                val action = {
+                                    if (is911Active) {
+                                        viewModel.startBeaconEmission(
+                                            idBeacon = senderistaObj.idBeacon,
+                                            isEmergency = false,
+                                            onSuccess = { Toast.makeText(context, "Emergencia cancelada.", Toast.LENGTH_LONG).show() },
+                                            onFailure = { Toast.makeText(context, "Error al cancelar", Toast.LENGTH_LONG).show() }
+                                        )
+                                    } else {
+                                        viewModel.startBeaconEmission(
+                                            idBeacon = senderistaObj.idBeacon,
+                                            isEmergency = true,
+                                            onSuccess = { Toast.makeText(context, "¡EMERGENCIA 911 ACTIVADA!", Toast.LENGTH_LONG).show() },
+                                            onFailure = { Toast.makeText(context, "Error al activar", Toast.LENGTH_LONG).show() }
+                                        )
+                                    }
+                                }
+
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                                    val hasAdvertisePermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                                        context, android.Manifest.permission.BLUETOOTH_ADVERTISE
+                                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                    
+                                    if (!hasAdvertisePermission) {
+                                        onRequestBluetoothPermission { granted ->
+                                            if (granted) {
+                                                action()
+                                            } else {
+                                                Toast.makeText(context, "Permiso de Bluetooth denegado. No se puede emitir.", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    } else {
+                                        action()
+                                    }
                                 } else {
-                                    viewModel.startBeaconEmission(
-                                        idBeacon = senderistaObj.idBeacon,
-                                        isEmergency = true,
-                                        onSuccess = { Toast.makeText(context, "¡EMERGENCIA 911 ACTIVADA!", Toast.LENGTH_LONG).show() },
-                                        onFailure = { Toast.makeText(context, "Error al activar", Toast.LENGTH_LONG).show() }
-                                    )
+                                    action()
                                 }
                             }
                         }
@@ -1517,7 +1589,9 @@ fun MainScreen(
                                                     onClick = {
                                                         if (location != null) {
                                                             val traceDist = if (selectedRouteTrace.isNotEmpty()) RouteStatsCalculator.calculateTraceDistance(selectedRouteTrace) else 0f
-                                                            val currentDistanceKm = traceDist / 1000f
+                                                            val beaconDist = if (puntosList.isNotEmpty()) RouteStatsCalculator.calculateBeaconDistance(puntosList.map { it.entity }) else 0f
+                                                            val finalDist = maxOf(traceDist, beaconDist)
+                                                            val currentDistanceKm = finalDist / 1000f
                                                             val minDistanceKm = senderista?.minimoLongitud ?: 4.0
                                                             
                                                             if (currentDistanceKm < minDistanceKm) {
@@ -1766,16 +1840,35 @@ fun MainScreen(
                             val currentLoc = location
                             if (route != null && currentLoc != null) {
                                 val results = FloatArray(1)
+                                var minDistanceKm = Float.MAX_VALUE
+                                var closestPoint: com.gaspar.rutassendero.data.PuntoRutaEntity? = null
+                                
+                                // Distancia al inicio de la ruta
                                 Location.distanceBetween(
                                     currentLoc.latitude, currentLoc.longitude,
                                     route.latitudOrig, route.longitudOrig,
                                     results
                                 )
-                                val distanceKm = results[0] / 1000f
-                                if (distanceKm > 1.0f) {
+                                minDistanceKm = results[0] / 1000f
+
+                                // Distancia a los puntos de la ruta
+                                selectedRoutePoints.forEach { punto ->
+                                    Location.distanceBetween(
+                                        currentLoc.latitude, currentLoc.longitude,
+                                        punto.latitud, punto.longitud,
+                                        results
+                                    )
+                                    val distKm = results[0] / 1000f
+                                    if (distKm < minDistanceKm) {
+                                        minDistanceKm = distKm
+                                        closestPoint = punto
+                                    }
+                                }
+
+                                if (minDistanceKm > 2.0f) {
                                     Toast.makeText(
                                         context,
-                                        "Está muy lejos del sendero (a ${String.format("%.1f", distanceKm)} km). Acérquese para iniciar. Redirigiendo a Google Maps...",
+                                        "Está muy lejos del sendero (a ${String.format("%.1f", minDistanceKm)} km). Acérquese para iniciar. Redirigiendo a Google Maps...",
                                         Toast.LENGTH_LONG
                                     ).show()
                                     
@@ -1794,6 +1887,12 @@ fun MainScreen(
                                     }
                                     showGuideTargetDialog = false
                                     return@Button
+                                } else if (closestPoint != null && minDistanceKm > 0.05f) {
+                                    Toast.makeText(
+                                        context,
+                                        "Estás a ${String.format("%.1f", minDistanceKm)} km de un punto. Dirígete hacia él para seguir la ruta.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                 }
                             }
                             viewModel.startGuidingToDestination(toStart = selectedToStart)
@@ -2107,6 +2206,13 @@ fun MainScreen(
             )
         }
 
+        if (showEstadisticasRutasDialog) {
+            EstadisticasRutasDialog(
+                viewModel = viewModel,
+                onDismiss = { showEstadisticasRutasDialog = false }
+            )
+        }
+
         if (showUpcomingOutingWarningDialog != null) {
             UpcomingOutingWarningDialog(
                 outing = showUpcomingOutingWarningDialog!!,
@@ -2340,6 +2446,7 @@ fun HeaderBar(
     onCloudImportClick: () -> Unit,
     onAddRutaClick: () -> Unit,
     onSalidasClick: () -> Unit,
+    onEstadisticasClick: () -> Unit = {},
     onPerfilClick: () -> Unit,
     isPointsListReversed: Boolean = false,
     onPointsOrderChange: (Boolean) -> Unit = {},
@@ -2367,12 +2474,14 @@ fun HeaderBar(
         else -> Color(0xFF0F766E)        // Teal 700 (Verde azulado corporativo)
     }
 
+    val finalDistance = maxOf(totalTraceDistance ?: 0f, totalDistance ?: 0f)
+
     val (statusText, statusTextColor) = when {
-        totalTraceDistance != null -> {
-            val distStr = if (totalTraceDistance >= 1000f) {
-                String.format(java.util.Locale.US, "Distancia total: %.2f km", totalTraceDistance / 1000f)
+        selectedRoute != null && (finalDistance > 0f || tracePoints.isNotEmpty() || points.isNotEmpty()) -> {
+            val distStr = if (finalDistance >= 1000f) {
+                String.format(java.util.Locale.US, "Distancia total: %.2f km", finalDistance / 1000f)
             } else {
-                String.format(java.util.Locale.US, "Distancia total: %.0f m", totalTraceDistance)
+                String.format(java.util.Locale.US, "Distancia total: %.0f m", finalDistance)
             }
             distStr to activeColor
         }
@@ -2502,6 +2611,14 @@ fun HeaderBar(
                                 onSalidasClick()
                             },
                             leadingIcon = { Icon(Icons.Default.CalendarToday, contentDescription = null, tint = ColorTekinsPrimary) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("4. Estadísticas", color = ColorTekinsDarkBg) },
+                            onClick = {
+                                isMenuExpanded = false
+                                onEstadisticasClick()
+                            },
+                            leadingIcon = { Icon(Icons.Default.BarChart, contentDescription = null, tint = ColorTekinsPrimary) }
                         )
                         if (senderistaRol == "G") {
                             DropdownMenuItem(
@@ -3391,7 +3508,8 @@ fun ListadoSenderistasDialog(
                             android.widget.Toast.makeText(context, "Este senderista no tiene Beacon", android.widget.Toast.LENGTH_SHORT).show()
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray),
+                    enabled = false // Deshabilitado temporalmente a petición del usuario
                 ) {
                     Text("Actualizar de Nube", color = Color.White)
                 }

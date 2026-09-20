@@ -5,6 +5,7 @@ package com.gaspar.rutassendero.ui.components
 import android.graphics.BitmapFactory
 import android.location.Location
 import com.gaspar.rutassendero.data.ParticipanteEntity
+import com.gaspar.rutassendero.utils.CaloriesSummaryCard
 import androidx.compose.animation.animateColor
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
@@ -739,11 +740,15 @@ fun AddRutaDialog(
                                 scope.launch {
                                     if (!publico) {
                                         val count = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                            db.rutasDao().getPrivateRutasCount()
+                                            val phone = db.rutasDao().getAllSenderistas().firstOrNull()?.telefono ?: ""
+                                            db.rutasDao().getPrivateRutasCount(phone)
                                         }
-                                        if (count >= 3) {
+                                        val limit = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            db.rutasDao().getAllSenderistas().firstOrNull()?.maxPrivadas ?: 3
+                                        }
+                                        if (count >= limit) {
                                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                Toast.makeText(context, "Límite alcanzado: Sólo puedes tener un máximo de 3 rutas no públicas.", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(context, "Límite alcanzado: Sólo puedes tener un máximo de $limit rutas no públicas.", Toast.LENGTH_LONG).show()
                                             }
                                             return@launch
                                         }
@@ -2334,7 +2339,7 @@ fun SettingsDialog(
                     Button(
                         onClick = {
                             val distInt = distance.toIntOrNull() ?: 50
-                            val toleranceInt = arrivalTolerance.toIntOrNull() ?: 5
+                            val toleranceInt = arrivalTolerance.toIntOrNull() ?: 25
                             val tapLimitInt = tapDistanceLimit.toIntOrNull() ?: 15
                             val diasInt = rangoDiasSalidas.toIntOrNull() ?: 20
                             val kmInt = rangoKmSalidas.toIntOrNull() ?: 30
@@ -2467,10 +2472,12 @@ private fun updateWebViewData(
     currentLocation: Location?,
     resetView: Boolean,
     routeStartLat: Double? = null,
-    routeStartLng: Double? = null
+    routeStartLng: Double? = null,
+    coroutineScope: kotlinx.coroutines.CoroutineScope
 ) {
-    Log.d("GoogleMapView", "updateWebViewData called: points size = ${points.size}, trace size = ${tracePoints.size}, resetView = $resetView, location = $currentLocation")
+    android.util.Log.d("GoogleMapView", "updateWebViewData called: points size = ${points.size}, trace size = ${tracePoints.size}, resetView = $resetView, location = $currentLocation")
     
+    coroutineScope.launch(kotlinx.coroutines.Dispatchers.Default) {
     // Convertimos la lista de puntos de Kotlin a formato JSON para JavaScript, calculando la distancia del tramo
     var accumDistance = 0f
     val pointsJson = points.mapIndexed { idx, pt ->
@@ -2514,8 +2521,11 @@ private fun updateWebViewData(
     // Armamos la llamada a la función JS definida en nuestro HTML/Leaflet
     val js = "if (typeof updateData === 'function') { updateData($pointsJsonStr, $traceJsonStr, $userLocJsonStr, $resetView, $routeStartJsonStr); }"
     
-    // Ejecutamos el JavaScript en el WebView
-    webView.evaluateJavascript(js, null)
+    // Ejecutamos el JavaScript en el WebView en el hilo principal
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+        webView.evaluateJavascript(js, null)
+    }
+    }
 }
 
 /**
@@ -2648,7 +2658,7 @@ fun GoogleMapView(
                 settings.userAgentString = "RutasSenderoApp/1.0 (com.gaspar.rutassendero)"
                 
                 // Forzar limpieza de caché temporalmente para eliminar los "Access blocked" cacheados
-                clearCache(true)
+                // clearCache(true) // COMENTADO: Evita perder el caché offline y causar pantalla negra al cambiar entre Lista/Mapa
                 
                 // Manejador de eventos de carga de página (Como el WebView_PageFinished en B4A)
                 webViewClient = object : android.webkit.WebViewClient() {
@@ -2666,7 +2676,8 @@ fun GoogleMapView(
                                 currentLocation = holder.currentLocation,
                                 resetView = true,
                                 routeStartLat = routeStartLat,
-                                routeStartLng = routeStartLng
+                                routeStartLng = routeStartLng,
+                                coroutineScope = coroutineScope
                             )
                         } else {
                             Log.e("GoogleMapView", "onPageFinished: MapStateHolder tag is null!")
@@ -3034,7 +3045,8 @@ fun GoogleMapView(
                     currentLocation = currentLocation,
                     resetView = routeChanged,
                     routeStartLat = routeStartLat,
-                    routeStartLng = routeStartLng
+                    routeStartLng = routeStartLng,
+                    coroutineScope = coroutineScope
                 )
             }
         },
@@ -4524,31 +4536,32 @@ fun SenderistaDialog(
     var nombre by remember { mutableStateOf(currentSenderista?.nombre ?: "") }
     var sexo by remember { mutableStateOf(currentSenderista?.sexo ?: "") } // "M" or "F"
     
-    // Divide the stored YYYY/MM/DD date into separate fields for Year, Month, and Day
+    // Divide the stored dd/MM/yyyy or yyyy-MM-dd date into separate fields for Year, Month, and Day
     val parts = remember(currentSenderista?.fechaNacimiento) {
-        currentSenderista?.fechaNacimiento?.split("/") ?: listOf("", "", "")
+        currentSenderista?.fechaNacimiento?.split(Regex("[/\\-]")) ?: listOf("", "", "")
     }
-    var ano by remember { mutableStateOf(if (parts.size == 3) parts[0] else "") }
-    var mes by remember { mutableStateOf(if (parts.size == 3) parts[1] else "") }
-    var dia by remember { mutableStateOf(if (parts.size == 3) parts[2] else "") }
+    val isLegacyFormat = parts.size == 3 && parts[0].length == 4
+    var ano by remember(currentSenderista?.fechaNacimiento) { mutableStateOf(if (parts.size == 3) (if (isLegacyFormat) parts[0] else parts[2]) else "") }
+    var mes by remember(currentSenderista?.fechaNacimiento) { mutableStateOf(if (parts.size == 3) parts[1] else "") }
+    var dia by remember(currentSenderista?.fechaNacimiento) { mutableStateOf(if (parts.size == 3) (if (isLegacyFormat) parts[2] else parts[0]) else "") }
 
-    var aQuienesAvisar by remember { mutableStateOf(currentSenderista?.aQuienesAvisar ?: "") }
-    var aQuienAvisarTelefono1 by remember { mutableStateOf(currentSenderista?.aQuienAvisarTelefono1 ?: "") }
-    var aQuienAvisarTelefono2 by remember { mutableStateOf(currentSenderista?.aQuienAvisarTelefono2 ?: "") }
-    var tieneEnfermedadCronica by remember { mutableStateOf(currentSenderista?.tieneEnfermedadCronica == "S") }
-    var enfermedadCronica1 by remember { mutableStateOf(currentSenderista?.enfermedadCronica1 ?: "") }
-    var enfermedadCronica2 by remember { mutableStateOf(currentSenderista?.enfermedadCronica2 ?: "") }
-    var tieneAuto by remember { mutableStateOf(currentSenderista?.tieneAuto == "S") }
-    var direccion by remember { mutableStateOf(currentSenderista?.direccion ?: "") }
-    var llevaMascota by remember { mutableStateOf(currentSenderista?.llevaMascota == "S") }
-    var alergias by remember { mutableStateOf(currentSenderista?.alergias ?: "") }
-    var tipoSangre by remember { mutableStateOf(currentSenderista?.tipoSangre ?: "") }
-    var seguroMedico by remember { mutableStateOf(currentSenderista?.seguroMedico ?: "") }
+    var aQuienesAvisar by remember(currentSenderista) { mutableStateOf(currentSenderista?.aQuienesAvisar ?: "") }
+    var aQuienAvisarTelefono1 by remember(currentSenderista) { mutableStateOf(currentSenderista?.aQuienAvisarTelefono1 ?: "") }
+    var aQuienAvisarTelefono2 by remember(currentSenderista) { mutableStateOf(currentSenderista?.aQuienAvisarTelefono2 ?: "") }
+    var tieneEnfermedadCronica by remember(currentSenderista) { mutableStateOf(currentSenderista?.tieneEnfermedadCronica == "S") }
+    var enfermedadCronica1 by remember(currentSenderista) { mutableStateOf(currentSenderista?.enfermedadCronica1 ?: "") }
+    var enfermedadCronica2 by remember(currentSenderista) { mutableStateOf(currentSenderista?.enfermedadCronica2 ?: "") }
+    var tieneAuto by remember(currentSenderista) { mutableStateOf(currentSenderista?.tieneAuto == "S") }
+    var direccion by remember(currentSenderista) { mutableStateOf(currentSenderista?.direccion ?: "") }
+    var llevaMascota by remember(currentSenderista) { mutableStateOf(currentSenderista?.llevaMascota == "S") }
+    var alergias by remember(currentSenderista) { mutableStateOf(currentSenderista?.alergias ?: "") }
+    var tipoSangre by remember(currentSenderista) { mutableStateOf(currentSenderista?.tipoSangre ?: "") }
+    var seguroMedico by remember(currentSenderista) { mutableStateOf(currentSenderista?.seguroMedico ?: "") }
 
-    var nivelSenderista by remember { mutableStateOf(currentSenderista?.nivelSenderista ?: "principiante") }
-    var codigoConfianza by remember { mutableStateOf(currentSenderista?.codigoConfianza ?: "") }
-    var pesoStr by remember { mutableStateOf(currentSenderista?.peso?.toString() ?: "") }
-    var idAgrupacion by remember { mutableStateOf(currentSenderista?.idAgrupacion?.takeIf { it.isNotBlank() } ?: "MH") }
+    var nivelSenderista by remember(currentSenderista) { mutableStateOf(currentSenderista?.nivelSenderista ?: "principiante") }
+    var codigoConfianza by remember(currentSenderista) { mutableStateOf(currentSenderista?.codigoConfianza ?: "") }
+    var pesoStr by remember(currentSenderista?.peso) { mutableStateOf(currentSenderista?.peso?.let { if (it == it.toLong().toDouble()) it.toLong().toString() else it.toString() } ?: "") }
+    var idAgrupacion by remember(currentSenderista) { mutableStateOf(currentSenderista?.idAgrupacion?.takeIf { it.isNotBlank() } ?: "MH") }
     var showAgrupacionMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(nombre) {
@@ -4567,10 +4580,10 @@ fun SenderistaDialog(
     var showNivelMenu by remember { mutableStateOf(false) }
     var showSurveyDialog by remember { mutableStateOf(false) }
 
-    // Nuevos estados para términos legales
-    var isPrivacyAccepted by remember { mutableStateOf(currentSenderista?.consentimientoTerminos ?: false) }
-    var isMedicalDataAccepted by remember { mutableStateOf(currentSenderista?.consentimientoFichaMedica ?: false) }
-    var isGpsMediaAccepted by remember { mutableStateOf(currentSenderista?.consentimientoGpsMultimedia ?: false) }
+    // Estados para términos legales vinculados a currentSenderista
+    var isPrivacyAccepted by remember(currentSenderista?.consentimientoTerminos) { mutableStateOf(currentSenderista?.consentimientoTerminos ?: false) }
+    var isMedicalDataAccepted by remember(currentSenderista?.consentimientoFichaMedica) { mutableStateOf(currentSenderista?.consentimientoFichaMedica ?: false) }
+    var isGpsMediaAccepted by remember(currentSenderista?.consentimientoGpsMultimedia) { mutableStateOf(currentSenderista?.consentimientoGpsMultimedia ?: false) }
     var showPrivacyBottomSheet by remember { mutableStateOf(false) }
 
     val datePickerDialog = remember {
@@ -4716,7 +4729,7 @@ fun SenderistaDialog(
                             DropdownMenuItem(
                                 text = { Text("Sin Agrupación (Opcional)") },
                                 onClick = {
-                                    idAgrupacion = ""
+                                    idAgrupacion = "@&"
                                     showAgrupacionMenu = false
                                 }
                             )
@@ -5348,7 +5361,7 @@ fun SenderistaDialog(
                                 return@Button
                             }
 
-                            val fechaNacimientoStr = "$formattedAno/$formattedMes/$formattedDia"
+                            val fechaNacimientoStr = "$formattedDia/$formattedMes/$formattedAno"
 
                             if (tieneEnfermedadCronica && enfermedadCronica1.isBlank()) {
                                 Toast.makeText(context, "Por favor especifique la Enfermedad Crónica 1.", Toast.LENGTH_LONG).show()
@@ -5557,11 +5570,15 @@ fun RutaDetailDialog(
                                 coroutineScope.launch {
                                     if (!isChecked) { // Quiere cambiar a privado
                                         val count = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                            db.rutasDao().getPrivateRutasCount()
+                                            val phone = db.rutasDao().getAllSenderistas().firstOrNull()?.telefono ?: ""
+                                            db.rutasDao().getPrivateRutasCount(phone)
                                         }
-                                        if (count >= 3) {
+                                        val limit = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            db.rutasDao().getAllSenderistas().firstOrNull()?.maxPrivadas ?: 3
+                                        }
+                                        if (count >= limit) {
                                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                Toast.makeText(context, "Límite alcanzado: Sólo puedes tener un máximo de 3 rutas no públicas.", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(context, "Límite alcanzado: Sólo puedes tener un máximo de $limit rutas no públicas.", Toast.LENGTH_LONG).show()
                                             }
                                             return@launch
                                         }
@@ -5786,7 +5803,7 @@ fun RutaDetailDialog(
 
                 // === NUEVO: Tarjeta de Calorías Estimadas ===
                 // Ahora ya pasamos el peso de la base de datos (si el usuario lo capturó, mostrará sus calorías exactas, si no, los rangos)
-                com.gaspar.rutassendero.utils.CaloriesSummaryCard(
+                CaloriesSummaryCard(
                     distanceKm = gpsDistanceMeters / 1000.0,
                     elevationGainMeters = ruta.desnivelPositivo,
                     userWeightKg = senderistaPeso 
@@ -7397,5 +7414,195 @@ fun UpcomingOutingWarningDialog(
 
 
 
+
+
+
+@Composable
+fun EstadisticasRutasDialog(
+    viewModel: com.gaspar.rutassendero.ui.RutasViewModel,
+    onDismiss: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val statsList by viewModel.routeStatsList.collectAsState()
+    val loading by viewModel.loadingRouteStats.collectAsState()
+
+    var activeTab by remember { mutableStateOf(0) } // 0: Lista, 1: Gr�fica
+
+    LaunchedEffect(Unit) {
+        viewModel.fetchRouteStats()
+    }
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = ColorTekinsDarkBg,
+            border = BorderStroke(1.dp, ColorTekinsAccent.copy(alpha = 0.3f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Estadísticas de Rutas",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = ColorTextoPrincipal
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = ColorTextoSecundario)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .background(ColorTekinsCardBg, RoundedCornerShape(12.dp))
+                        .padding(4.dp)
+                ) {
+                    TabButton(
+                        text = "Lista",
+                        isSelected = activeTab == 0,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        activeTab = 0
+                    }
+                    TabButton(
+                        text = "Gráfica (Top 10)",
+                        isSelected = activeTab == 1,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        activeTab = 1
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                if (loading) {
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = ColorTekinsAccent)
+                    }
+                } else if (statsList.isEmpty()) {
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "No hay estadísticas disponibles.",
+                            color = ColorTextoSecundario,
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    if (activeTab == 0) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            statsList.forEachIndexed { index, stat ->
+                                val nombre = stat["nombre"] as? String ?: "Desconocida"
+                                val participantes = stat["total_participantes"] as? Int ?: 0
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 12.dp, horizontal = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "${index + 1}.",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ColorTekinsAccent,
+                                        modifier = Modifier.width(30.dp)
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = nombre,
+                                            fontWeight = FontWeight.Bold,
+                                            color = ColorTextoPrincipal,
+                                            fontSize = 15.sp
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = "$participantes participantes",
+                                            fontSize = 13.sp,
+                                            color = ColorTextoSecundario
+                                        )
+                                    }
+                                }
+                                Divider(color = ColorTekinsCardMuted)
+                            }
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState())
+                                .padding(vertical = 8.dp)
+                        ) {
+                            val maxParticipantes = statsList.maxOfOrNull { (it["total_participantes"] as? Int ?: 0) } ?: 1
+                            val top10 = statsList.take(10)
+                            
+                            top10.forEach { stat ->
+                                val nombre = stat["nombre"] as? String ?: "Desconocida"
+                                val participantes = stat["total_participantes"] as? Int ?: 0
+                                val progress = if (maxParticipantes > 0) (participantes.toFloat() / maxParticipantes.toFloat()) else 0f
+                                
+                                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = nombre,
+                                            color = ColorTextoPrincipal,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            modifier = Modifier.weight(1f).padding(end = 8.dp)
+                                        )
+                                        Text(
+                                            text = "$participantes",
+                                            color = ColorTekinsAccent,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(16.dp)
+                                            .background(ColorTekinsCardMuted, RoundedCornerShape(8.dp))
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth(progress.coerceIn(0f, 1f))
+                                                .fillMaxHeight()
+                                                .background(ColorTekinsAccent, RoundedCornerShape(8.dp))
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 

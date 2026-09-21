@@ -1,4 +1,4 @@
-﻿build/
+build/
 app/build/
 .idea/
 .gradle/
@@ -7,3 +7,4 @@ local.properties
 .vscode/
 temp_rutas/
 *.zip
+*.7z

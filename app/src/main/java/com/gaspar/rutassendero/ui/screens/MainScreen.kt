@@ -401,10 +401,8 @@ fun MainScreen(
 
     var showDistanceVerificationDialog by remember { mutableStateOf(false) }
     var mapForceRecomposeKey by remember { mutableStateOf(0) }
+    var activeMapPoint by remember { mutableStateOf<PuntoRutaEntity?>(null) }
 
-
-
-    
     var selectedPuntoForDetail by remember { mutableStateOf<PuntoRutaEntity?>(null) }
     var puntoToDeleteConfirm by remember { mutableStateOf<PuntoRutaEntity?>(null) }
 
@@ -476,7 +474,10 @@ fun MainScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             IconButton(
-                                onClick = { showMapScreen = false },
+                                onClick = { 
+                                    showMapScreen = false 
+                                    activeMapPoint = null
+                                },
                                 colors = IconButtonDefaults.iconButtonColors(
                                     containerColor = Color.Transparent,
                                     contentColor = Color.Black
@@ -487,7 +488,102 @@ fun MainScreen(
                             
                             Spacer(modifier = Modifier.width(8.dp))
                             
-                            if (isGuiding && targetWaypoint != null) {
+                            if (activeMapPoint != null) {
+                                val punto = activeMapPoint!!
+                                val ptIndex = selectedRoutePoints.indexOfFirst { it.id == punto.id }
+                                val estadoInfo = getEstadoPuntoInfo(punto.estado, punto.esFinRuta)
+                                
+                                val (segText, accumText) = remember(punto, selectedRoutePoints) {
+                                    if (ptIndex <= 0) {
+                                        Pair("Inicio", "0 m")
+                                    } else {
+                                        var acc = 0f
+                                        for (i in 1..ptIndex) {
+                                            val p1 = selectedRoutePoints[i - 1]
+                                            val p2 = selectedRoutePoints[i]
+                                            val loc1 = Location("").apply { latitude = p1.latitud; longitude = p1.longitud }
+                                            val loc2 = Location("").apply { latitude = p2.latitud; longitude = p2.longitud }
+                                            acc += loc1.distanceTo(loc2)
+                                        }
+                                        val prev = selectedRoutePoints[ptIndex - 1]
+                                        val locPrev = Location("").apply { latitude = prev.latitud; longitude = prev.longitud }
+                                        val locCur = Location("").apply { latitude = punto.latitud; longitude = punto.longitud }
+                                        val seg = locPrev.distanceTo(locCur)
+                                        val segStr = if (seg >= 1000f) String.format(java.util.Locale.US, "%.1f km", seg / 1000f) else "${seg.toInt()} m"
+                                        val accStr = if (acc >= 1000f) String.format(java.util.Locale.US, "%.1f km", acc / 1000f) else "${acc.toInt()} m"
+                                        Pair(segStr, accStr)
+                                    }
+                                }
+
+                                Row(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { selectedPuntoForDetail = punto },
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(estadoInfo.third.copy(alpha = 0.15f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (punto.esFinRuta) {
+                                            Icon(
+                                                imageVector = Icons.Default.Flag,
+                                                contentDescription = "Fin de ruta",
+                                                tint = ColorTekinsAlert,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        } else {
+                                            Icon(
+                                                painter = painterResource(id = estadoInfo.second),
+                                                contentDescription = estadoInfo.first,
+                                                tint = estadoInfo.third,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "#${ptIndex + 1} · ${punto.descripcion}",
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.Black,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = buildString {
+                                                append(estadoInfo.first)
+                                                if (ptIndex > 0) append(" · Tramo: $segText (va $accumText)")
+                                                if (punto.altitud > 0) append(" · ${punto.altitud.toInt()}m")
+                                            },
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF334155),
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                IconButton(onClick = { selectedPuntoForDetail = punto }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = "Ver detalles / Editar",
+                                        tint = ColorTekinsPrimary
+                                    )
+                                }
+
+                                IconButton(onClick = { activeMapPoint = null }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Cerrar info de punto",
+                                        tint = Color.DarkGray
+                                    )
+                                }
+                            } else if (isGuiding && targetWaypoint != null) {
                                 val distText = if ((distanceToTarget ?: 0f) > 0f) " (${String.format("%.1f", distanceToTarget ?: 0f)}m)" else ""
                                 Column(
                                     modifier = Modifier
@@ -589,6 +685,7 @@ fun MainScreen(
                             tracePoints = selectedRouteTrace,
                             currentLocation = location,
                             onPointClick = { punto ->
+                                activeMapPoint = punto
                                 if (isGuiding && targetWaypoint?.id == punto.id) {
                                     val currentLoc = location
                                     if (currentLoc != null) {
@@ -606,16 +703,16 @@ fun MainScreen(
                                                 "Demasiado lejos para marcar como visto (Distancia: ${dist.toInt()}m, Límite: ${limit.toInt()}m)",
                                                 Toast.LENGTH_LONG
                                             ).show()
-                                            selectedPuntoForDetail = punto
                                         }
                                     } else {
                                         Toast.makeText(context, "Esperando señal de GPS...", Toast.LENGTH_SHORT).show()
-                                        selectedPuntoForDetail = punto
                                     }
-                                } else {
-                                    selectedPuntoForDetail = punto
                                 }
                             },
+                            onPointHover = { punto ->
+                                activeMapPoint = punto
+                            },
+                            activePointId = activeMapPoint?.id,
                             modifier = Modifier.fillMaxSize(),
                             routeStartLat = selectedRoute?.latitudOrig,
                             routeStartLng = selectedRoute?.longitudOrig
@@ -2078,14 +2175,14 @@ fun MainScreen(
                     }
                 },
                 onSetAsFinRuta = {
-                    val updated = selectedPuntoForDetail?.copy(
+                    val cur = selectedPuntoForDetail ?: punto
+                    val updated = cur.copy(
                         esFinRuta = true,
-                        descripcion = if (punto.descripcion.isEmpty() || punto.descripcion.startsWith("Faro #")) "Fin de Ruta" else punto.descripcion
+                        descripcion = if (cur.descripcion.isEmpty() || cur.descripcion.startsWith("Faro #")) "Fin de Ruta" else cur.descripcion
                     )
-                    if (updated != null) {
-                        viewModel.updatePuntoRuta(updated)
-                        selectedPuntoForDetail = updated
-                    }
+                    viewModel.updatePuntoRuta(updated)
+                    selectedPuntoForDetail = updated
+                    Toast.makeText(context, "Punto establecido como Fin de Ruta. La ruta ha finalizado.", Toast.LENGTH_LONG).show()
                 },
                 onDismiss = {
                     selectedPuntoForDetail = null

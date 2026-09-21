@@ -462,6 +462,27 @@ fun FullScreenPhotoViewerDialog(
 }
 
 /**
+ * Helper para obtener nombre, icono drawable y color representativo según el estado del punto.
+ */
+fun getEstadoPuntoInfo(estado: Int, esFinRuta: Boolean = false): Triple<String, Int, Color> {
+    if (esFinRuta) {
+        return Triple("Fin de ruta", R.drawable.ic_peligro, Color(0xFFD32F2F))
+    }
+    return when(estado) {
+        1 -> Triple("Punto normal", R.drawable.ic_punto_normal, Color(0xFF1976D2))
+        2 -> Triple("Sitio de interés", R.drawable.ic_sitio_interes, Color(0xFF2E7D32))
+        3 -> Triple("Bifurcación", R.drawable.ic_bifurcacion, Color(0xFF5E35B1))
+        4 -> Triple("Suelo flojo", R.drawable.ic_suelo_flojo, Color(0xFF8D6E63))
+        5 -> Triple("Cuidado", R.drawable.ic_aviso_cuidado, Color(0xFFFBC02D))
+        6 -> Triple("Alerta", R.drawable.ic_calavera_alerta, Color(0xFFD32F2F))
+        8 -> Triple("Vehículo", R.drawable.ic_aviso_vehiculo, Color(0xFF607D8B))
+        9 -> Triple("Refugio", R.drawable.ic_casa, Color(0xFF4E342E))
+        10 -> Triple("Comida", R.drawable.ic_comida, Color(0xFFE65100))
+        else -> Triple("Punto normal", R.drawable.ic_punto_normal, Color(0xFF1976D2))
+    }
+}
+
+/**
  * COMPONENTE: Tarjeta individual para mostrar un punto de ruta.
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -508,18 +529,7 @@ fun PuntoRutaItem(
                 .padding(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val estadoInfo = when(punto.estado) {
-                1 -> Triple("Punto normal", R.drawable.ic_punto_normal, Color(0xFF1976D2))
-                2 -> Triple("Sitio de interés", R.drawable.ic_sitio_interes, Color(0xFF2E7D32))
-                3 -> Triple("Bifurcación", R.drawable.ic_bifurcacion, Color(0xFF5E35B1))
-                4 -> Triple("Suelo flojo", R.drawable.ic_suelo_flojo, Color(0xFF8D6E63))
-                5 -> Triple("Cuidado", R.drawable.ic_aviso_cuidado, Color(0xFFFBC02D))
-                6 -> Triple("Alerta", R.drawable.ic_calavera_alerta, Color(0xFFD32F2F))
-                8 -> Triple("Vehículo", R.drawable.ic_aviso_vehiculo, Color(0xFF607D8B))
-                9 -> Triple("Refugio", R.drawable.ic_casa, Color(0xFF4E342E))
-                10 -> Triple("Comida", R.drawable.ic_comida, Color(0xFFE65100))
-                else -> Triple("Punto normal", R.drawable.ic_punto_normal, Color(0xFF1976D2))
-            }
+            val estadoInfo = getEstadoPuntoInfo(punto.estado, punto.esFinRuta)
 
             Box(
                 modifier = Modifier
@@ -1450,12 +1460,16 @@ fun PuntoRutaDetailDialog(
     var expanded by remember { mutableStateOf(false) }
     var showFullScreenPhoto by remember { mutableStateOf(false) }
     var isRecoveringPhoto by remember { mutableStateOf(false) }
+    var showConfirmFinDialog1 by remember { mutableStateOf(false) }
+    var showConfirmFinDialog2 by remember { mutableStateOf(false) }
     
     // Sincronizar cambios cuando el punto cambia de ID (ej. al hacer swipe)
     LaunchedEffect(punto.id) {
         currentText = punto.descripcion
         currentState = punto.estado
         isRecoveringPhoto = false
+        showConfirmFinDialog1 = false
+        showConfirmFinDialog2 = false
     }
     
     // Sincronizar dictado por voz
@@ -1731,7 +1745,7 @@ fun PuntoRutaDetailDialog(
                         Spacer(modifier = Modifier.height(10.dp))
                         Button(
                             onClick = {
-                                onSetAsFinRuta()
+                                showConfirmFinDialog1 = true
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF43F5E)), // Alert Crimson
                             shape = RoundedCornerShape(8.dp),
@@ -1825,6 +1839,85 @@ fun PuntoRutaDetailDialog(
                     }
                 }
             }
+        }
+
+        if (showConfirmFinDialog1) {
+            AlertDialog(
+                onDismissRequest = { showConfirmFinDialog1 = false },
+                containerColor = ColorTekinsCardBg,
+                titleContentColor = ColorTextoPrincipal,
+                textContentColor = ColorTextoSecundario,
+                title = {
+                    Text(
+                        text = "¿Establecer como Fin de Ruta?",
+                        fontWeight = FontWeight.Bold,
+                        color = ColorTextoPrincipal
+                    )
+                },
+                text = {
+                    Text(
+                        text = "¿Deseas marcar este punto como el final del recorrido?",
+                        color = ColorTextoSecundario,
+                        fontSize = 14.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showConfirmFinDialog1 = false
+                            showConfirmFinDialog2 = true
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF43F5E))
+                    ) {
+                        Text("Sí, continuar", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showConfirmFinDialog1 = false }) {
+                        Text("Cancelar", color = ColorTextoSecundario)
+                    }
+                }
+            )
+        }
+
+        if (showConfirmFinDialog2) {
+            AlertDialog(
+                onDismissRequest = { showConfirmFinDialog2 = false },
+                containerColor = ColorTekinsCardBg,
+                titleContentColor = ColorTextoPrincipal,
+                textContentColor = ColorTextoSecundario,
+                title = {
+                    Text(
+                        text = "¿Estás seguro?",
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFF43F5E)
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Al confirmar, la ruta quedará cerrada definitivamente y ya no podrás agregar más puntos a este recorrido.\n\n¿Deseas cerrar la ruta con este punto final?",
+                        color = ColorTextoSecundario,
+                        fontSize = 14.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showConfirmFinDialog2 = false
+                            onSave(currentText.trim(), currentState)
+                            onSetAsFinRuta()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF43F5E))
+                    ) {
+                        Text("Sí, estoy seguro", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showConfirmFinDialog2 = false }) {
+                        Text("Cancelar", color = ColorTextoSecundario)
+                    }
+                }
+            )
         }
     }
 }
@@ -2494,7 +2587,7 @@ private fun updateWebViewData(
             val formattedAccum = if (accumDistance >= 1000f) String.format(java.util.Locale.US, "%.1f km", accumDistance / 1000f) else "${accumDistance.toInt()} m"
             Pair(formattedSeg, formattedAccum)
         }
-        """{"lat": ${pt.latitud}, "lng": ${pt.longitud}, "desc": "${idx + 1}. $safeDesc", "segDist": "$segDist", "accumDist": "$accumStr"}"""
+        """{"lat": ${pt.latitud}, "lng": ${pt.longitud}, "desc": "${idx + 1}. $safeDesc", "segDist": "$segDist", "accumDist": "$accumStr", "estado": ${pt.estado}, "esFinRuta": ${pt.esFinRuta}, "altitud": ${pt.altitud.toInt()}}"""
     }.joinToString(",")
     val pointsJsonStr = "[$pointsJson]"
 
@@ -2560,7 +2653,9 @@ fun GoogleMapView(
     onPointClick: (PuntoRutaEntity) -> Unit,
     modifier: Modifier = Modifier,
     routeStartLat: Double? = null,
-    routeStartLng: Double? = null
+    routeStartLng: Double? = null,
+    onPointHover: ((PuntoRutaEntity?) -> Unit)? = null,
+    activePointId: Int? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -2570,6 +2665,7 @@ fun GoogleMapView(
         object {
             var currentPoints = points
             var currentOnPointClick = onPointClick
+            var currentOnPointHover = onPointHover
 
             @android.webkit.JavascriptInterface
             fun onMarkerClick(index: Int) {
@@ -2579,12 +2675,36 @@ fun GoogleMapView(
                     }
                 }
             }
+
+            @android.webkit.JavascriptInterface
+            fun onMarkerHover(index: Int) {
+                coroutineScope.launch(Dispatchers.Main) {
+                    if (index in currentPoints.indices) {
+                        currentOnPointHover?.invoke(currentPoints[index])
+                    }
+                }
+            }
+
+            @android.webkit.JavascriptInterface
+            fun onMarkerHoverEnd() {
+                coroutineScope.launch(Dispatchers.Main) {
+                    currentOnPointHover?.invoke(null)
+                }
+            }
+
+            @android.webkit.JavascriptInterface
+            fun onMapClick() {
+                coroutineScope.launch(Dispatchers.Main) {
+                    currentOnPointHover?.invoke(null)
+                }
+            }
         }
     }
 
     // Keep interface updated with fresh parameters on recompositions
     webInterface.currentPoints = points
     webInterface.currentOnPointClick = onPointClick
+    webInterface.currentOnPointHover = onPointHover
     
     // Identificamos el ID o coordenada de la ruta actual para saber cuándo cambia de ruta el usuario
     val currentRouteKey = if (routeStartLat != null && routeStartLng != null) {
@@ -2716,50 +2836,69 @@ fun GoogleMapView(
                             $leafletCss
                             body, html, #map { height: 100vh; width: 100vw; margin: 0; padding: 0; background: #0F172A; }
                             .leaflet-container { background: #0F172A; }
+                            .leaflet-div-icon { background: transparent !important; border: none !important; }
                             
-                            /* Estilo del pin de ruta personalizado con índice */
+                            /* Estilo del pin de ruta personalizado según estado */
                             .route-marker-pin {
-                                width: 24px;
-                                height: 24px;
-                                background-color: #0F766E;
-                                border: 2.5px solid #2DD4BF;
+                                width: 28px;
+                                height: 28px;
                                 border-radius: 50%;
-                                box-shadow: 0 0 6px rgba(0,0,0,0.4);
+                                box-shadow: 0 2px 8px rgba(0,0,0,0.55);
                                 display: flex;
                                 align-items: center;
                                 justify-content: center;
-                                color: white;
-                                font-family: sans-serif;
-                                font-size: 11px;
+                                position: relative;
+                                cursor: pointer;
+                                transition: transform 0.15s ease-in-out;
+                            }
+                            .route-marker-pin:hover {
+                                transform: scale(1.18);
+                                z-index: 1000 !important;
+                            }
+                            .route-marker-pin svg {
+                                display: block;
+                            }
+                            .route-pin-badge {
+                                position: absolute;
+                                top: -6px;
+                                right: -6px;
+                                min-width: 14px;
+                                height: 14px;
+                                padding: 0 3px;
+                                background: #0F172A;
+                                color: #FFFFFF;
+                                border: 1.5px solid #CBD5E1;
+                                border-radius: 7px;
+                                font-size: 8.5px;
                                 font-weight: bold;
+                                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                box-shadow: 0 1px 3px rgba(0,0,0,0.6);
                             }
                             
-                            /* Estilo del tooltip de distancia tramo */
-                            .route-tooltip {
-                                background-color: rgba(15, 23, 42, 0.9) !important;
+                            /* Estilo del tooltip HelpHint no permanente */
+                            .route-tooltip-hint {
+                                background-color: rgba(15, 23, 42, 0.95) !important;
                                 border: 1.5px solid #2DD4BF !important;
-                                color: #2DD4BF !important;
-                                font-family: sans-serif !important;
-                                font-size: 9px !important;
-                                font-weight: bold !important;
-                                padding: 2px 4px !important;
-                                border-radius: 4px !important;
-                                box-shadow: 0 1px 3px rgba(0,0,0,0.4) !important;
+                                color: #F8FAFC !important;
+                                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+                                font-size: 11px !important;
+                                padding: 4px 8px !important;
+                                border-radius: 6px !important;
+                                box-shadow: 0 4px 12px rgba(0,0,0,0.5) !important;
                                 white-space: nowrap !important;
+                                pointer-events: none;
                             }
-                            
-                            /* Estilo del tooltip del punto de inicio */
-                            .route-tooltip-inicio {
-                                background-color: rgba(30, 41, 59, 0.9) !important;
-                                border: 1.5px solid #E2E8F0 !important;
-                                color: #E2E8F0 !important;
-                                font-family: sans-serif !important;
-                                font-size: 9px !important;
-                                font-weight: bold !important;
-                                padding: 2px 4px !important;
-                                border-radius: 4px !important;
-                                box-shadow: 0 1px 3px rgba(0,0,0,0.4) !important;
-                                white-space: nowrap !important;
+                            .route-tooltip-hint b {
+                                color: #2DD4BF;
+                                font-size: 11.5px;
+                            }
+                            .route-tooltip-sub {
+                                font-size: 9.5px;
+                                color: #94A3B8;
+                                margin-top: 1px;
                             }
                             
                             /* Quitar flecha de Leaflet para simplificar */
@@ -2809,6 +2948,98 @@ fun GoogleMapView(
                         var userMarker = null;
                         var hasSetInitialBounds = false;
                         var pendingData = null;
+                        var pinnedMarker = null;
+                        var hoverTimeout = null;
+
+                        window.clearPinnedMarker = function() {
+                            if (hoverTimeout) {
+                                clearTimeout(hoverTimeout);
+                                hoverTimeout = null;
+                            }
+                            if (pinnedMarker) {
+                                pinnedMarker.closeTooltip();
+                                pinnedMarker = null;
+                            }
+                        };
+
+                        function getMarkerVisuals(pt, idx) {
+                            var state = pt.estado || 1;
+                            var isEnd = pt.esFinRuta;
+                            var bg = '#1976D2';
+                            var border = '#90CAF9';
+                            var iconSvg = '<svg viewBox="0 0 24 24" width="14" height="14" fill="white"><circle cx="12" cy="12" r="5"/></svg>';
+                            var stateName = 'Punto normal';
+
+                            if (idx === 0) {
+                                bg = '#0F766E';
+                                border = '#2DD4BF';
+                                iconSvg = '<svg viewBox="0 0 24 24" width="14" height="14" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+                                stateName = 'Inicio';
+                            } else if (isEnd) {
+                                bg = '#D32F2F';
+                                border = '#FFCDD2';
+                                iconSvg = '<svg viewBox="0 0 24 24" width="14" height="14" fill="white"><path d="M14.4 6L14 4H5v17h2v-7h5.6l.4 2h7V6z"/></svg>';
+                                stateName = 'Fin de ruta';
+                            } else {
+                                switch(state) {
+                                    case 2: // Sitio de interés
+                                        bg = '#2E7D32';
+                                        border = '#A5D6A7';
+                                        iconSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="white"><path d="M12 9a3 3 0 100 6 3 3 0 000-6zm-1.8-6l-1.3 2H5a2 2 0 00-2 2v11a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2h-3.9l-1.3-2h-3.6z"/></svg>';
+                                        stateName = 'Sitio de interés';
+                                        break;
+                                    case 3: // Bifurcación
+                                        bg = '#5E35B1';
+                                        border = '#D1C4E9';
+                                        iconSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="white"><path d="M7 5a2 2 0 100 4 2 2 0 000-4zm10 0a2 2 0 100 4 2 2 0 000-4zM7 15a2 2 0 100 4 2 2 0 000-4zm1 2v-4a3 3 0 013-3h3.2l-1.6 1.6 1.4 1.4 4-4-4-4-1.4 1.4 1.6 1.6H11a5 5 0 00-5 5v4h2z"/></svg>';
+                                        stateName = 'Bifurcación';
+                                        break;
+                                    case 4: // Suelo flojo
+                                        bg = '#8D6E63';
+                                        border = '#D7CCC8';
+                                        iconSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="white"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>';
+                                        stateName = 'Suelo flojo';
+                                        break;
+                                    case 5: // Cuidado
+                                        bg = '#F59E0B';
+                                        border = '#FEF3C7';
+                                        iconSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="white"><path d="M12 2L1 21h22L12 2zm0 4.2l8.5 14.8H3.5L12 6.2zM11 11h2v4h-2zm0 6h2v2h-2z"/></svg>';
+                                        stateName = 'Cuidado';
+                                        break;
+                                    case 6: // Alerta / Peligro
+                                        bg = '#D32F2F';
+                                        border = '#FFCDD2';
+                                        iconSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="white"><path d="M12 2C8.1 2 5 5.1 5 9c0 2.4 1.2 4.5 3 5.7V17c0 .6.4 1 1 1h1v2h4v-2h1c.6 0 1-.4 1-1v-2.3c1.8-1.2 3-3.3 3-5.7 0-3.9-3.1-7-7-7zm-3 8a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm6 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3z"/></svg>';
+                                        stateName = 'Alerta';
+                                        break;
+                                    case 8: // Vehículo
+                                        bg = '#607D8B';
+                                        border = '#CFD8DC';
+                                        iconSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="white"><path d="M18.9 5c-.2-.6-.8-1-1.4-1h-11c-.7 0-1.2.4-1.4 1L3 11v8c0 .6.4 1 1 1h1c.6 0 1-.4 1-1v-1h12v1c0 .6.4 1 1 1h1c.6 0 1-.4 1-1v-8l-2.1-6zM6.5 15a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm11 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM5 10l1.5-4.5h11L19 10H5z"/></svg>';
+                                        stateName = 'Vehículo';
+                                        break;
+                                    case 9: // Refugio
+                                        bg = '#4E342E';
+                                        border = '#D7CCC8';
+                                        iconSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="white"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>';
+                                        stateName = 'Refugio';
+                                        break;
+                                    case 10: // Comida
+                                        bg = '#E65100';
+                                        border = '#FFE0B2';
+                                        iconSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="white"><path d="M11 9H9V2H7v7H5V2H3v7c0 2.1 1.7 3.8 3.8 4v7h2.4v-7c2.1-.2 3.8-1.9 3.8-4V2h-2v7zm5-4v5h3V2h-3v3zm0 7v9h3v-9c2.2 0 4-1.8 4-4V2h-2v3h-2V2h-2v3h-1c-1.1 0-2 .9-2 2v2c0 1.7 1.3 3 3 3z"/></svg>';
+                                        stateName = 'Comida';
+                                        break;
+                                    default:
+                                        bg = '#1976D2';
+                                        border = '#90CAF9';
+                                        iconSvg = '<svg viewBox="0 0 24 24" width="14" height="14" fill="white"><circle cx="12" cy="12" r="5"/></svg>';
+                                        stateName = 'Punto normal';
+                                        break;
+                                }
+                            }
+                            return { bg: bg, border: border, iconSvg: iconSvg, stateName: stateName };
+                        }
                         
                         function initMap() {
                             console.log("Leaflet script loaded. Initializing map.");
@@ -2847,6 +3078,16 @@ fun GoogleMapView(
                             // -------------------------------------
                             
                             markersGroup = L.layerGroup().addTo(map);
+
+                            map.on('click', function(e) {
+                                if (e && e.originalEvent && e.originalEvent._markerClickHandled) {
+                                    return;
+                                }
+                                window.clearPinnedMarker();
+                                if (window.AndroidApp && typeof window.AndroidApp.onMapClick === 'function') {
+                                    window.AndroidApp.onMapClick();
+                                }
+                            });
                             
                             // invalidar tamaño para asegurar renderizado correcto tras renderizar contenedor
                             if (pendingData) {
@@ -2858,6 +3099,8 @@ fun GoogleMapView(
                         
                         initMap();
                         
+                        var lastPointsSignature = "";
+
                         function updateData(points, trace, userLoc, resetView, routeStart) {
                             if (!map) {
                                 pendingData = { points: points, trace: trace, userLoc: userLoc, resetView: resetView, routeStart: routeStart };
@@ -2869,51 +3112,107 @@ fun GoogleMapView(
                                 hasSetInitialBounds = false;
                             }
                             
-                            markersGroup.clearLayers();
+                            var currentPointsSig = points ? points.length + "_" + (points[0] ? points[0].lat + "_" + points[0].lng : "") : "";
+                            var pointsChanged = (currentPointsSig !== lastPointsSignature) || resetView;
                             var poiLatlngs = [];
                             
-                            if (points && points.length > 0) {
-                                points.forEach(function(pt, idx) {
-                                    // Crear el icono del pin con su número de orden
-                                    var routeIcon = L.divIcon({
-                                        className: 'route-marker-pin',
-                                        html: '<div>' + (idx + 1) + '</div>',
-                                        iconSize: [24, 24],
-                                        iconAnchor: [12, 12]
-                                    });
-                                    
-                                    var marker = L.marker([pt.lat, pt.lng], { icon: routeIcon });
-                                    markersGroup.addLayer(marker);
-                                    
-                                    var popupContent = "<b>" + pt.desc + "</b>";
-                                    if (idx > 0 && pt.segDist) {
-                                        popupContent += "<br/><span style='font-size:11px;color:#0F766E;font-weight:bold;'>Tramo: " + pt.segDist + ", va " + pt.accumDist + "</span>";
-                                    }
-                                    marker.bindPopup(popupContent);
-                                    
-                                    if (idx === 0) {
-                                        marker.bindTooltip("Inicio", { 
-                                            permanent: true, 
-                                            direction: 'top', 
-                                            className: 'route-tooltip-inicio',
-                                            offset: [0, -10]
+                            if (pointsChanged) {
+                                lastPointsSignature = currentPointsSig;
+                                markersGroup.clearLayers();
+                                
+                                if (points && points.length > 0) {
+                                    points.forEach(function(pt, idx) {
+                                        var visuals = getMarkerVisuals(pt, idx);
+                                        var pinHtml = '<div class="route-marker-pin" style="background-color:' + visuals.bg + '; border: 2.5px solid ' + visuals.border + ';">' +
+                                                      visuals.iconSvg +
+                                                      '<span class="route-pin-badge">' + (idx + 1) + '</span>' +
+                                                      '</div>';
+
+                                        var routeIcon = L.divIcon({
+                                            className: 'custom-route-icon-container',
+                                            html: pinHtml,
+                                            iconSize: [28, 28],
+                                            iconAnchor: [14, 14]
                                         });
-                                    } else if (pt.segDist) {
-                                        marker.bindTooltip(pt.segDist + ", va " + pt.accumDist, { 
-                                            permanent: true, 
-                                            direction: 'top', 
-                                            className: 'route-tooltip',
-                                            offset: [0, -10]
-                                        });
-                                    }
-                                    
-                                    marker.on('click', function() {
-                                        if (window.AndroidApp && typeof window.AndroidApp.onMarkerClick === 'function') {
-                                            window.AndroidApp.onMarkerClick(idx);
+                                        
+                                        var marker = L.marker([pt.lat, pt.lng], { icon: routeIcon });
+                                        markersGroup.addLayer(marker);
+                                        
+                                        var hintContent = "<b>" + pt.desc + "</b>";
+                                        hintContent += "<div class='route-tooltip-sub'><span style='color:" + visuals.border + ";'>● " + visuals.stateName + "</span>";
+                                        if (idx > 0 && pt.segDist) {
+                                            hintContent += " · Tramo: " + pt.segDist + " (va " + pt.accumDist + ")";
                                         }
+                                        if (pt.altitud) {
+                                            hintContent += " · " + pt.altitud + "m";
+                                        }
+                                        hintContent += "</div>";
+
+                                        marker.bindTooltip(hintContent, { 
+                                            permanent: false, 
+                                            direction: 'top', 
+                                            className: 'route-tooltip-hint',
+                                            offset: [0, -16],
+                                            opacity: 0.98
+                                        });
+
+                                        // Desactivar el auto-close y auto-open predeterminado de Leaflet para tener el control total
+                                        marker.off('mouseover');
+                                        marker.off('mouseout');
+                                        
+                                        // Evento Hover: timeout extendido de 20 segundos al retirar el cursor
+                                        marker.on('mouseover', function() {
+                                            if (hoverTimeout) {
+                                                clearTimeout(hoverTimeout);
+                                                hoverTimeout = null;
+                                            }
+                                            marker.openTooltip();
+                                            if (window.AndroidApp && typeof window.AndroidApp.onMarkerHover === 'function') {
+                                                window.AndroidApp.onMarkerHover(idx);
+                                            }
+                                        });
+                                        marker.on('mouseout', function() {
+                                            // Si el marcador está retenido/fijado por clic, NUNCA se cierra
+                                            if (pinnedMarker === marker) {
+                                                return;
+                                            }
+                                            if (hoverTimeout) clearTimeout(hoverTimeout);
+                                            hoverTimeout = setTimeout(function() {
+                                                if (pinnedMarker !== marker) {
+                                                    marker.closeTooltip();
+                                                }
+                                            }, 20000); // 20 segundos de timeout
+                                        });
+
+                                        // Evento Click / Tap: RETENER EN PANTALLA fijado permanentemente
+                                        marker.on('click', function(e) {
+                                            if (e && e.originalEvent) {
+                                                e.originalEvent._markerClickHandled = true;
+                                                L.DomEvent.stopPropagation(e.originalEvent);
+                                            }
+                                            if (hoverTimeout) {
+                                                clearTimeout(hoverTimeout);
+                                                hoverTimeout = null;
+                                            }
+                                            if (pinnedMarker && pinnedMarker !== marker) {
+                                                pinnedMarker.closeTooltip();
+                                            }
+                                            pinnedMarker = marker;
+                                            marker.openTooltip();
+                                            
+                                            if (window.AndroidApp && typeof window.AndroidApp.onMarkerClick === 'function') {
+                                                window.AndroidApp.onMarkerClick(idx);
+                                            }
+                                        });
+                                        poiLatlngs.push([pt.lat, pt.lng]);
                                     });
-                                    poiLatlngs.push([pt.lat, pt.lng]);
-                                });
+                                }
+                            } else {
+                                if (points && points.length > 0) {
+                                    points.forEach(function(pt) {
+                                        poiLatlngs.push([pt.lat, pt.lng]);
+                                    });
+                                }
                             }
                             
                             if (userLoc) {
@@ -3028,26 +3327,34 @@ fun GoogleMapView(
             }
         },
         
-        // UPDATE: Se ejecuta CADA VEZ que Compose detecta cambios en las variables (Puntos o ubicación)
-        // para pasarle la nueva información al WebView.
+        // UPDATE: Se ejecuta CADA VEZ que Compose detecta cambios en las variables
         update = { webView ->
             val holder = webView.tag as? MapStateHolder ?: MapStateHolder().also { webView.tag = it }
+            val pointsChanged = holder.points != points
+            val traceChanged = holder.tracePoints != tracePoints
+            val locationChanged = holder.currentLocation != currentLocation
+            
             holder.points = points
             holder.tracePoints = tracePoints
             holder.currentLocation = currentLocation
             
             // Si la página del mapa ya terminó de cargarse en el WebView, inyectamos los datos actualizados
             if (holder.isLoaded) {
-                updateWebViewData(
-                    webView = webView,
-                    points = points,
-                    tracePoints = tracePoints,
-                    currentLocation = currentLocation,
-                    resetView = routeChanged,
-                    routeStartLat = routeStartLat,
-                    routeStartLng = routeStartLng,
-                    coroutineScope = coroutineScope
-                )
+                if (activePointId == null) {
+                    webView.evaluateJavascript("if (typeof window.clearPinnedMarker === 'function') window.clearPinnedMarker();", null)
+                }
+                if (pointsChanged || traceChanged || locationChanged || routeChanged) {
+                    updateWebViewData(
+                        webView = webView,
+                        points = points,
+                        tracePoints = tracePoints,
+                        currentLocation = currentLocation,
+                        resetView = routeChanged,
+                        routeStartLat = routeStartLat,
+                        routeStartLng = routeStartLng,
+                        coroutineScope = coroutineScope
+                    )
+                }
             }
         },
         

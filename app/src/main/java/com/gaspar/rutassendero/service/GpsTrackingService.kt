@@ -1,4 +1,4 @@
-﻿package com.gaspar.rutassendero.service
+package com.gaspar.rutassendero.service
 
 import android.Manifest
 import android.app.Notification
@@ -840,7 +840,9 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             _isGuiding.value && _targetWaypoint.value != null -> {
                 val target = _targetWaypoint.value!!
                 val dist = _distanceToTarget.value ?: 0f
-                "Guía a: ${target.descripcion} | A ${dist.toInt()}m"
+                val speedKmh = if (location.hasSpeed()) location.speed * 3.6f else 0f
+                val speedStr = String.format(Locale.US, "%.1f km/h", speedKmh)
+                "Guía a: ${target.descripcion} (${dist.toInt()}m) · Vel: $speedStr"
             }
             route != null -> {
                 val puntos = _selectedRoutePoints.value.size

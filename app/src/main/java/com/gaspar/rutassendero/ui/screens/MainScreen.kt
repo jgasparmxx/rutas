@@ -598,7 +598,7 @@ fun MainScreen(
                                         maxLines = 1,
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                     )
-                                    // Cálculo de avance
+                                    // Cálculo de avance tridimensional
                                     val totalDist = remember(selectedRoutePoints) { RouteStatsCalculator.calculateBeaconDistance(selectedRoutePoints) }
                                     val passedPoints = remember(selectedRoutePoints, targetWaypoint) {
                                         selectedRoutePoints.takeWhile { it.id != targetWaypoint?.id }
@@ -611,18 +611,29 @@ fun MainScreen(
                                                 latitude = lastPassedPoint.latitud 
                                                 longitude = lastPassedPoint.longitud 
                                             }
-                                            loc1.distanceTo(location!!)
+                                            val d2d = loc1.distanceTo(location!!)
+                                            val dAlt = (location!!.altitude - lastPassedPoint.altitud).toFloat()
+                                            if (kotlin.math.abs(dAlt) > 0.05f && kotlin.math.abs(dAlt) < 300f) {
+                                                kotlin.math.sqrt(d2d * d2d + dAlt * dAlt)
+                                            } else {
+                                                d2d
+                                            }
                                         } else {
                                             0f
                                         }
                                     }
                                     val currentProgressDist = passedDist + distFromLast
-                                    val totalDistStr = if (totalDist > 0) "${totalDist.toInt()} m" else "?"
+                                    val totalDistStr = if (totalDist >= 1000f) String.format(java.util.Locale.US, "%.2f km", totalDist / 1000f) else "${totalDist.toInt()} m"
+                                    val currentDistStr = if (currentProgressDist >= 1000f) String.format(java.util.Locale.US, "%.2f km", currentProgressDist / 1000f) else "${currentProgressDist.toInt()} m"
                                     val percentage = if (totalDist > 0) ((currentProgressDist / totalDist) * 100).toInt().coerceIn(0, 100) else 0
                                     
+                                    val currentSpeedKmh = if (location != null && location!!.hasSpeed()) (location!!.speed * 3.6f) else 0f
+                                    val speedStr = String.format(java.util.Locale.US, "%.1f km/h", currentSpeedKmh)
+
                                     Text(
-                                        text = "${currentProgressDist.toInt()} m de $totalDistStr ($percentage%)",
-                                        fontSize = 10.sp,
+                                        text = "$currentDistStr de $totalDistStr ($percentage%) · Vel: $speedStr",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
                                         color = Color(0xFF0F172A), // Azul casi negro (Slate 900)
                                         maxLines = 1,
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
@@ -1089,18 +1100,29 @@ fun MainScreen(
                                     val dist = distanceToTarget
                                     val distStr = when {
                                         dist == null -> "Calculando..."
-                                        dist >= 1000f -> String.format("%.2f km", dist / 1000f)
+                                        dist >= 1000f -> String.format(java.util.Locale.US, "%.2f km", dist / 1000f)
                                         else -> "${dist.toInt()} metros"
                                     }
-                                    Text("Distancia:", fontSize = 11.sp, color = ColorTextoSecundario)
-                                    Text(distStr, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = ColorTextoPrincipal)
+                                    Text("Al punto:", fontSize = 11.sp, color = ColorTextoSecundario)
+                                    Text(distStr, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = ColorTextoPrincipal)
+                                }
+
+                                val currentSpeedKmh = if (location != null && location!!.hasSpeed()) location!!.speed * 3.6f else 0f
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("Velocidad:", fontSize = 11.sp, color = ColorTextoSecundario)
+                                    Text(
+                                        text = String.format(java.util.Locale.US, "%.1f km/h", currentSpeedKmh),
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = ColorTekinsPrimary
+                                    )
                                 }
 
                                 Column(horizontalAlignment = Alignment.End) {
                                     Text("Dirección:", fontSize = 11.sp, color = ColorTextoSecundario)
                                     Text(
                                         text = relativeDirection ?: "Camina para orientar",
-                                        fontSize = 16.sp,
+                                        fontSize = 15.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = ColorTekinsAccent
                                     )
@@ -1125,6 +1147,63 @@ fun MainScreen(
                             LinearProgressIndicator(
                                 progress = { progress },
                                 color = ColorTekinsAccent,
+                                trackColor = ColorTekinsCardMuted,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp)
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                            )
+
+                            // Avance general de la ruta tridimensional
+                            val totalRouteDist = remember(selectedRoutePoints) { RouteStatsCalculator.calculateBeaconDistance(selectedRoutePoints) }
+                            val passedPts = remember(selectedRoutePoints, targetWaypoint) {
+                                selectedRoutePoints.takeWhile { it.id != targetWaypoint?.id }
+                            }
+                            val passedD = remember(passedPts) { RouteStatsCalculator.calculateBeaconDistance(passedPts) }
+                            val lastPassedPt = passedPts.lastOrNull()
+                            val distFromLastPt = remember(lastPassedPt, location) {
+                                if (lastPassedPt != null && location != null) {
+                                    val loc1 = android.location.Location("").apply { 
+                                        latitude = lastPassedPt.latitud 
+                                        longitude = lastPassedPt.longitud 
+                                    }
+                                    val d2d = loc1.distanceTo(location!!)
+                                    val dAlt = (location!!.altitude - lastPassedPt.altitud).toFloat()
+                                    if (kotlin.math.abs(dAlt) > 0.05f && kotlin.math.abs(dAlt) < 300f) {
+                                        kotlin.math.sqrt(d2d * d2d + dAlt * dAlt)
+                                    } else {
+                                        d2d
+                                    }
+                                } else 0f
+                            }
+                            val currentProgress = passedD + distFromLastPt
+                            val routeProgressPct = if (totalRouteDist > 0) ((currentProgress / totalRouteDist) * 100).toInt().coerceIn(0, 100) else 0
+                            val totalDistLabel = if (totalRouteDist >= 1000f) String.format(java.util.Locale.US, "%.2f km", totalRouteDist / 1000f) else "${totalRouteDist.toInt()} m"
+                            val currentDistLabel = if (currentProgress >= 1000f) String.format(java.util.Locale.US, "%.2f km", currentProgress / 1000f) else "${currentProgress.toInt()} m"
+
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Avance de ruta: $currentDistLabel de $totalDistLabel",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = ColorTextoSecundario
+                                )
+                                Text(
+                                    text = "$routeProgressPct%",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ColorTekinsAccent
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { (routeProgressPct / 100f).coerceIn(0f, 1f) },
+                                color = ColorTekinsPrimary,
                                 trackColor = ColorTekinsCardMuted,
                                 modifier = Modifier
                                     .fillMaxWidth()

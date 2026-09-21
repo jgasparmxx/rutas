@@ -15,7 +15,8 @@ data class ElevationStats(
 object RouteStatsCalculator {
 
     /**
-     * Calcula la distancia rectilínea acumulada entre beacons (puntos registrados).
+     * Calcula la distancia tridimensional (3D) acumulada entre beacons (puntos registrados),
+     * considerando la hipotenusa con el desnivel real del terreno.
      */
     fun calculateBeaconDistance(points: List<PuntoRutaEntity>): Float {
         if (points.size < 2) return 0f
@@ -27,7 +28,15 @@ object RouteStatsCalculator {
             loc1.longitude = points[i].longitud
             loc2.latitude = points[i + 1].latitud
             loc2.longitude = points[i + 1].longitud
-            total += loc1.distanceTo(loc2)
+            val dist2D = loc1.distanceTo(loc2)
+            val dAlt = (points[i + 1].altitud - points[i].altitud).toFloat()
+            // Cálculo 3D: hipotenusa considerando desnivel
+            val dist3D = if (abs(dAlt) > 0.05f && abs(dAlt) < 500f) {
+                kotlin.math.sqrt(dist2D * dist2D + dAlt * dAlt)
+            } else {
+                dist2D
+            }
+            total += dist3D
         }
         // Si es circuito (el primer y último punto están a menos de 300 metros y hay al menos 3 puntos), sumamos el tramo de cierre
         if (points.size >= 3) {
@@ -39,16 +48,23 @@ object RouteStatsCalculator {
                 latitude = points.last().latitud
                 longitude = points.last().longitud
             }
-            val closingDist = startLoc.distanceTo(endLoc)
-            if (closingDist < 300f) {
-                total += closingDist
+            val closingDist2D = startLoc.distanceTo(endLoc)
+            if (closingDist2D < 300f) {
+                val dAltClosing = (points.first().altitud - points.last().altitud).toFloat()
+                val closingDist3D = if (abs(dAltClosing) > 0.05f && abs(dAltClosing) < 500f) {
+                    kotlin.math.sqrt(closingDist2D * closingDist2D + dAltClosing * dAltClosing)
+                } else {
+                    closingDist2D
+                }
+                total += closingDist3D
             }
         }
         return total
     }
 
     /**
-     * Calcula la distancia acumulada de la traza deduplicando coordenadas estáticas o redundantes.
+     * Calcula la distancia acumulada tridimensional (3D) de la traza deduplicando coordenadas estáticas o redundantes,
+     * incorporando la variación altimétrica en cada segmento.
      */
     fun calculateTraceDistance(tracePoints: List<TrazaRutaEntity>): Float {
         if (tracePoints.size < 2) return 0f
@@ -92,7 +108,15 @@ object RouteStatsCalculator {
             loc1.longitude = uniquePoints[i].longitud
             loc2.latitude = uniquePoints[i + 1].latitud
             loc2.longitude = uniquePoints[i + 1].longitud
-            total += loc1.distanceTo(loc2)
+            val dist2D = loc1.distanceTo(loc2)
+            val dAlt = (uniquePoints[i + 1].altitud - uniquePoints[i].altitud).toFloat()
+            // Cálculo tridimensional (3D) de la distancia: hipotenusa con el desnivel real del terreno
+            val dist3D = if (abs(dAlt) > 0.05f && abs(dAlt) < 150f) {
+                kotlin.math.sqrt(dist2D * dist2D + dAlt * dAlt)
+            } else {
+                dist2D
+            }
+            total += dist3D
         }
         return total
     }

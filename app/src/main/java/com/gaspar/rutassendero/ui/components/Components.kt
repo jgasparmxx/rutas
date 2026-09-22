@@ -5777,12 +5777,31 @@ fun RutaDetailDialog(
 
     var senderistaPhone by remember { mutableStateOf("") }
     var senderistaPeso by remember { mutableStateOf<Double?>(null) }
-    LaunchedEffect(Unit) {
+    var effectiveDuracionSegundos by remember(ruta) { mutableStateOf(ruta.duracionSegundos) }
+    LaunchedEffect(ruta) {
         val s = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             db.rutasDao().getSenderistaFlow().first()
         }
         senderistaPhone = s?.telefono ?: ""
         senderistaPeso = s?.peso
+
+        if (effectiveDuracionSegundos <= 0L) {
+            val pts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                db.rutasDao().getPuntosForRuta(ruta.id)
+            }
+            val firstPt = pts.firstOrNull()
+            val lastPt = pts.find { it.esFinRuta } ?: pts.lastOrNull()
+            if (firstPt != null && lastPt != null && firstPt != lastPt) {
+                val format = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm:ss", java.util.Locale.getDefault())
+                try {
+                    val d1 = format.parse(firstPt.fechaHora)
+                    val d2 = format.parse(lastPt.fechaHora)
+                    if (d1 != null && d2 != null && d2.time > d1.time) {
+                        effectiveDuracionSegundos = (d2.time - d1.time) / 1000L
+                    }
+                } catch (e: Exception) { }
+            }
+        }
     }
 
     val isOwnRoute = remember(ruta, senderistaPhone) {
@@ -5956,14 +5975,18 @@ fun RutaDetailDialog(
                 Divider(color = textMuted.copy(alpha = 0.2f))
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Duración y Distancia en Dos Columnas
-                val durStr = if (ruta.duracionSegundos > 0L) {
-                    val hours = ruta.duracionSegundos / 3600
-                    val minutes = (ruta.duracionSegundos % 3600) / 60
+                // Duración, Distancia 3D, Velocidad y Conectividad
+                val durStr = if (effectiveDuracionSegundos > 0L) {
+                    val hours = effectiveDuracionSegundos / 3600
+                    val minutes = (effectiveDuracionSegundos % 3600) / 60
                     String.format(java.util.Locale.US, "%02d:%02d", hours, minutes)
                 } else {
                     "N/A"
                 }
+
+                val velPromedioKmh = if (effectiveDuracionSegundos > 0L && gpsDistanceMeters > 0) {
+                    (gpsDistanceMeters / 1000.0) / (effectiveDuracionSegundos / 3600.0)
+                } else null
 
                 Row(
                     modifier = Modifier
@@ -5982,7 +6005,7 @@ fun RutaDetailDialog(
                         )
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Distancia", fontSize = 11.sp, color = textMuted)
+                        Text("Dist. 3D", fontSize = 11.sp, color = textMuted)
                         Text(
                             text = String.format(java.util.Locale.US, "%.2f kms", gpsDistanceMeters / 1000.0),
                             fontSize = 13.sp,
@@ -5991,14 +6014,37 @@ fun RutaDetailDialog(
                         )
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Conect.", fontSize = 11.sp, color = textMuted)
+                        Text("Vel. Media", fontSize = 11.sp, color = textMuted)
                         Text(
-                            text = String.format(java.util.Locale.US, "%.1f %%", ruta.conectividad),
+                            text = velPromedioKmh?.let { String.format(java.util.Locale.US, "%.1f km/h", it) } ?: "--",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                             color = textColor
                         )
                     }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Renglón de Conectividad centrado con letras amarillas e icono
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Wifi,
+                        contentDescription = "Conectividad",
+                        tint = Color(0xFFFACC15),
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = String.format(java.util.Locale.US, "Conectividad: %.2f%%", ruta.conectividad),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFFACC15)
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))

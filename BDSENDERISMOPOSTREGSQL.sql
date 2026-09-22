@@ -1,232 +1,279 @@
-CREATE SCHEMA "public";
-CREATE SCHEMA "auth";
-CREATE SCHEMA "neon_auth";
-CREATE SCHEMA "pgrst";
-CREATE TABLE "agrupaciones" (
-	"id_agrupacion" varchar(50) PRIMARY KEY,
-	"nombre" varchar(150) NOT NULL,
-	"responsable" varchar(150) NOT NULL,
-	"telefono" varchar(30) NOT NULL,
-	"email" varchar(150) NOT NULL,
-	"fecha_creacion" timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-	"clave" varchar(255)
+-- ==============================================================================
+-- BASE DE DATOS: Rutas Sendero (PostgreSQL / Neon)
+-- Esquema DDL Consolidado y Actualizado
+-- Compatible con: Entidades Android Room (v30) y PostgREST API
+-- ==============================================================================
+
+-- 1. ESQUEMAS
+CREATE SCHEMA IF NOT EXISTS "public";
+CREATE SCHEMA IF NOT EXISTS "auth";
+CREATE SCHEMA IF NOT EXISTS "neon_auth";
+CREATE SCHEMA IF NOT EXISTS "pgrst";
+
+-- ==============================================================================
+-- 2. TABLAS DEL ESQUEMA PÚBLICO (DATOS DE LA APP)
+-- ==============================================================================
+
+-- 2.1 Tabla: agrupaciones
+CREATE TABLE IF NOT EXISTS "agrupaciones" (
+    "id_agrupacion" VARCHAR(50) PRIMARY KEY,
+    "nombre" VARCHAR(150) NOT NULL,
+    "responsable" VARCHAR(150),
+    "telefono" VARCHAR(30),
+    "email" VARCHAR(150),
+    "fecha_creacion" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    "clave" VARCHAR(255)
 );
-CREATE TABLE "frases_dificultad" (
-	"id" varchar(50) PRIMARY KEY,
-	"categoria" varchar(50) NOT NULL,
-	"frase" text NOT NULL
+
+-- 2.2 Tabla: frases_dificultad
+CREATE TABLE IF NOT EXISTS "frases_dificultad" (
+    "id" VARCHAR(50) PRIMARY KEY,
+    "categoria" VARCHAR(50) NOT NULL,
+    "frase" TEXT NOT NULL
 );
-CREATE TABLE "invitaciones_ruta" (
-	"id_invitacion" serial PRIMARY KEY,
-	"id_ruta" varchar(255),
-	"telefono" varchar(50) NOT NULL,
-	"fecha_hora_salida" timestamp NOT NULL,
-	"punto_reunion" varchar(500) NOT NULL,
-	"link_google_maps" varchar(1000),
-	"cooperacion_minima" double precision DEFAULT 0.0,
-	"fecha_limite_registro" timestamp,
-	"fecha_creacion" timestamp DEFAULT CURRENT_TIMESTAMP,
-	"nivel" varchar(50),
-	"instrucciones" text,
-	"latitud" double precision,
-	"longitud" double precision,
-	"nombre_agrupacion" varchar(255)
+
+-- 2.3 Tabla: requisitos_senderismo
+CREATE TABLE IF NOT EXISTS "requisitos_senderismo" (
+    "id" SERIAL PRIMARY KEY,
+    "nivel_codigo" VARCHAR(50) NOT NULL UNIQUE,
+    "nivel_nombre" VARCHAR(100) NOT NULL,
+    "descripcion_terreno" TEXT NOT NULL,
+    "equipo_requerido" TEXT NOT NULL
 );
-CREATE TABLE "participantes_invitacion" (
-	"id_invitacion" integer,
-	"email_senderista" varchar(255),
-	"telefono_senderista" varchar(50) NOT NULL,
-	"cooperacion" double precision DEFAULT 0.0,
-	"fecha_cooperacion" timestamp,
-	"fecha_registro" timestamp DEFAULT CURRENT_TIMESTAMP,
-	CONSTRAINT "participantes_invitacion_pkey" PRIMARY KEY("id_invitacion","email_senderista")
+
+-- 2.4 Tabla: senderistas (Sincronizado con SenderistaEntity Room v30)
+CREATE TABLE IF NOT EXISTS "senderistas" (
+    "email" VARCHAR(150) PRIMARY KEY,
+    "rol" VARCHAR(5) NOT NULL DEFAULT 'S',
+    "telefono" VARCHAR(30) NOT NULL,
+    "nombre" VARCHAR(150) NOT NULL,
+    "sexo" VARCHAR(5) NOT NULL,
+    "fecha_nacimiento" DATE NOT NULL,
+    "id_agrupacion" VARCHAR(50) REFERENCES "agrupaciones"("id_agrupacion") ON DELETE SET NULL,
+    "a_quienes_avisar" TEXT NOT NULL,
+    "a_quien_avisar_telefono1" VARCHAR(30) NOT NULL,
+    "a_quien_avisar_telefono2" VARCHAR(30),
+    "tiene_enfermedad_cronica" VARCHAR(2) NOT NULL DEFAULT 'N',
+    "enfermedad_cronica1" TEXT,
+    "enfermedad_cronica2" TEXT,
+    "tiene_auto" VARCHAR(2) DEFAULT 'N',
+    "direccion" TEXT,
+    "lleva_mascota" VARCHAR(2) DEFAULT 'N',
+    "alergias" TEXT,
+    "tipo_sangre" VARCHAR(10),
+    "seguro_medico" TEXT,
+    "nivel_senderista" VARCHAR(30) DEFAULT 'principiante',
+    "fupdate" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    "id_beacon" VARCHAR(12),
+    "minimo_longitud" DOUBLE PRECISION NOT NULL DEFAULT 4.0,
+    "bloqueado" BOOLEAN DEFAULT FALSE,
+    "consentimiento_terminos" BOOLEAN DEFAULT FALSE,
+    "consentimiento_ficha_medica" BOOLEAN DEFAULT FALSE,
+    "consentimiento_gps_multimedia" BOOLEAN DEFAULT FALSE,
+    "timestamp_consentimiento_utc" BIGINT,
+    "codigo_confianza" VARCHAR(6),
+    "peso" DOUBLE PRECISION,
+    "max_privadas" INTEGER DEFAULT 3
 );
-CREATE TABLE "requisitos_senderismo" (
-	"id" serial PRIMARY KEY,
-	"nivel_codigo" varchar(50) NOT NULL CONSTRAINT "requisitos_senderismo_nivel_codigo_key" UNIQUE,
-	"nivel_nombre" varchar(100) NOT NULL,
-	"descripcion_terreno" text NOT NULL,
-	"equipo_requerido" text NOT NULL
+
+-- 2.5 Tabla: rutas (Sincronizado con RutaEntity Room v30)
+CREATE TABLE IF NOT EXISTS "rutas" (
+    "id" VARCHAR(10) PRIMARY KEY,
+    "nombre" VARCHAR(150) NOT NULL,
+    "fecha" DATE NOT NULL,
+    "agrupacion" VARCHAR(100) NOT NULL DEFAULT 'MH',
+    "latitud_orig" DOUBLE PRECISION NOT NULL,
+    "longitud_orig" DOUBLE PRECISION NOT NULL,
+    "telefono_creador" VARCHAR(30) NOT NULL,
+    "descripcion" TEXT NOT NULL,
+    "distancia_gps" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    "distancia_beacons" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    "fecha_hora_inicio" TIMESTAMP WITH TIME ZONE,
+    "fecha_hora_fin" TIMESTAMP WITH TIME ZONE,
+    "duracion_segundos" BIGINT NOT NULL DEFAULT 0,
+    "desnivel_positivo" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    "desnivel_negativo" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    "contador_subidas" INTEGER NOT NULL DEFAULT 0,
+    "contador_bajadas" INTEGER NOT NULL DEFAULT 0,
+    "datos_encriptados" TEXT,
+    "fecha_registro_nube" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    "email_creador" VARCHAR(150) REFERENCES "senderistas"("email") ON DELETE CASCADE,
+    "conectividad" REAL NOT NULL DEFAULT 0.0,
+    "codigo" VARCHAR(10) NOT NULL DEFAULT '',
+    "publico" BOOLEAN NOT NULL DEFAULT FALSE
 );
-CREATE TABLE "rutas" (
-	"id" varchar(10) PRIMARY KEY,
-	"nombre" varchar(150) NOT NULL,
-	"fecha" date NOT NULL,
-	"agrupacion" varchar(100) NOT NULL,
-	"latitud_orig" double precision NOT NULL,
-	"longitud_orig" double precision NOT NULL,
-	"telefono_creador" varchar(30) NOT NULL,
-	"descripcion" text NOT NULL,
-	"distancia_gps" double precision DEFAULT 0.0 NOT NULL,
-	"distancia_beacons" double precision DEFAULT 0.0 NOT NULL,
-	"fecha_hora_inicio" timestamp with time zone,
-	"fecha_hora_fin" timestamp with time zone,
-	"duracion_segundos" bigint DEFAULT 0 NOT NULL,
-	"desnivel_positivo" double precision DEFAULT 0.0 NOT NULL,
-	"desnivel_negativo" double precision DEFAULT 0.0 NOT NULL,
-	"contador_subidas" integer DEFAULT 0 NOT NULL,
-	"contador_bajadas" integer DEFAULT 0 NOT NULL,
-	"datos_encriptados" text,
-	"fecha_registro_nube" timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-	"email_creador" varchar(150),
-	"conectividad" real DEFAULT 0.0 NOT NULL,
-	"codigo" varchar(5) DEFAULT '' NOT NULL,
-	"publico" boolean DEFAULT false NOT NULL
+
+-- 2.6 Tabla: invitaciones_ruta
+CREATE TABLE IF NOT EXISTS "invitaciones_ruta" (
+    "id_invitacion" SERIAL PRIMARY KEY,
+    "id_ruta" VARCHAR(10) REFERENCES "rutas"("id") ON DELETE CASCADE,
+    "telefono" VARCHAR(50) NOT NULL,
+    "fecha_hora_salida" TIMESTAMP NOT NULL,
+    "punto_reunion" VARCHAR(500) NOT NULL,
+    "link_google_maps" VARCHAR(1000),
+    "cooperacion_minima" DOUBLE PRECISION DEFAULT 0.0,
+    "fecha_limite_registro" TIMESTAMP,
+    "fecha_creacion" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    "nivel" VARCHAR(50),
+    "instrucciones" TEXT,
+    "latitud" DOUBLE PRECISION,
+    "longitud" DOUBLE PRECISION,
+    "nombre_agrupacion" VARCHAR(255)
 );
-CREATE TABLE "senderistas" (
-	"email" varchar(150) PRIMARY KEY,
-	"rol" varchar(5) DEFAULT 'S' NOT NULL,
-	"telefono" varchar(30) NOT NULL,
-	"nombre" varchar(150) NOT NULL,
-	"sexo" varchar(5) NOT NULL,
-	"id_agrupacion" varchar(50),
-	"fecha_nacimiento" date NOT NULL,
-	"a_quienes_avisar" text NOT NULL,
-	"a_quien_avisar_telefono1" varchar(30) NOT NULL,
-	"a_quien_avisar_telefono2" varchar(30),
-	"tiene_enfermedad_cronica" varchar(2) DEFAULT 'N' NOT NULL,
-	"enfermedad_cronica1" text,
-	"enfermedad_cronica2" text,
-	"tiene_auto" varchar(2) DEFAULT 'N',
-	"direccion" text,
-	"lleva_mascota" varchar(2) DEFAULT 'N',
-	"alergias" text,
-	"tipo_sangre" varchar(10),
-	"seguro_medico" text,
-	"nivel_senderista" varchar(30) DEFAULT 'principiante',
-	"fupdate" timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-	"id_beacon" varchar(12)
+
+-- 2.7 Tabla: participantes_invitacion
+CREATE TABLE IF NOT EXISTS "participantes_invitacion" (
+    "id_invitacion" INTEGER NOT NULL REFERENCES "invitaciones_ruta"("id_invitacion") ON DELETE CASCADE,
+    "email_senderista" VARCHAR(255) NOT NULL REFERENCES "senderistas"("email") ON DELETE CASCADE,
+    "telefono_senderista" VARCHAR(50) NOT NULL,
+    "cooperacion" DOUBLE PRECISION DEFAULT 0.0,
+    "fecha_cooperacion" TIMESTAMP,
+    "fecha_registro" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "participantes_invitacion_pkey" PRIMARY KEY ("id_invitacion", "email_senderista")
 );
-CREATE TABLE "neon_auth"."account" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"accountId" text NOT NULL,
-	"providerId" text NOT NULL,
-	"userId" uuid NOT NULL,
-	"accessToken" text,
-	"refreshToken" text,
-	"idToken" text,
-	"accessTokenExpiresAt" timestamp with time zone,
-	"refreshTokenExpiresAt" timestamp with time zone,
-	"scope" text,
-	"password" text,
-	"createdAt" timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	"updatedAt" timestamp with time zone NOT NULL
+
+-- ==============================================================================
+-- 3. ESQUEMA NEON AUTH (AUTENTICACIÓN INTEGRADA DE NEON)
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS "neon_auth"."user" (
+    "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "name" TEXT NOT NULL,
+    "email" TEXT NOT NULL UNIQUE,
+    "emailVerified" BOOLEAN NOT NULL,
+    "image" TEXT,
+    "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "role" TEXT,
+    "banned" BOOLEAN,
+    "banReason" TEXT,
+    "banExpires" TIMESTAMP WITH TIME ZONE
 );
-CREATE TABLE "neon_auth"."invitation" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"organizationId" uuid NOT NULL,
-	"email" text NOT NULL,
-	"role" text,
-	"status" text NOT NULL,
-	"expiresAt" timestamp with time zone NOT NULL,
-	"createdAt" timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	"inviterId" uuid NOT NULL
+
+CREATE TABLE IF NOT EXISTS "neon_auth"."session" (
+    "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "expiresAt" TIMESTAMP WITH TIME ZONE NOT NULL,
+    "token" TEXT NOT NULL UNIQUE,
+    "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL,
+    "ipAddress" TEXT,
+    "userAgent" TEXT,
+    "userId" UUID NOT NULL REFERENCES "neon_auth"."user"("id") ON DELETE CASCADE,
+    "impersonatedBy" TEXT,
+    "activeOrganizationId" TEXT
 );
-CREATE TABLE "neon_auth"."jwks" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"publicKey" text NOT NULL,
-	"privateKey" text NOT NULL,
-	"createdAt" timestamp with time zone NOT NULL,
-	"expiresAt" timestamp with time zone
+
+CREATE TABLE IF NOT EXISTS "neon_auth"."account" (
+    "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "accountId" TEXT NOT NULL,
+    "providerId" TEXT NOT NULL,
+    "userId" UUID NOT NULL REFERENCES "neon_auth"."user"("id") ON DELETE CASCADE,
+    "accessToken" TEXT,
+    "refreshToken" TEXT,
+    "idToken" TEXT,
+    "accessTokenExpiresAt" TIMESTAMP WITH TIME ZONE,
+    "refreshTokenExpiresAt" TIMESTAMP WITH TIME ZONE,
+    "scope" TEXT,
+    "password" TEXT,
+    "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL
 );
-CREATE TABLE "neon_auth"."member" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"organizationId" uuid NOT NULL,
-	"userId" uuid NOT NULL,
-	"role" text NOT NULL,
-	"createdAt" timestamp with time zone NOT NULL
+
+CREATE TABLE IF NOT EXISTS "neon_auth"."organization" (
+    "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "name" TEXT NOT NULL,
+    "slug" TEXT NOT NULL UNIQUE,
+    "logo" TEXT,
+    "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL,
+    "metadata" TEXT
 );
-CREATE TABLE "neon_auth"."organization" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"name" text NOT NULL,
-	"slug" text NOT NULL CONSTRAINT "organization_slug_key" UNIQUE,
-	"logo" text,
-	"createdAt" timestamp with time zone NOT NULL,
-	"metadata" text
+
+CREATE TABLE IF NOT EXISTS "neon_auth"."member" (
+    "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "organizationId" UUID NOT NULL REFERENCES "neon_auth"."organization"("id") ON DELETE CASCADE,
+    "userId" UUID NOT NULL REFERENCES "neon_auth"."user"("id") ON DELETE CASCADE,
+    "role" TEXT NOT NULL,
+    "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL
 );
-CREATE TABLE "neon_auth"."project_config" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"name" text NOT NULL,
-	"endpoint_id" text NOT NULL CONSTRAINT "project_config_endpoint_id_key" UNIQUE,
-	"created_at" timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	"trusted_origins" jsonb NOT NULL,
-	"social_providers" jsonb NOT NULL,
-	"email_provider" jsonb,
-	"email_and_password" jsonb,
-	"allow_localhost" boolean NOT NULL,
-	"plugin_configs" jsonb,
-	"webhook_config" jsonb
+
+CREATE TABLE IF NOT EXISTS "neon_auth"."invitation" (
+    "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "organizationId" UUID NOT NULL REFERENCES "neon_auth"."organization"("id") ON DELETE CASCADE,
+    "email" TEXT NOT NULL,
+    "role" TEXT,
+    "status" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP WITH TIME ZONE NOT NULL,
+    "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "inviterId" UUID NOT NULL REFERENCES "neon_auth"."user"("id") ON DELETE CASCADE
 );
-CREATE TABLE "neon_auth"."session" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"expiresAt" timestamp with time zone NOT NULL,
-	"token" text NOT NULL CONSTRAINT "session_token_key" UNIQUE,
-	"createdAt" timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	"updatedAt" timestamp with time zone NOT NULL,
-	"ipAddress" text,
-	"userAgent" text,
-	"userId" uuid NOT NULL,
-	"impersonatedBy" text,
-	"activeOrganizationId" text
+
+CREATE TABLE IF NOT EXISTS "neon_auth"."jwks" (
+    "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "publicKey" TEXT NOT NULL,
+    "privateKey" TEXT NOT NULL,
+    "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL,
+    "expiresAt" TIMESTAMP WITH TIME ZONE
 );
-CREATE TABLE "neon_auth"."user" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"name" text NOT NULL,
-	"email" text NOT NULL CONSTRAINT "user_email_key" UNIQUE,
-	"emailVerified" boolean NOT NULL,
-	"image" text,
-	"createdAt" timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	"updatedAt" timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	"role" text,
-	"banned" boolean,
-	"banReason" text,
-	"banExpires" timestamp with time zone
+
+CREATE TABLE IF NOT EXISTS "neon_auth"."project_config" (
+    "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "name" TEXT NOT NULL,
+    "endpoint_id" TEXT NOT NULL UNIQUE,
+    "created_at" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updated_at" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "trusted_origins" JSONB NOT NULL,
+    "social_providers" JSONB NOT NULL,
+    "email_provider" JSONB,
+    "email_and_password" JSONB,
+    "allow_localhost" BOOLEAN NOT NULL,
+    "plugin_configs" JSONB,
+    "webhook_config" JSONB
 );
-CREATE TABLE "neon_auth"."verification" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	"identifier" text NOT NULL,
-	"value" text NOT NULL,
-	"expiresAt" timestamp with time zone NOT NULL,
-	"createdAt" timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	"updatedAt" timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+
+CREATE TABLE IF NOT EXISTS "neon_auth"."verification" (
+    "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "identifier" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP WITH TIME ZONE NOT NULL,
+    "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL
 );
-CREATE UNIQUE INDEX "agrupaciones_pkey" ON "agrupaciones" ("id_agrupacion");
-CREATE UNIQUE INDEX "frases_dificultad_pkey" ON "frases_dificultad" ("id");
-CREATE UNIQUE INDEX "invitaciones_ruta_pkey" ON "invitaciones_ruta" ("id_invitacion");
-CREATE UNIQUE INDEX "participantes_invitacion_pkey" ON "participantes_invitacion" ("id_invitacion","email_senderista");
-CREATE UNIQUE INDEX "requisitos_senderismo_nivel_codigo_key" ON "requisitos_senderismo" ("nivel_codigo");
-CREATE UNIQUE INDEX "requisitos_senderismo_pkey" ON "requisitos_senderismo" ("id");
-CREATE UNIQUE INDEX "rutas_pkey" ON "rutas" ("id");
-CREATE UNIQUE INDEX "senderistas_pkey" ON "senderistas" ("email");
-CREATE UNIQUE INDEX "account_pkey" ON "neon_auth"."account" ("id");
-CREATE INDEX "account_userId_idx" ON "neon_auth"."account" ("userId");
-CREATE INDEX "invitation_email_idx" ON "neon_auth"."invitation" ("email");
-CREATE INDEX "invitation_organizationId_idx" ON "neon_auth"."invitation" ("organizationId");
-CREATE UNIQUE INDEX "invitation_pkey" ON "neon_auth"."invitation" ("id");
-CREATE UNIQUE INDEX "jwks_pkey" ON "neon_auth"."jwks" ("id");
-CREATE INDEX "member_organizationId_idx" ON "neon_auth"."member" ("organizationId");
-CREATE UNIQUE INDEX "member_pkey" ON "neon_auth"."member" ("id");
-CREATE INDEX "member_userId_idx" ON "neon_auth"."member" ("userId");
-CREATE UNIQUE INDEX "organization_pkey" ON "neon_auth"."organization" ("id");
-CREATE UNIQUE INDEX "organization_slug_key" ON "neon_auth"."organization" ("slug");
-CREATE UNIQUE INDEX "organization_slug_uidx" ON "neon_auth"."organization" ("slug");
-CREATE UNIQUE INDEX "project_config_endpoint_id_key" ON "neon_auth"."project_config" ("endpoint_id");
-CREATE UNIQUE INDEX "project_config_pkey" ON "neon_auth"."project_config" ("id");
-CREATE UNIQUE INDEX "session_pkey" ON "neon_auth"."session" ("id");
-CREATE UNIQUE INDEX "session_token_key" ON "neon_auth"."session" ("token");
-CREATE INDEX "session_userId_idx" ON "neon_auth"."session" ("userId");
-CREATE UNIQUE INDEX "user_email_key" ON "neon_auth"."user" ("email");
-CREATE UNIQUE INDEX "user_pkey" ON "neon_auth"."user" ("id");
-CREATE INDEX "verification_identifier_idx" ON "neon_auth"."verification" ("identifier");
-CREATE UNIQUE INDEX "verification_pkey" ON "neon_auth"."verification" ("id");
-ALTER TABLE "invitaciones_ruta" ADD CONSTRAINT "invitaciones_ruta_id_ruta_fkey" FOREIGN KEY ("id_ruta") REFERENCES "rutas"("id") ON DELETE CASCADE;
-ALTER TABLE "participantes_invitacion" ADD CONSTRAINT "participantes_invitacion_email_senderista_fkey" FOREIGN KEY ("email_senderista") REFERENCES "senderistas"("email") ON DELETE CASCADE;
-ALTER TABLE "participantes_invitacion" ADD CONSTRAINT "participantes_invitacion_id_invitacion_fkey" FOREIGN KEY ("id_invitacion") REFERENCES "invitaciones_ruta"("id_invitacion") ON DELETE CASCADE;
-ALTER TABLE "rutas" ADD CONSTRAINT "rutas_email_creador_fkey" FOREIGN KEY ("email_creador") REFERENCES "senderistas"("email") ON DELETE CASCADE;
-ALTER TABLE "neon_auth"."account" ADD CONSTRAINT "account_userId_fkey" FOREIGN KEY ("userId") REFERENCES "neon_auth"."user"("id") ON DELETE CASCADE;
-ALTER TABLE "neon_auth"."invitation" ADD CONSTRAINT "invitation_inviterId_fkey" FOREIGN KEY ("inviterId") REFERENCES "neon_auth"."user"("id") ON DELETE CASCADE;
-ALTER TABLE "neon_auth"."invitation" ADD CONSTRAINT "invitation_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "neon_auth"."organization"("id") ON DELETE CASCADE;
-ALTER TABLE "neon_auth"."member" ADD CONSTRAINT "member_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "neon_auth"."organization"("id") ON DELETE CASCADE;
-ALTER TABLE "neon_auth"."member" ADD CONSTRAINT "member_userId_fkey" FOREIGN KEY ("userId") REFERENCES "neon_auth"."user"("id") ON DELETE CASCADE;
-ALTER TABLE "neon_auth"."session" ADD CONSTRAINT "session_userId_fkey" FOREIGN KEY ("userId") REFERENCES "neon_auth"."user"("id") ON DELETE CASCADE;
+
+-- ==============================================================================
+-- 4. ÍNDICES DE RENDIMIENTO
+-- ==============================================================================
+
+CREATE INDEX IF NOT EXISTS "idx_senderistas_telefono" ON "senderistas" ("telefono");
+CREATE INDEX IF NOT EXISTS "idx_senderistas_id_beacon" ON "senderistas" ("id_beacon");
+CREATE INDEX IF NOT EXISTS "idx_rutas_telefono_creador" ON "rutas" ("telefono_creador");
+CREATE INDEX IF NOT EXISTS "idx_rutas_email_creador" ON "rutas" ("email_creador");
+CREATE INDEX IF NOT EXISTS "idx_rutas_fecha_registro_nube" ON "rutas" ("fecha_registro_nube" DESC);
+CREATE INDEX IF NOT EXISTS "idx_invitaciones_fecha_salida" ON "invitaciones_ruta" ("fecha_hora_salida");
+CREATE INDEX IF NOT EXISTS "idx_participantes_email" ON "participantes_invitacion" ("email_senderista");
+CREATE INDEX IF NOT EXISTS "idx_neon_auth_session_user" ON "neon_auth"."session" ("userId");
+CREATE INDEX IF NOT EXISTS "idx_neon_auth_account_user" ON "neon_auth"."account" ("userId");
+
+-- ==============================================================================
+-- 5. CONFIGURACIÓN DE SEGURIDAD Y ROLES PARA POSTGREST
+-- ==============================================================================
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'web_anon') THEN
+    CREATE ROLE web_anon NOLOGIN;
+  END IF;
+END
+$$;
+
+-- Permisos de lectura/escritura en el esquema public para la API REST
+GRANT USAGE ON SCHEMA public TO web_anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO web_anon;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO web_anon;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO web_anon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO web_anon;
+
+-- Bloqueo de seguridad: la API no debe exponer las tablas internas de auth
+REVOKE ALL ON SCHEMA neon_auth FROM web_anon;
+REVOKE ALL ON SCHEMA auth FROM web_anon;
+REVOKE ALL ON SCHEMA pgrst FROM web_anon;

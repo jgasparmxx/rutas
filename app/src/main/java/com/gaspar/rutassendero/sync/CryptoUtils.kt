@@ -5,6 +5,37 @@ import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
+/**
+ * Módulo Criptográfico de Seguridad para Rutas Privadas y Sincronización en Nube.
+ *
+ * =========================================================================================
+ * AUTORÍA CIENTÍFICA Y RECONOCIMIENTO CRIPTOGRÁFICO:
+ * =========================================================================================
+ * 1. Algoritmo Cifrador de Bloque Rijndael (AES-256):
+ *    - Diseñado por los criptógrafos belgas Vincent Rijmen y Joan Daemen (1998).
+ *    - Seleccionado por el NIST (National Institute of Standards and Technology) en octubre de 2000
+ *      tras un proceso abierto internacional de 3 años y estandarizado como FIPS PUB 197.
+ *    - Utiliza una red de sustitución-permutación (SPN) con 14 rondas para claves de 256 bits,
+ *      resistente a criptoanálisis lineal y diferencial.
+ *
+ * 2. Modo de Autenticación y Cifrado Galois/Counter Mode (GCM):
+ *    - Diseñado por David A. McGrew y John Viega (2004, Cisco Systems).
+ *    - Combina el modo contador (Counter Mode - CTR) para confidencialidad con un código
+ *      de autenticación de mensajes (GMAC) basado en la aritmética de cuerpos finitos
+ *      (Galois Fields GF(2¹²⁸)), formulados históricamente por el matemático francés Évariste Galois (1832).
+ *    - Estandarizado en NIST SP 800-38D (2007).
+ *
+ * =========================================================================================
+ * JUSTIFICACIÓN DE SU USO EN LA APLICACIÓN:
+ * - Cifrado Autenticado (AEAD): A diferencia de modos antiguos como CBC, GCM no solo cifra
+ *   los datos, sino que genera una etiqueta de autenticación (Tag de 128 bits). Esto garantiza
+ *   dos propiedades simultáneas:
+ *     1. Confidencialidad: Nadie puede leer las coordenadas GPS de rutas privadas en tránsito ni en reposo.
+ *     2. Integridad y No-Repudio: Si un byte es alterado accidental o maliciosamente en la nube,
+ *        el descifrado falla inmediatamente por discrepancia en el polinomio de Galois, evitando
+ *        inyecciones o rutas corruptas.
+ * =========================================================================================
+ */
 object CryptoUtils {
     private const val ALGORITHM = "AES/GCM/NoPadding"
     private const val TAG_LENGTH_BITS = 128

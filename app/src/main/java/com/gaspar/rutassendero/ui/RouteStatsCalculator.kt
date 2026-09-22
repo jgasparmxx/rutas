@@ -12,11 +12,43 @@ data class ElevationStats(
     val contadorBajadas: Int
 )
 
+/**
+ * Motor de Cálculo Estadístico, Geodésico y Topográfico de Rutas.
+ *
+ * =========================================================================================
+ * AUTORÍA CIENTÍFICA Y RECONOCIMIENTO DE ALGORITMOS:
+ * =========================================================================================
+ * 1. Geodesia de Superficie Terrestre (Fórmula de Haversine & Modelo WGS-84):
+ *    - James Inman (1835): Publicó la formulación trigonométrica del "Semiverseno" (Haversine)
+ *      para calcular la distancia geodésica del círculo máximo entre dos coordenadas esféricas:
+ *      hav(d/R) = hav(Δlat) + cos(lat1) · cos(lat2) · hav(Δlon)
+ *    - Estandarizado en geodesia satelital moderna mediante el elipsoide WGS-84 (DoD / NGA, 1984).
+ *
+ * 2. Distancia Euclidiana Tridimensional (Pitágoras & Geometría Analítica):
+ *    - Pitágoras de Samos (~570–495 a.C.) y René Descartes (1637, Geometría Analítica):
+ *      Generalizado al espacio métrico tridimensional 3D (R³):
+ *      Distancia_3D = √( Distancia_2D² + ΔAltitud² )
+ *    - Permite calcular la hipotenusa verdadera del sendero en rampas, escaleras naturales
+ *      y laderas de montaña, superando el error de proyección cenital plana del GPS convencional.
+ *
+ * 3. Filtrado Espacial por Umbral de Banda Muerta (Shannon & Nyquist):
+ *    - Claude Shannon (1948) y Norbert Wiener (1949) en procesamiento de señales:
+ *      Aplica un umbral de supresión de jitter (< 1.5 metros) para rechazar el ruido estático
+ *      ocasionado por la dilución de precisión geométrica (GDOP) del receptor GPS.
+ *
+ * 4. Integración Discreta Altimétrica (Sumas de Riemann):
+ *    - Bernhard Riemann (1854): Cálculo de desniveles positivos/negativos acumulados discretos
+ *      (Δh = ∑ max(0, h_{i+1} - h_i)) a lo largo del perfil topográfico de la traza.
+ * =========================================================================================
+ */
 object RouteStatsCalculator {
 
     /**
      * Calcula la distancia tridimensional (3D) acumulada entre beacons (puntos registrados),
-     * considerando la hipotenusa con el desnivel real del terreno.
+     * considerando la hipotenusa euclidiana con el desnivel real del terreno.
+     *
+     * @param points Lista cronológica de hitos o puntos de control registrados.
+     * @return Distancia acumulada real en metros considerando la orografía.
      */
     fun calculateBeaconDistance(points: List<PuntoRutaEntity>): Float {
         if (points.size < 2) return 0f

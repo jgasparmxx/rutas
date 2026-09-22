@@ -270,6 +270,23 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
 
     override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) {}
 
+    /**
+     * Discriminación Biomecánica de Locomoción Humana vs. Transporte Motorizado.
+     *
+     * FUNDAMENTO CIENTÍFICO Y RECONOCIMIENTO DE AUTORÍA:
+     * - Verne T. Inman, Henry Ralston y Frank Todd (1981, "Human Walking"):
+     *   Establecieron los límites fisiológicos y cinéticos de la marcha humana natural.
+     *   La velocidad máxima de marcha a pie sostenida rara vez supera los 2.22 m/s (8.0 km/h);
+     *   por encima de este umbral ocurre la transición energética obligatoria hacia la carrera
+     *   (Margaria & Cavagna, 1964).
+     * - Velocidades sostenidas superiores a 8.33 m/s (30 km/h) combinadas con inactividad en el
+     *   sensor inercial podométrico (> 60 segundos sin cadencia de pasos) demuestran con certeza
+     *   estadística el uso de un vehículo motorizado.
+     *
+     * JUSTIFICACIÓN:
+     * Evita la contaminación de estadísticas de sendero (calorías, tiempos y trazado de montaña)
+     * si el usuario sube a un auto, autobús o lancha y olvida pausar la grabación.
+     */
     private fun evaluateVehicleState(location: Location) {
         // Solo evaluar la velocidad si hay una ruta seleccionada y que esté en proceso (no finalizada)
         val ruta = _selectedRoute.value
@@ -598,6 +615,11 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
         }
 
         // 3. Anuncio de dirección relativo y vibración
+        // FUNDAMENTO CIENTÍFICO: Trigonometría Esférica y Rumbo de Ortodrómica
+        // Formulado históricamente por el matemático portugués Pedro Nunes (1537, "Tratado da Sphera")
+        // y Gerardus Mercator (1569). Calcula el azimut directo (θ) entre dos puntos en la esfera:
+        // θ = atan2(sin(Δλ)·cos(φ2), cos(φ1)·sin(φ2) - sin(φ1)·cos(φ2)·cos(Δλ))
+        // La diferencia (targetBearing - userBearing) produce la orientación angular relativa al caminante.
         val targetBearing = userLoc.bearingTo(targetLoc)
         if (userLoc.hasBearing() && userLoc.speed > 0.5f) {
             val userBearing = userLoc.bearing
@@ -650,7 +672,17 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             }
         }
 
-        // 4. Efecto Doppler y Llegada normal al objetivo actual
+        // 4. Efecto Doppler Acústico y Llegada al Objetivo Actual
+        // FUNDAMENTO CIENTÍFICO Y RECONOCIMIENTO:
+        // - Christian Andreas Doppler (1842, "Über das farbige Licht der Doppelsterne"):
+        //   Estableció la variación de frecuencia percibida cuando la distancia relativa entre emisor
+        //   y receptor cambia.
+        // - En esta app se implementa una modulación acústica inversa inspirada en el sonar / ecolocalización:
+        //   A medida que el senderista reduce la distancia hacia el hito objetivo (r -> 0), el periodo
+        //   entre pulsos disminuye linealmente (de 1500ms a 150ms), aumentando la frecuencia de repetición:
+        //   f_auditiva ∝ 1 / (T_max - k · (r_max - r))
+        // - JUSTIFICACIÓN: Permite al montañista saber si se aproxima al sendero correcto sin tener que
+        //   mirar la pantalla del móvil en zonas técnicas, pendientes pronunciadas o noche cerrada.
         if (distance <= tolerance) {
             // Llegamos al punto de ruta actual
             currentBeepIntervalMs = -1

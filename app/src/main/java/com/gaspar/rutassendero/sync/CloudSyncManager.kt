@@ -208,27 +208,6 @@ object CloudSyncManager {
     }
 
     /**
-     * Descarga las estadísticas de rutas mediante la vista en PostgREST.
-     */
-    suspend fun descargarEstadisticasRutas(): List<Map<String, Any>> = withContext(Dispatchers.IO) {
-        val stats = mutableListOf<Map<String, Any>>()
-        try {
-            val jsonStr = executeGet("vista_estadisticas_rutas?select=nombre,total_participantes")
-            val array = JSONArray(jsonStr)
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
-                stats.add(mapOf(
-                    "nombre" to obj.optString("nombre", "Desconocida"),
-                    "total_participantes" to obj.optInt("total_participantes", 0)
-                ))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error descargando estadísticas de rutas: ${e.message}", e)
-        }
-        stats
-    }
-
-    /**
      * Descarga las agrupaciones disponibles desde PostgREST.
      */
     suspend fun descargarAgrupaciones(): List<AgrupacionEntity> = withContext(Dispatchers.IO) {
@@ -406,10 +385,12 @@ object CloudSyncManager {
         } catch (e: Throwable) {
             System.currentTimeMillis()
         }
+        val rawRol = obj.optString("rol", "S")
+        val normalizedRol = if (rawRol.equals("G", ignoreCase = true)) "G" else rawRol.uppercase()
 
         return SenderistaEntity(
             email = obj.getString("email"),
-            rol = obj.optString("rol", "S"),
+            rol = normalizedRol,
             telefono = obj.optString("telefono", ""),
             nombre = obj.optString("nombre", ""),
             sexo = obj.optString("sexo", ""),

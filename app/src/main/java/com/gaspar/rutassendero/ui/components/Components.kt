@@ -920,7 +920,8 @@ fun SelectRutaDialog(
     onDismiss: () -> Unit
 ) {
     var showAll by remember { mutableStateOf(false) }
-    var activeTab by remember { mutableStateOf(if (senderistaRol == "G") 0 else 1) } // 0: Mis Rutas, 1: Otras Rutas
+    val isGuia = senderistaRol.equals("G", ignoreCase = true)
+    var activeTab by remember { mutableStateOf(if (isGuia) 0 else 1) } // 0: Mis Rutas, 1: Otras Rutas
     var rutaToDeleteConfirm by remember { mutableStateOf<RutaEntity?>(null) }
 
     // Helper para comparar números telefónicos de manera robusta
@@ -988,7 +989,7 @@ fun SelectRutaDialog(
                         .background(ColorTekinsCardMuted, RoundedCornerShape(8.dp))
                         .padding(2.dp)
                 ) {
-                    if (senderistaRol == "G") {
+                    if (isGuia) {
                         TabButton(
                             text = "Mis Rutas",
                             isSelected = activeTab == 0,
@@ -4870,6 +4871,62 @@ fun SenderistaDialog(
     var pesoStr by remember(currentSenderista?.peso) { mutableStateOf(currentSenderista?.peso?.let { if (it == it.toLong().toDouble()) it.toLong().toString() else it.toString() } ?: "") }
     var idAgrupacion by remember(currentSenderista) { mutableStateOf(currentSenderista?.idAgrupacion?.takeIf { it.isNotBlank() } ?: "MH") }
     var showAgrupacionMenu by remember { mutableStateOf(false) }
+    var cloudRecovered by remember { mutableStateOf(false) }
+
+    LaunchedEffect(email, telefono) {
+        if (currentSenderista == null && !cloudRecovered) {
+            val cleanEmail = email.trim()
+            val cleanPhone = telefono.filter { it.isDigit() }
+            if (cleanEmail.contains("@") && cleanEmail.contains(".") && cleanPhone.length >= 10) {
+                try {
+                    val cloudSenderista = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.gaspar.rutassendero.sync.CloudSyncManager.fetchSenderistaByEmail(cleanEmail)
+                    }
+                    if (cloudSenderista != null) {
+                        val cloudPhoneDigits = cloudSenderista.telefono.filter { it.isDigit() }
+                        val matches = if (cloudPhoneDigits.length >= 10 && cleanPhone.length >= 10) {
+                            cloudPhoneDigits.takeLast(10) == cleanPhone.takeLast(10)
+                        } else {
+                            cloudPhoneDigits == cleanPhone
+                        }
+                        if (matches) {
+                            cloudRecovered = true
+                            nombre = cloudSenderista.nombre
+                            rol = if (cloudSenderista.rol.equals("G", ignoreCase = true)) "G" else cloudSenderista.rol.uppercase()
+                            sexo = cloudSenderista.sexo
+                            
+                            val cParts = cloudSenderista.fechaNacimiento.split(Regex("[/\\-]"))
+                            if (cParts.size == 3) {
+                                val cLegacy = cParts[0].length == 4
+                                ano = if (cLegacy) cParts[0] else cParts[2]
+                                mes = cParts[1]
+                                dia = if (cLegacy) cParts[2] else cParts[0]
+                            }
+                            aQuienesAvisar = cloudSenderista.aQuienesAvisar
+                            aQuienAvisarTelefono1 = cloudSenderista.aQuienAvisarTelefono1
+                            aQuienAvisarTelefono2 = cloudSenderista.aQuienAvisarTelefono2 ?: ""
+                            tieneEnfermedadCronica = cloudSenderista.tieneEnfermedadCronica == "S"
+                            enfermedadCronica1 = cloudSenderista.enfermedadCronica1 ?: ""
+                            enfermedadCronica2 = cloudSenderista.enfermedadCronica2 ?: ""
+                            tieneAuto = cloudSenderista.tieneAuto == "S"
+                            direccion = cloudSenderista.direccion ?: ""
+                            llevaMascota = cloudSenderista.llevaMascota == "S"
+                            alergias = cloudSenderista.alergias ?: ""
+                            tipoSangre = cloudSenderista.tipoSangre ?: ""
+                            seguroMedico = cloudSenderista.seguroMedico ?: ""
+                            nivelSenderista = cloudSenderista.nivelSenderista
+                            codigoConfianza = cloudSenderista.codigoConfianza ?: ""
+                            pesoStr = cloudSenderista.peso?.let { if (it == it.toLong().toDouble()) it.toLong().toString() else it.toString() } ?: ""
+                            idAgrupacion = cloudSenderista.idAgrupacion?.takeIf { it.isNotBlank() } ?: "MH"
+                            Toast.makeText(context, "Se recuperaron los datos de la nube para $cleanEmail.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("SenderistaDialog", "Error auto-recuperando datos: ${e.message}")
+                }
+            }
+        }
+    }
 
     LaunchedEffect(nombre) {
         if (codigoConfianza.isBlank() && nombre.isNotBlank()) {
@@ -5675,9 +5732,10 @@ fun SenderistaDialog(
                                 return@Button
                             }
 
+                            val normalizedRol = if (rol.equals("G", ignoreCase = true)) "G" else if (rol.isBlank()) "S" else rol.trim().uppercase()
                             val profile = SenderistaEntity(
                                 email = email.trim(),
-                                rol = if (rol.isBlank()) "S" else rol.trim(),
+                                rol = normalizedRol,
                                 telefono = telefono.trim(),
                                 nombre = nombre.trim(),
                                 sexo = sexo,
@@ -7765,197 +7823,5 @@ fun UpcomingOutingWarningDialog(
     )
 }
 
-
-
-
-
-
-@Composable
-fun EstadisticasRutasDialog(
-    viewModel: com.gaspar.rutassendero.ui.RutasViewModel,
-    onDismiss: () -> Unit
-) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val statsList by viewModel.routeStatsList.collectAsState()
-    val loading by viewModel.loadingRouteStats.collectAsState()
-
-    var activeTab by remember { mutableStateOf(0) } // 0: Lista, 1: Gr�fica
-
-    LaunchedEffect(Unit) {
-        viewModel.fetchRouteStats()
-    }
-
-    androidx.compose.ui.window.Dialog(
-        onDismissRequest = onDismiss,
-        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            shape = RoundedCornerShape(24.dp),
-            color = ColorTekinsDarkBg,
-            border = BorderStroke(1.dp, ColorTekinsAccent.copy(alpha = 0.3f))
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Estadísticas de Rutas",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = ColorTextoPrincipal
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = ColorTextoSecundario)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(44.dp)
-                        .background(ColorTekinsCardBg, RoundedCornerShape(12.dp))
-                        .padding(4.dp)
-                ) {
-                    TabButton(
-                        text = "Lista",
-                        isSelected = activeTab == 0,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        activeTab = 0
-                    }
-                    TabButton(
-                        text = "Gráfica (Top 10)",
-                        isSelected = activeTab == 1,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        activeTab = 1
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                if (loading) {
-                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = ColorTekinsAccent)
-                    }
-                } else if (statsList.isEmpty()) {
-                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = "No hay estadísticas disponibles.",
-                            color = ColorTextoSecundario,
-                            fontSize = 14.sp,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                } else {
-                    if (activeTab == 0) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            statsList.forEachIndexed { index, stat ->
-                                val nombre = stat["nombre"] as? String ?: "Desconocida"
-                                val participantes = stat["total_participantes"] as? Int ?: 0
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 12.dp, horizontal = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "${index + 1}.",
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = ColorTekinsAccent,
-                                        modifier = Modifier.width(30.dp)
-                                    )
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = nombre,
-                                            fontWeight = FontWeight.Bold,
-                                            color = ColorTextoPrincipal,
-                                            fontSize = 15.sp
-                                        )
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                        Text(
-                                            text = "$participantes participantes",
-                                            fontSize = 13.sp,
-                                            color = ColorTextoSecundario
-                                        )
-                                    }
-                                }
-                                Divider(color = ColorTekinsCardMuted)
-                            }
-                        }
-                    } else {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .verticalScroll(rememberScrollState())
-                                .padding(vertical = 8.dp)
-                        ) {
-                            val maxParticipantes = statsList.maxOfOrNull { (it["total_participantes"] as? Int ?: 0) } ?: 1
-                            val top10 = statsList.take(10)
-                            
-                            top10.forEach { stat ->
-                                val nombre = stat["nombre"] as? String ?: "Desconocida"
-                                val participantes = stat["total_participantes"] as? Int ?: 0
-                                val progress = if (maxParticipantes > 0) (participantes.toFloat() / maxParticipantes.toFloat()) else 0f
-                                
-                                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = nombre,
-                                            color = ColorTextoPrincipal,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            modifier = Modifier.weight(1f).padding(end = 8.dp)
-                                        )
-                                        Text(
-                                            text = "$participantes",
-                                            color = ColorTekinsAccent,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(16.dp)
-                                            .background(ColorTekinsCardMuted, RoundedCornerShape(8.dp))
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth(progress.coerceIn(0f, 1f))
-                                                .fillMaxHeight()
-                                                .background(ColorTekinsAccent, RoundedCornerShape(8.dp))
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 

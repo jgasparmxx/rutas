@@ -156,12 +156,6 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
     private val _loadingAvailableOutings = MutableStateFlow(false)
     val loadingAvailableOutings: StateFlow<Boolean> = _loadingAvailableOutings.asStateFlow()
 
-    private val _routeStatsList = MutableStateFlow<List<Map<String, Any>>>(emptyList())
-    val routeStatsList: StateFlow<List<Map<String, Any>>> = _routeStatsList.asStateFlow()
-
-    private val _loadingRouteStats = MutableStateFlow(false)
-    val loadingRouteStats: StateFlow<Boolean> = _loadingRouteStats.asStateFlow()
-
     val calendarEventFlow = MutableSharedFlow<CalendarEventData>(replay = 0)
 
     private val _outingsProgress = MutableStateFlow<String?>(null)
@@ -176,19 +170,6 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
 
     val agrupacionesList = MutableStateFlow<List<AgrupacionEntity>>(emptyList())
 
-    fun fetchRouteStats() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _loadingRouteStats.value = true
-            try {
-                val stats = com.gaspar.rutassendero.sync.CloudSyncManager.descargarEstadisticasRutas()
-                _routeStatsList.value = stats
-            } catch (e: Exception) {
-                Log.e("RutasViewModel", "Error fetching route stats", e)
-            } finally {
-                _loadingRouteStats.value = false
-            }
-        }
-    }
 
     fun fetchAgrupaciones() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -295,14 +276,15 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                         if (cloudSenderista != null) {
                             val local = db.rutasDao().getSenderistaByEmailFlow(resolvedEmail).first()
                             if (local != null) {
-                                if (local.rol != cloudSenderista.rol || local.bloqueado != cloudSenderista.bloqueado || local.minimoLongitud != cloudSenderista.minimoLongitud) {
+                                val normalizedServerRol = if (cloudSenderista.rol.equals("G", ignoreCase = true)) "G" else cloudSenderista.rol.uppercase()
+                                if (local.rol != normalizedServerRol || local.bloqueado != cloudSenderista.bloqueado || local.minimoLongitud != cloudSenderista.minimoLongitud) {
                                     val updatedLocal = local.copy(
-                                        rol = cloudSenderista.rol,
+                                        rol = normalizedServerRol,
                                         bloqueado = cloudSenderista.bloqueado,
                                         minimoLongitud = cloudSenderista.minimoLongitud
                                     )
                                     db.rutasDao().insertSenderista(updatedLocal)
-                                    Log.d("RutasViewModel", "Updated local senderista with server rol=${cloudSenderista.rol}, bloqueado=${cloudSenderista.bloqueado}, minimoLongitud=${cloudSenderista.minimoLongitud}")
+                                    Log.d("RutasViewModel", "Updated local senderista with server rol=$normalizedServerRol, bloqueado=${cloudSenderista.bloqueado}, minimoLongitud=${cloudSenderista.minimoLongitud}")
                                 }
                             }
                         }
@@ -431,19 +413,58 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             var finalProfileToSave = profile
+            var isCloudRestored = false
             try {
                 // Verificar en la nube si existe usando el email
                 val cloudSenderista = withContext(Dispatchers.IO) {
-                    com.gaspar.rutassendero.sync.CloudSyncManager.fetchSenderistaByEmail(profile.email)
+                    com.gaspar.rutassendero.sync.CloudSyncManager.fetchSenderistaByEmail(profile.email.trim())
+                }
+
+                fun matchPhones(p1: String, p2: String): Boolean {
+                    val clean1 = p1.filter { it.isDigit() }
+                    val clean2 = p2.filter { it.isDigit() }
+                    if (clean1.isEmpty() || clean2.isEmpty()) return false
+                    return if (clean1.length >= 10 && clean2.length >= 10) {
+                        clean1.takeLast(10) == clean2.takeLast(10)
+                    } else {
+                        clean1 == clean2
+                    }
                 }
 
                 // Verifica que exista y que coincida el teléfono
-                if (cloudSenderista != null && cloudSenderista.telefono == profile.telefono) {
+                if (cloudSenderista != null && matchPhones(cloudSenderista.telefono, profile.telefono)) {
                     if (cloudSenderista.bloqueado) {
                         networkErrorMessage.value = "Este usuario se encuentra bloqueado. Actualización cancelada."
                         return@launch
-                    } else if (finalProfileToSave.idBeacon.isNullOrBlank() && !cloudSenderista.idBeacon.isNullOrBlank()) {
-                        finalProfileToSave = finalProfileToSave.copy(idBeacon = cloudSenderista.idBeacon)
+                    }
+
+                    val rolToUse = if (cloudSenderista.rol.equals("G", ignoreCase = true)) "G" else cloudSenderista.rol.uppercase()
+                    val existingLocal = db.rutasDao().getSenderistaByEmailFlow(profile.email.trim()).first()
+
+                    if (existingLocal == null) {
+                        // REGLA: Al instalar la aplicación o primer registro, si el senderista ya existía en PostgreSQL,
+                        // se conservan y recuperan todos sus datos de PostgreSQL (rol 'G', idBeacon, nombre, etc.)
+                        finalProfileToSave = cloudSenderista.copy(
+                            rol = rolToUse,
+                            consentimientoTerminos = profile.consentimientoTerminos,
+                            consentimientoFichaMedica = profile.consentimientoFichaMedica,
+                            consentimientoGpsMultimedia = profile.consentimientoGpsMultimedia,
+                            timestampConsentimientoUtc = profile.timestampConsentimientoUtc,
+                            fupdate = System.currentTimeMillis()
+                        )
+                        isCloudRestored = true
+                        Log.i("RutasViewModel", "Datos conservados y recuperados de PostgreSQL para ${cloudSenderista.email}, rol=$rolToUse")
+                    } else {
+                        // Ya existía localmente y está editando sus datos ("ya después lo puede cambiar")
+                        finalProfileToSave = profile.copy(
+                            rol = rolToUse,
+                            idBeacon = if (profile.idBeacon.isNullOrBlank()) cloudSenderista.idBeacon else profile.idBeacon,
+                            bloqueado = cloudSenderista.bloqueado,
+                            minimoLongitud = cloudSenderista.minimoLongitud,
+                            maxPrivadas = cloudSenderista.maxPrivadas,
+                            fupdate = System.currentTimeMillis()
+                        )
+                        Log.i("RutasViewModel", "Actualización de perfil para ${profile.email}, conservando rol=$rolToUse")
                     }
                 }
             } catch (e: Exception) {
@@ -459,6 +480,11 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 finalProfileToSave.copy(fupdate = System.currentTimeMillis())
             }
             db.rutasDao().insertSenderista(updatedProfile)
+            if (isCloudRestored) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(app, "Se recuperaron tus datos existentes de la nube (Rol: ${updatedProfile.rol}).", Toast.LENGTH_LONG).show()
+                }
+            }
             try {
                 com.gaspar.rutassendero.sync.CloudSyncManager.syncSenderista(updatedProfile)
                 Log.d("RutasViewModel", "Sincronización automática de perfil completada con éxito.")
@@ -466,12 +492,23 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 // Descargar de forma transparente las rutas del senderista que están en la nube
                 launch(Dispatchers.IO) {
                     try {
+                        fun matchPhones(p1: String, p2: String): Boolean {
+                            val clean1 = p1.filter { it.isDigit() }
+                            val clean2 = p2.filter { it.isDigit() }
+                            if (clean1.isEmpty() || clean2.isEmpty()) return false
+                            return if (clean1.length >= 10 && clean2.length >= 10) {
+                                clean1.takeLast(10) == clean2.takeLast(10)
+                            } else {
+                                clean1 == clean2
+                            }
+                        }
+
                         val cloudRoutes = com.gaspar.rutassendero.sync.CloudSyncManager.fetchCloudRoutes()
                         val ownCloudRoutes = cloudRoutes.filter { routeMap ->
                             val email = routeMap["email_creador"] as? String ?: ""
                             val phone = routeMap["telefono_creador"] as? String ?: ""
                             val matchesEmail = email.isNotEmpty() && email.equals(updatedProfile.email, ignoreCase = true)
-                            val matchesPhone = phone.isNotEmpty() && phone == updatedProfile.telefono
+                            val matchesPhone = phone.isNotEmpty() && matchPhones(phone, updatedProfile.telefono)
                             matchesEmail || matchesPhone
                         }
 

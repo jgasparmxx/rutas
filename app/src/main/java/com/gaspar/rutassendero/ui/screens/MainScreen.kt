@@ -240,7 +240,6 @@ fun MainScreen(
 
     // --- Controladores de Salidas ---
     var showSalidasDialog by remember { mutableStateOf(false) }
-    var showEstadisticasRutasDialog by remember { mutableStateOf(false) }
     var showUpcomingOutingWarningDialog by remember { mutableStateOf<com.gaspar.rutassendero.data.InvitacionAceptadaEntity?>(null) }
 
 
@@ -790,7 +789,6 @@ fun MainScreen(
                             }
                         },
                         onSalidasClick = { showSalidasDialog = true },
-                        onEstadisticasClick = { showEstadisticasRutasDialog = true },
                         onPerfilClick = { showSenderistaDialog = true },
                         isPointsListReversed = isPointsListReversed,
                         onPointsOrderChange = { reversed ->
@@ -2132,7 +2130,7 @@ fun MainScreen(
                             viewModel.stopGuiding()
                             showSelectRutaDialog = false
                             Toast.makeText(context, "Se abrió la ruta activa '${activeRoute.nombre}' para que la finalices o borres.", Toast.LENGTH_LONG).show()
-                        } else if (senderista?.rol == "G") {
+                        } else if (senderista?.rol?.equals("G", ignoreCase = true) == true) {
                             showSelectRutaDialog = false
                             showAddRutaDialog = true
                         } else {
@@ -2382,13 +2380,6 @@ fun MainScreen(
             )
         }
 
-        if (showEstadisticasRutasDialog) {
-            EstadisticasRutasDialog(
-                viewModel = viewModel,
-                onDismiss = { showEstadisticasRutasDialog = false }
-            )
-        }
-
         if (showUpcomingOutingWarningDialog != null) {
             UpcomingOutingWarningDialog(
                 outing = showUpcomingOutingWarningDialog!!,
@@ -2622,7 +2613,6 @@ fun HeaderBar(
     onCloudImportClick: () -> Unit,
     onAddRutaClick: () -> Unit,
     onSalidasClick: () -> Unit,
-    onEstadisticasClick: () -> Unit = {},
     onPerfilClick: () -> Unit,
     isPointsListReversed: Boolean = false,
     onPointsOrderChange: (Boolean) -> Unit = {},
@@ -2788,15 +2778,7 @@ fun HeaderBar(
                             },
                             leadingIcon = { Icon(Icons.Default.CalendarToday, contentDescription = null, tint = ColorTekinsPrimary) }
                         )
-                        DropdownMenuItem(
-                            text = { Text("4. Estadísticas", color = ColorTekinsDarkBg) },
-                            onClick = {
-                                isMenuExpanded = false
-                                onEstadisticasClick()
-                            },
-                            leadingIcon = { Icon(Icons.Default.BarChart, contentDescription = null, tint = ColorTekinsPrimary) }
-                        )
-                        if (senderistaRol == "G") {
+                        if (senderistaRol.equals("G", ignoreCase = true)) {
                             DropdownMenuItem(
                                 text = { Text("Agregar nueva ruta", color = ColorTekinsDarkBg, fontWeight = FontWeight.Bold) },
                                 onClick = {

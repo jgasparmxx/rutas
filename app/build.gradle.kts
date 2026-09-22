@@ -109,8 +109,8 @@ dependencies {
     // Google Play Services Auth (para inicio de sesión de Google y tokens de Drive)
     implementation("com.google.android.gms:play-services-auth:21.2.0")
 
-    // PostgreSQL y Cloudinary para sincronización en la nube
-    implementation("org.postgresql:postgresql:42.2.5")
+    // API REST PostgREST y Cloudinary para sincronización en la nube
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.cloudinary:cloudinary-android:3.0.2")
 
     // Pantalla de Licencias Open Source de Google
@@ -119,6 +119,7 @@ dependencies {
     // Pruebas
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20231013")
+    testImplementation("org.postgresql:postgresql:42.2.5")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
     androidTestImplementation(platform("androidx.compose:compose-bom:2025.01.00"))

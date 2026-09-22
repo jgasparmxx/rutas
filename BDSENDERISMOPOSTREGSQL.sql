@@ -270,8 +270,21 @@ GRANT USAGE ON SCHEMA public TO web_anon;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO web_anon;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO web_anon;
 
+-- Permitir que el usuario de conexión (neondb_owner) asuma el rol web_anon en PostgREST
+GRANT web_anon TO CURRENT_USER;
+
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO web_anon;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO web_anon;
+
+-- Vista para estadísticas de rutas consumible directamente por PostgREST
+CREATE OR REPLACE VIEW vista_estadisticas_rutas AS
+SELECT r.nombre, COUNT(p.email_senderista)::integer as total_participantes
+FROM rutas r
+LEFT JOIN invitaciones_ruta i ON r.id = i.id_ruta
+LEFT JOIN participantes_invitacion p ON i.id_invitacion = p.id_invitacion
+GROUP BY r.nombre;
+
+GRANT SELECT ON vista_estadisticas_rutas TO web_anon;
 
 -- Bloqueo de seguridad: la API no debe exponer las tablas internas de auth
 REVOKE ALL ON SCHEMA neon_auth FROM web_anon;

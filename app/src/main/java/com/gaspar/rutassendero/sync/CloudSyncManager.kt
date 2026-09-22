@@ -3,224 +3,146 @@ package com.gaspar.rutassendero.sync
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.location.Location
 import android.util.Base64
 import android.util.Log
+import androidx.room.withTransaction
 import com.cloudinary.Cloudinary
 import com.cloudinary.utils.ObjectUtils
-import androidx.room.withTransaction
 import com.gaspar.rutassendero.data.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
-import java.sql.Connection
-import java.sql.DriverManager
-import java.sql.PreparedStatement
-import java.sql.ResultSet
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 object CloudSyncManager {
     private const val TAG = "CloudSyncManager"
 
-    // Formateadores de fecha para PostgreSQL
+    // Formateadores de fecha de la aplicación
     private val dateTimeFormat = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.US)
     private val dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale.US)
 
-    /**
-     * Obtiene una conexión JDBC activa con la base de datos PostgreSQL de Neon.
-     */
-    private fun getConnection(): Connection {
-        Class.forName("org.postgresql.Driver")
-        val uri = SecureCredentialsManager.getPostgresUri()
-        val user = SecureCredentialsManager.getPostgresUser()
-        val password = SecureCredentialsManager.getPostgresPassword()
-        return DriverManager.getConnection(uri, user, password)
+    // Cliente HTTP para PostgREST
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(25, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
+        .writeTimeout(35, TimeUnit.SECONDS)
+        .build()
+
+    private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+    private fun baseUrl(): String = SecureCredentialsManager.getPostgrestBaseUrl().trimEnd('/')
+
+    private fun executeGet(endpointAndQuery: String): String {
+        val url = "${baseUrl()}/$endpointAndQuery"
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .header("Accept", "application/json")
+            .build()
+        client.newCall(request).execute().use { response ->
+            val bodyStr = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                throw Exception("HTTP ${response.code} en GET $endpointAndQuery: $bodyStr")
+            }
+            return bodyStr
+        }
+    }
+
+    private fun executePostUpsert(table: String, jsonPayload: String): String {
+        val url = "${baseUrl()}/$table"
+        val request = Request.Builder()
+            .url(url)
+            .post(jsonPayload.toRequestBody(JSON_MEDIA_TYPE))
+            .header("Prefer", "resolution=merge-duplicates,return=representation")
+            .header("Accept", "application/json")
+            .build()
+        client.newCall(request).execute().use { response ->
+            val bodyStr = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                throw Exception("HTTP ${response.code} en POST $table: $bodyStr")
+            }
+            return bodyStr
+        }
+    }
+
+    private fun executeDelete(endpointAndQuery: String): Int {
+        val url = "${baseUrl()}/$endpointAndQuery"
+        val request = Request.Builder()
+            .url(url)
+            .delete()
+            .header("Prefer", "count=exact")
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val bodyStr = response.body?.string() ?: ""
+                throw Exception("HTTP ${response.code} en DELETE $endpointAndQuery: $bodyStr")
+            }
+            val contentRange = response.header("Content-Range")
+            return contentRange?.substringAfterLast('/')?.toIntOrNull() ?: if (response.code == 204) 1 else 0
+        }
+    }
+
+    private fun formatToIso(dateTimeStr: String): String {
+        return try {
+            val parsed = dateTimeFormat.parse(dateTimeStr)
+            if (parsed != null) {
+                SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(parsed)
+            } else {
+                dateTimeStr
+            }
+        } catch (e: Exception) {
+            try {
+                val parsed2 = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).parse(dateTimeStr)
+                if (parsed2 != null) {
+                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(parsed2)
+                } else {
+                    dateTimeStr
+                }
+            } catch (e2: Exception) {
+                dateTimeStr
+            }
+        }
+    }
+
+    private fun formatIsoToDisplay(isoStr: String, targetFormat: SimpleDateFormat): String {
+        if (isoStr.isEmpty()) return ""
+        return try {
+            val cleaned = isoStr.replace("Z", "+00:00")
+            val instant = java.time.OffsetDateTime.parse(cleaned)
+            val date = Date.from(instant.toInstant())
+            targetFormat.format(date)
+        } catch (e: Throwable) {
+            try {
+                val p = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).parse(isoStr)
+                if (p != null) targetFormat.format(p) else isoStr
+            } catch (e2: Throwable) {
+                isoStr
+            }
+        }
     }
 
     /**
-     * Inicializa las tablas en la nube si no existen.
-     * Esto asegura que la base de datos de Neon esté lista para usarse.
+     * Verifica la disponibilidad de la API PostgREST en Render.
+     * En arquitectura REST, el esquema DDL es administrado en PostgreSQL/Render.
      */
     fun initDatabaseSchema() {
         try {
-            getConnection().use { conn ->
-                val stmt = conn.createStatement()
-
-
-
-                // 2. Tabla senderistas
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS senderistas (
-                        email VARCHAR(150) PRIMARY KEY,
-                        rol VARCHAR(5) NOT NULL DEFAULT 'S',
-                        telefono VARCHAR(30) NOT NULL,
-                        nombre VARCHAR(150) NOT NULL,
-                        sexo VARCHAR(5) NOT NULL,
-                        fecha_nacimiento DATE NOT NULL,
-                        a_quienes_avisar TEXT NOT NULL,
-                        a_quien_avisar_telefono1 VARCHAR(30) NOT NULL,
-                        a_quien_avisar_telefono2 VARCHAR(30),
-                        tiene_enfermedad_cronica VARCHAR(2) NOT NULL DEFAULT 'N',
-                        enfermedad_cronica1 TEXT,
-                        enfermedad_cronica2 TEXT,
-                        tiene_auto VARCHAR(2) DEFAULT 'N',
-                        direccion TEXT,
-                        lleva_mascota VARCHAR(2) DEFAULT 'N',
-                        alergias TEXT,
-                        tipo_sangre VARCHAR(10),
-                        seguro_medico TEXT,
-                        nivel_senderista VARCHAR(30) DEFAULT 'principiante',
-                        fupdate TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        id_beacon VARCHAR(12),
-                        minimo_longitud DOUBLE PRECISION NOT NULL DEFAULT 4.0,
-                        bloqueado BOOLEAN DEFAULT FALSE,
-                        consentimiento_terminos BOOLEAN DEFAULT FALSE,
-                        consentimiento_ficha_medica BOOLEAN DEFAULT FALSE,
-                        consentimiento_gps_multimedia BOOLEAN DEFAULT FALSE,
-                        timestamp_consentimiento_utc BIGINT,
-                        max_privadas INT DEFAULT 3
-                    );
-                """.trimIndent())
-
-                // Modificar estructura de senderistas existentes si es necesario
-                val columnsToEnsure = listOf(
-                    "id_beacon VARCHAR(12)",
-                    "minimo_longitud DOUBLE PRECISION NOT NULL DEFAULT 4.0",
-                    "bloqueado BOOLEAN DEFAULT FALSE",
-                    "consentimiento_terminos BOOLEAN DEFAULT FALSE",
-                    "consentimiento_ficha_medica BOOLEAN DEFAULT FALSE",
-                    "consentimiento_gps_multimedia BOOLEAN DEFAULT FALSE",
-                    "timestamp_consentimiento_utc BIGINT",
-                    "codigo_confianza VARCHAR(6)",
-                    "peso DOUBLE PRECISION",
-                    "max_privadas INT DEFAULT 3"
-                )
-                
-                columnsToEnsure.forEach { col ->
-                    try {
-                        stmt.execute("ALTER TABLE senderistas ADD COLUMN IF NOT EXISTS $col")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "No se pudo agregar columna '$col' a tabla senderistas: ${e.message}")
-                    }
-                }
-                
-                try {
-                    stmt.execute("ALTER TABLE senderistas ALTER COLUMN tipo_sangre DROP NOT NULL")
-                } catch (e: Exception) {
-                    Log.w(TAG, "No se pudo alterar tipo_sangre DROP NOT NULL: ${e.message}")
-                }
-
-
-
-                // 3. Tabla rutas
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS rutas (
-                        id VARCHAR(10) PRIMARY KEY,
-                        nombre VARCHAR(150) NOT NULL,
-                        fecha DATE NOT NULL,
-                        latitud_orig DOUBLE PRECISION NOT NULL,
-                        longitud_orig DOUBLE PRECISION NOT NULL,
-                        telefono_creador VARCHAR(30) NOT NULL,
-                        descripcion TEXT NOT NULL,
-                        distancia_gps DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-                        distancia_beacons DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-                        fecha_hora_inicio TIMESTAMP WITH TIME ZONE,
-                        fecha_hora_fin TIMESTAMP WITH TIME ZONE,
-                        duracion_segundos BIGINT NOT NULL DEFAULT 0,
-                        desnivel_positivo DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-                        desnivel_negativo DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-                        contador_subidas INTEGER NOT NULL DEFAULT 0,
-                        contador_bajadas INTEGER NOT NULL DEFAULT 0,
-                        datos_encriptados TEXT,
-                        fecha_registro_nube TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        email_creador VARCHAR(150) REFERENCES senderistas(email) ON DELETE CASCADE,
-                        conectividad REAL NOT NULL DEFAULT 0.0,
-                        codigo VARCHAR(5) NOT NULL DEFAULT '',
-                        publico BOOLEAN NOT NULL DEFAULT FALSE
-                    );
-                """.trimIndent())
-
-                // Asegurar columna conectividad en rutas existentes
-                try {
-                    stmt.execute("ALTER TABLE rutas ADD COLUMN IF NOT EXISTS conectividad REAL NOT NULL DEFAULT 0.0")
-                } catch (e: Exception) {
-                    Log.w(TAG, "No se pudo agregar columna conectividad a tabla rutas en Postgres: ${e.message}")
-                }
-
-                // Asegurar que datos_encriptados sea TEXT y no VARCHAR(255)
-                try {
-                    stmt.execute("ALTER TABLE rutas ALTER COLUMN datos_encriptados TYPE TEXT")
-                } catch (e: Exception) {
-                    Log.w(TAG, "No se pudo alterar el tipo de datos_encriptados a TEXT: ${e.message}")
-                }
-
-                // Asegurar que descripcion sea TEXT y no VARCHAR(255)
-                try {
-                    stmt.execute("ALTER TABLE rutas ALTER COLUMN descripcion TYPE TEXT")
-                } catch (e: Exception) {
-                    Log.w(TAG, "No se pudo alterar el tipo de descripcion a TEXT: ${e.message}")
-                }
-
-                try {
-                    stmt.execute("ALTER TABLE rutas ADD COLUMN IF NOT EXISTS codigo VARCHAR(10) NOT NULL DEFAULT ''")
-                } catch (e: Exception) {
-                    Log.w(TAG, "No se pudo agregar columna codigo a tabla rutas en Postgres: ${e.message}")
-                }
-                
-                try {
-                    stmt.execute("ALTER TABLE rutas ALTER COLUMN codigo TYPE VARCHAR(10)")
-                } catch (e: Exception) {
-                    Log.w(TAG, "No se pudo alterar codigo a VARCHAR(10): ${e.message}")
-                }
-
-                try {
-                    stmt.execute("ALTER TABLE rutas ADD COLUMN IF NOT EXISTS publico BOOLEAN NOT NULL DEFAULT FALSE")
-                } catch (e: Exception) {
-                    Log.w(TAG, "No se pudo agregar columna publico a tabla rutas en Postgres: ${e.message}")
-                }
-
-                // 4. Tabla frases_dificultad en PostgreSQL
-                try {
-                    stmt.execute("""
-                        CREATE TABLE IF NOT EXISTS frases_dificultad (
-                            id VARCHAR(50) PRIMARY KEY,
-                            categoria VARCHAR(50) NOT NULL,
-                            frase TEXT NOT NULL
-                        );
-                    """.trimIndent())
-
-                    val countRs = stmt.executeQuery("SELECT COUNT(*) FROM frases_dificultad")
-                    var pgFraseCount = 0
-                    if (countRs.next()) {
-                        pgFraseCount = countRs.getInt(1)
-                    }
-                    countRs.close()
-
-                    if (pgFraseCount == 0) {
-                        conn.prepareStatement("INSERT INTO frases_dificultad (id, categoria, frase) VALUES (?, ?, ?)").use { insertStmt ->
-                            for (frase in FraseDificultadEntity.SEED_FRASES) {
-                                insertStmt.setString(1, frase.id)
-                                insertStmt.setString(2, frase.categoria)
-                                insertStmt.setString(3, frase.frase)
-                                insertStmt.addBatch()
-                            }
-                            insertStmt.executeBatch()
-                        }
-                        Log.d(TAG, "Se sembró la tabla frases_dificultad en PostgreSQL con ${FraseDificultadEntity.SEED_FRASES.size} registros.")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error al crear/sembrar tabla frases_dificultad en PostgreSQL: ${e.message}", e)
-                }
- 
-                Log.d(TAG, "Esquema de base de datos verificado/creado con éxito en la nube.")
-            }
+            val response = executeGet("agrupaciones?limit=1")
+            Log.d(TAG, "API PostgREST en Render verificada correctamente: $response")
         } catch (e: Throwable) {
-            Log.e(TAG, "Error al inicializar el esquema de BD en la nube: ${e.message}", e)
+            Log.w(TAG, "Advertencia al verificar API PostgREST: ${e.message}")
         }
     }
 
@@ -286,180 +208,116 @@ object CloudSyncManager {
     }
 
     /**
-     * Descarga las agrupaciones disponibles desde PostgreSQL en la nube.
+     * Descarga las estadísticas de rutas mediante la vista en PostgREST.
      */
     suspend fun descargarEstadisticasRutas(): List<Map<String, Any>> = withContext(Dispatchers.IO) {
         val stats = mutableListOf<Map<String, Any>>()
-        val sql = """
-            SELECT r.nombre, COUNT(p.email_senderista) as total_participantes
-            FROM rutas r
-            LEFT JOIN invitaciones_ruta i ON r.id = i.id_ruta
-            LEFT JOIN participantes_invitacion p ON i.id_invitacion = p.id_invitacion
-            GROUP BY r.nombre
-        """.trimIndent()
         try {
-            getConnection().use { conn ->
-                conn.createStatement().use { stmt ->
-                    val rs = stmt.executeQuery(sql)
-                    while (rs.next()) {
-                        val map = mapOf<String, Any>(
-                            "nombre" to (rs.getString("nombre") ?: "Desconocida"),
-                            "total_participantes" to rs.getInt("total_participantes")
-                        )
-                        stats.add(map)
-                    }
-                }
+            val jsonStr = executeGet("vista_estadisticas_rutas?select=nombre,total_participantes")
+            val array = JSONArray(jsonStr)
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                stats.add(mapOf(
+                    "nombre" to obj.optString("nombre", "Desconocida"),
+                    "total_participantes" to obj.optInt("total_participantes", 0)
+                ))
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error downloading route statistics: ${e.message}", e)
+            Log.e(TAG, "Error descargando estadísticas de rutas: ${e.message}", e)
         }
         stats
     }
 
+    /**
+     * Descarga las agrupaciones disponibles desde PostgREST.
+     */
     suspend fun descargarAgrupaciones(): List<AgrupacionEntity> = withContext(Dispatchers.IO) {
         val agrupaciones = mutableListOf<AgrupacionEntity>()
-        val sql = "SELECT id_agrupacion, nombre FROM agrupaciones"
-        getConnection().use { conn ->
-            conn.createStatement().use { stmt ->
-                val rs = stmt.executeQuery(sql)
-                while (rs.next()) {
-                    agrupaciones.add(
-                        AgrupacionEntity(
-                            idAgrupacion = rs.getString("id_agrupacion"),
-                            nombre = rs.getString("nombre")
-                        )
+        try {
+            val jsonStr = executeGet("agrupaciones?select=id_agrupacion,nombre")
+            val array = JSONArray(jsonStr)
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                agrupaciones.add(
+                    AgrupacionEntity(
+                        idAgrupacion = obj.getString("id_agrupacion"),
+                        nombre = obj.getString("nombre")
                     )
-                }
+                )
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error descargando agrupaciones: ${e.message}", e)
         }
         agrupaciones
     }
 
     /**
-     * Sincroniza el perfil de un senderista con PostgreSQL en la nube.
+     * Sincroniza el perfil de un senderista con PostgREST mediante Upsert.
      */
     suspend fun syncSenderista(senderista: SenderistaEntity): Unit = withContext(Dispatchers.IO) {
-        initDatabaseSchema() // Aseguramos tablas creadas
+        initDatabaseSchema()
 
-        val sql = """
-            INSERT INTO senderistas (
-                email, rol, telefono, nombre, sexo, fecha_nacimiento, 
-                a_quienes_avisar, a_quien_avisar_telefono1, a_quien_avisar_telefono2, 
-                tiene_enfermedad_cronica, enfermedad_cronica1, enfermedad_cronica2, 
-                tiene_auto, direccion, lleva_mascota, alergias, tipo_sangre, 
-                seguro_medico, nivel_senderista, fupdate, id_beacon, minimo_longitud, bloqueado,
-                consentimiento_terminos, consentimiento_ficha_medica, consentimiento_gps_multimedia, timestamp_consentimiento_utc, codigo_confianza, peso, id_agrupacion, max_privadas
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (email) DO UPDATE SET
-                nombre = EXCLUDED.nombre,
-                sexo = EXCLUDED.sexo,
-                fecha_nacimiento = EXCLUDED.fecha_nacimiento,
-                a_quienes_avisar = EXCLUDED.a_quienes_avisar,
-                a_quien_avisar_telefono1 = EXCLUDED.a_quien_avisar_telefono1,
-                a_quien_avisar_telefono2 = EXCLUDED.a_quien_avisar_telefono2,
-                tiene_enfermedad_cronica = EXCLUDED.tiene_enfermedad_cronica,
-                enfermedad_cronica1 = EXCLUDED.enfermedad_cronica1,
-                enfermedad_cronica2 = EXCLUDED.enfermedad_cronica2,
-                tiene_auto = EXCLUDED.tiene_auto,
-                direccion = EXCLUDED.direccion,
-                lleva_mascota = EXCLUDED.lleva_mascota,
-                alergias = EXCLUDED.alergias,
-                tipo_sangre = EXCLUDED.tipo_sangre,
-                seguro_medico = EXCLUDED.seguro_medico,
-                nivel_senderista = EXCLUDED.nivel_senderista,
-                fupdate = EXCLUDED.fupdate,
-                id_beacon = EXCLUDED.id_beacon,
-                minimo_longitud = EXCLUDED.minimo_longitud,
-                consentimiento_terminos = EXCLUDED.consentimiento_terminos,
-                consentimiento_ficha_medica = EXCLUDED.consentimiento_ficha_medica,
-                consentimiento_gps_multimedia = EXCLUDED.consentimiento_gps_multimedia,
-                timestamp_consentimiento_utc = EXCLUDED.timestamp_consentimiento_utc,
-                codigo_confianza = EXCLUDED.codigo_confianza,
-                peso = EXCLUDED.peso,
-                id_agrupacion = EXCLUDED.id_agrupacion,
-                max_privadas = EXCLUDED.max_privadas;
-        """.trimIndent()
-
-        getConnection().use { conn ->
-            conn.prepareStatement(sql).use { pstmt ->
-                pstmt.setString(1, senderista.email)
-                pstmt.setString(2, senderista.rol)
-                pstmt.setString(3, senderista.telefono)
-                pstmt.setString(4, senderista.nombre)
-                pstmt.setString(5, senderista.sexo)
-
-                val parsedNac = try {
-                    dateFormat.parse(senderista.fechaNacimiento)
-                } catch (e: Exception) {
-                    try {
-                        SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(senderista.fechaNacimiento)
-                    } catch (e2: Exception) {
-                        try {
-                            SimpleDateFormat("yyyy/MM/dd", Locale.US).parse(senderista.fechaNacimiento)
-                        } catch (ex: Exception) {
-                            null
-                        }
-                    }
-                }
-                if (parsedNac != null) {
-                    pstmt.setDate(6, java.sql.Date(parsedNac.time))
-                } else {
-                    pstmt.setNull(6, java.sql.Types.DATE)
-                }
-
-                pstmt.setString(7, senderista.aQuienesAvisar)
-                pstmt.setString(8, senderista.aQuienAvisarTelefono1)
-                pstmt.setString(9, senderista.aQuienAvisarTelefono2)
-                pstmt.setString(10, senderista.tieneEnfermedadCronica)
-                pstmt.setString(11, senderista.enfermedadCronica1)
-                pstmt.setString(12, senderista.enfermedadCronica2)
-                pstmt.setString(13, senderista.tieneAuto ?: "N")
-                pstmt.setString(14, senderista.direccion)
-                pstmt.setString(15, senderista.llevaMascota ?: "N")
-                pstmt.setString(16, senderista.alergias)
-                val cleanTipoSangre = senderista.tipoSangre?.trim()?.takeIf {
-                    it.isNotEmpty() && it != "No agregó el tipo de sangre" && it != "No especificado"
-                }
-                pstmt.setString(17, cleanTipoSangre)
-                pstmt.setString(18, senderista.seguroMedico)
-                pstmt.setString(19, senderista.nivelSenderista)
-                pstmt.setTimestamp(20, java.sql.Timestamp(senderista.fupdate))
-                pstmt.setString(21, senderista.idBeacon)
-                pstmt.setDouble(22, senderista.minimoLongitud)
-                pstmt.setBoolean(23, senderista.bloqueado)
-                pstmt.setBoolean(24, senderista.consentimientoTerminos)
-                pstmt.setBoolean(25, senderista.consentimientoFichaMedica)
-                pstmt.setBoolean(26, senderista.consentimientoGpsMultimedia)
-                
-                if (senderista.timestampConsentimientoUtc != null) {
-                    pstmt.setLong(27, senderista.timestampConsentimientoUtc)
-                } else {
-                    pstmt.setNull(27, java.sql.Types.BIGINT)
-                }
-                pstmt.setString(28, senderista.codigoConfianza)
-
-                if (senderista.peso != null) {
-                    pstmt.setDouble(29, senderista.peso)
-                } else {
-                    pstmt.setNull(29, java.sql.Types.DOUBLE)
-                }
-                
-                if (senderista.idAgrupacion != null) {
-                    pstmt.setString(30, senderista.idAgrupacion)
-                } else {
-                    pstmt.setNull(30, java.sql.Types.VARCHAR)
-                }
-                
-                pstmt.setInt(31, senderista.maxPrivadas)
-
-                pstmt.executeUpdate()
-                Log.d(TAG, "Senderista ${senderista.email} sincronizado con PostgreSQL.")
+        val parsedNac = try {
+            dateFormat.parse(senderista.fechaNacimiento)
+        } catch (e: Exception) {
+            try {
+                SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(senderista.fechaNacimiento)
+            } catch (e2: Exception) {
+                null
             }
         }
+        val formattedDob = if (parsedNac != null) {
+            SimpleDateFormat("yyyy-MM-dd", Locale.US).format(parsedNac)
+        } else {
+            "2000-01-01"
+        }
+
+        val fupdateIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).format(Date(senderista.fupdate))
+
+        val cleanTipoSangre = senderista.tipoSangre?.trim()?.takeIf {
+            it.isNotEmpty() && it != "No agregó el tipo de sangre" && it != "No especificado"
+        }
+
+        val payload = JSONObject().apply {
+            put("email", senderista.email)
+            put("rol", senderista.rol)
+            put("telefono", senderista.telefono)
+            put("nombre", senderista.nombre)
+            put("sexo", senderista.sexo)
+            put("fecha_nacimiento", formattedDob)
+            put("a_quienes_avisar", senderista.aQuienesAvisar)
+            put("a_quien_avisar_telefono1", senderista.aQuienAvisarTelefono1)
+            put("a_quien_avisar_telefono2", senderista.aQuienAvisarTelefono2 ?: JSONObject.NULL)
+            put("tiene_enfermedad_cronica", senderista.tieneEnfermedadCronica)
+            put("enfermedad_cronica1", senderista.enfermedadCronica1 ?: JSONObject.NULL)
+            put("enfermedad_cronica2", senderista.enfermedadCronica2 ?: JSONObject.NULL)
+            put("tiene_auto", senderista.tieneAuto ?: "N")
+            put("direccion", senderista.direccion ?: JSONObject.NULL)
+            put("lleva_mascota", senderista.llevaMascota ?: "N")
+            put("alergias", senderista.alergias ?: JSONObject.NULL)
+            put("tipo_sangre", cleanTipoSangre ?: JSONObject.NULL)
+            put("seguro_medico", senderista.seguroMedico ?: JSONObject.NULL)
+            put("nivel_senderista", senderista.nivelSenderista)
+            put("fupdate", fupdateIso)
+            put("id_beacon", senderista.idBeacon ?: JSONObject.NULL)
+            put("minimo_longitud", senderista.minimoLongitud)
+            put("bloqueado", senderista.bloqueado)
+            put("consentimiento_terminos", senderista.consentimientoTerminos)
+            put("consentimiento_ficha_medica", senderista.consentimientoFichaMedica)
+            put("consentimiento_gps_multimedia", senderista.consentimientoGpsMultimedia)
+            put("timestamp_consentimiento_utc", senderista.timestampConsentimientoUtc ?: JSONObject.NULL)
+            put("codigo_confianza", senderista.codigoConfianza ?: JSONObject.NULL)
+            put("peso", senderista.peso ?: JSONObject.NULL)
+            put("id_agrupacion", senderista.idAgrupacion ?: JSONObject.NULL)
+            put("max_privadas", senderista.maxPrivadas)
+        }
+
+        executePostUpsert("senderistas", payload.toString())
+        Log.d(TAG, "Senderista ${senderista.email} sincronizado con PostgREST.")
     }
 
     /**
-     * Genera un id_beacon único de 6 bytes (12 caracteres hex) y verifica que no se repita en Postgres.
+     * Genera un id_beacon único de 6 bytes (12 caracteres hex) y verifica que no se repita en PostgREST.
      */
     suspend fun generateUniqueBeaconId(): String = withContext(Dispatchers.IO) {
         val random = java.security.SecureRandom()
@@ -473,20 +331,13 @@ object CloudSyncManager {
             uniqueId = bytes.joinToString("") { "%02x".format(it) }
             attempts++
             try {
-                getConnection().use { conn ->
-                    val sql = "SELECT COUNT(*) FROM senderistas WHERE id_beacon = ?"
-                    conn.prepareStatement(sql).use { pstmt ->
-                        pstmt.setString(1, uniqueId)
-                        pstmt.executeQuery().use { rs ->
-                            if (rs.next() && rs.getInt(1) == 0) {
-                                isUnique = true
-                            }
-                        }
-                    }
+                val jsonStr = executeGet("senderistas?id_beacon=eq.$uniqueId&select=id_beacon")
+                val array = JSONArray(jsonStr)
+                if (array.length() == 0) {
+                    isUnique = true
                 }
             } catch (e: Exception) {
-                // Si falla la verificación por red, asumimos que es único (la probabilidad de colisión es de 1 en 2.8*10^14)
-                Log.w(TAG, "Error al verificar unicidad de id_beacon en la nube, usando generado: ${e.message}")
+                Log.w(TAG, "Error al verificar unicidad de id_beacon en PostgREST, usando generado: ${e.message}")
                 isUnique = true
             }
         }
@@ -494,112 +345,105 @@ object CloudSyncManager {
     }
 
     /**
-     * Busca un senderista en PostgreSQL por su id_beacon.
+     * Busca un senderista en PostgREST por su id_beacon.
      */
     suspend fun fetchSenderistaByBeaconId(idBeacon: String): SenderistaEntity? = withContext(Dispatchers.IO) {
         try {
-            getConnection().use { conn ->
-                val sql = "SELECT * FROM senderistas WHERE id_beacon = ? LIMIT 1"
-                conn.prepareStatement(sql).use { pstmt ->
-                    pstmt.setString(1, idBeacon)
-                    pstmt.executeQuery().use { rs ->
-                        if (rs.next()) {
-                            mapRowToSenderista(rs)
-                        } else {
-                            null
-                        }
-                    }
-                }
+            val jsonStr = executeGet("senderistas?id_beacon=eq.$idBeacon&limit=1")
+            val array = JSONArray(jsonStr)
+            if (array.length() > 0) {
+                mapJsonToSenderista(array.getJSONObject(0))
+            } else {
+                null
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error al buscar senderista por id_beacon en PostgreSQL: ${e.message}", e)
+            Log.e(TAG, "Error al buscar senderista por id_beacon en PostgREST: ${e.message}", e)
             null
         }
     }
 
     /**
-     * Busca un senderista en PostgreSQL por su email.
+     * Busca un senderista en PostgREST por su email.
      */
     suspend fun fetchSenderistaByEmail(email: String): SenderistaEntity? = withContext(Dispatchers.IO) {
         try {
-            getConnection().use { conn ->
-                val sql = "SELECT * FROM senderistas WHERE email = ? LIMIT 1"
-                conn.prepareStatement(sql).use { pstmt ->
-                    pstmt.setString(1, email)
-                    pstmt.executeQuery().use { rs ->
-                        if (rs.next()) {
-                            mapRowToSenderista(rs)
-                        } else {
-                            null
-                        }
-                    }
-                }
+            val encodedEmail = URLEncoder.encode(email, "UTF-8")
+            val jsonStr = executeGet("senderistas?email=eq.$encodedEmail&limit=1")
+            val array = JSONArray(jsonStr)
+            if (array.length() > 0) {
+                mapJsonToSenderista(array.getJSONObject(0))
+            } else {
+                null
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error al buscar senderista por email en PostgreSQL: ${e.message}", e)
+            Log.e(TAG, "Error al buscar senderista por email en PostgREST: ${e.message}", e)
             null
         }
     }
 
-    private fun mapRowToSenderista(rs: java.sql.ResultSet): SenderistaEntity {
-        val dobDate = try { rs.getDate("fecha_nacimiento") } catch (e: Exception) { null }
-        val dobStr = if (dobDate != null) dateFormat.format(dobDate) else (try { rs.getString("fecha_nacimiento") } catch (e: Exception) { null } ?: "01/01/2000")
-        val fupdateVal = try { rs.getTimestamp("fupdate")?.time } catch (e: Exception) { null } ?: System.currentTimeMillis()
+    private fun mapJsonToSenderista(obj: JSONObject): SenderistaEntity {
+        fun optStr(key: String): String? = if (obj.isNull(key)) null else obj.optString(key)
+        fun optDbl(key: String): Double? = if (obj.isNull(key)) null else obj.optDouble(key)
+        fun optLng(key: String): Long? = if (obj.isNull(key)) null else obj.optLong(key)
+        fun optBool(key: String, default: Boolean = false): Boolean = if (obj.isNull(key)) default else obj.optBoolean(key, default)
 
-        fun getOptDouble(col: String): Double? = try {
-            val v = rs.getDouble(col)
-            if (rs.wasNull()) null else v
-        } catch (e: Exception) { null }
+        val rawDob = optStr("fecha_nacimiento") ?: "2000-01-01"
+        val formattedDob = try {
+            val parsed = SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(rawDob)
+            if (parsed != null) dateFormat.format(parsed) else rawDob
+        } catch (e: Exception) {
+            rawDob
+        }
 
-        fun getOptLong(col: String): Long? = try {
-            val v = rs.getLong(col)
-            if (rs.wasNull()) null else v
-        } catch (e: Exception) { null }
-
-        fun getOptBoolean(col: String): Boolean = try {
-            rs.getBoolean(col)
-        } catch (e: Exception) { false }
-
-        fun getOptString(col: String): String? = try {
-            rs.getString(col)
-        } catch (e: Exception) { null }
+        val fupdateRaw = optStr("fupdate")
+        val fupdateMillis = try {
+            if (!fupdateRaw.isNullOrEmpty()) {
+                val cleaned = fupdateRaw.replace("Z", "+00:00")
+                java.time.OffsetDateTime.parse(cleaned).toInstant().toEpochMilli()
+            } else {
+                System.currentTimeMillis()
+            }
+        } catch (e: Throwable) {
+            System.currentTimeMillis()
+        }
 
         return SenderistaEntity(
-            email = rs.getString("email"),
-            rol = rs.getString("rol") ?: "S",
-            telefono = rs.getString("telefono"),
-            nombre = rs.getString("nombre"),
-            sexo = rs.getString("sexo"),
-            fechaNacimiento = dobStr,
-            aQuienesAvisar = rs.getString("a_quienes_avisar"),
-            aQuienAvisarTelefono1 = rs.getString("a_quien_avisar_telefono1"),
-            aQuienAvisarTelefono2 = getOptString("a_quien_avisar_telefono2"),
-            tieneEnfermedadCronica = rs.getString("tiene_enfermedad_cronica") ?: "N",
-            enfermedadCronica1 = getOptString("enfermedad_cronica1"),
-            enfermedadCronica2 = getOptString("enfermedad_cronica2"),
-            tieneAuto = rs.getString("tiene_auto") ?: "N",
-            direccion = getOptString("direccion"),
-            llevaMascota = rs.getString("lleva_mascota") ?: "N",
-            alergias = getOptString("alergias"),
-            tipoSangre = getOptString("tipo_sangre")?.takeIf { it.isNotBlank() },
-            seguroMedico = getOptString("seguro_medico"),
-            nivelSenderista = rs.getString("nivel_senderista") ?: "principiante",
-            idBeacon = getOptString("id_beacon"),
-            minimoLongitud = getOptDouble("minimo_longitud") ?: 4.0,
-            bloqueado = getOptBoolean("bloqueado"),
-            fupdate = fupdateVal,
-            codigoConfianza = getOptString("codigo_confianza"),
-            consentimientoTerminos = getOptBoolean("consentimiento_terminos"),
-            consentimientoFichaMedica = getOptBoolean("consentimiento_ficha_medica"),
-            consentimientoGpsMultimedia = getOptBoolean("consentimiento_gps_multimedia"),
-            timestampConsentimientoUtc = getOptLong("timestamp_consentimiento_utc"),
-            peso = getOptDouble("peso"),
-            idAgrupacion = getOptString("id_agrupacion")
+            email = obj.getString("email"),
+            rol = obj.optString("rol", "S"),
+            telefono = obj.optString("telefono", ""),
+            nombre = obj.optString("nombre", ""),
+            sexo = obj.optString("sexo", ""),
+            fechaNacimiento = formattedDob,
+            aQuienesAvisar = obj.optString("a_quienes_avisar", ""),
+            aQuienAvisarTelefono1 = obj.optString("a_quien_avisar_telefono1", ""),
+            aQuienAvisarTelefono2 = optStr("a_quien_avisar_telefono2"),
+            tieneEnfermedadCronica = obj.optString("tiene_enfermedad_cronica", "N"),
+            enfermedadCronica1 = optStr("enfermedad_cronica1"),
+            enfermedadCronica2 = optStr("enfermedad_cronica2"),
+            tieneAuto = obj.optString("tiene_auto", "N"),
+            direccion = optStr("direccion"),
+            llevaMascota = obj.optString("lleva_mascota", "N"),
+            alergias = optStr("alergias"),
+            tipoSangre = optStr("tipo_sangre")?.takeIf { it.isNotBlank() },
+            seguroMedico = optStr("seguro_medico"),
+            nivelSenderista = obj.optString("nivel_senderista", "principiante"),
+            idBeacon = optStr("id_beacon"),
+            minimoLongitud = optDbl("minimo_longitud") ?: 4.0,
+            bloqueado = optBool("bloqueado"),
+            fupdate = fupdateMillis,
+            codigoConfianza = optStr("codigo_confianza"),
+            consentimientoTerminos = optBool("consentimiento_terminos"),
+            consentimientoFichaMedica = optBool("consentimiento_ficha_medica"),
+            consentimientoGpsMultimedia = optBool("consentimiento_gps_multimedia"),
+            timestampConsentimientoUtc = optLng("timestamp_consentimiento_utc"),
+            peso = optDbl("peso"),
+            idAgrupacion = optStr("id_agrupacion"),
+            maxPrivadas = if (obj.isNull("max_privadas")) 3 else obj.optInt("max_privadas", 3)
         )
     }
 
     /**
-     * Sube y sincroniza una ruta terminada, optimizando fotos y encriptando los datos.
+     * Sube y sincroniza una ruta terminada, optimizando fotos y guardándola en PostgREST.
      */
     suspend fun syncRoute(
         context: Context,
@@ -607,7 +451,7 @@ object CloudSyncManager {
         routeId: String,
         onProgress: (String) -> Unit
     ): Unit = withContext(Dispatchers.IO) {
-        onProgress("Conectando con la base de datos...")
+        onProgress("Conectando con la base de datos en la nube...")
         initDatabaseSchema()
 
         // 1. Obtener perfil de senderista local
@@ -645,14 +489,12 @@ object CloudSyncManager {
                             updatedPunto
                         } catch (e: Exception) {
                             Log.e(TAG, "Error subiendo a Cloudinary: ${e.message}", e)
-                            // En lugar de ignorar la foto, detenemos la sincronización para no perderla
                             throw Exception("Fallo al subir foto del punto ${idx + 1}. Asegúrate de tener buena conexión. Detalles: ${e.message}")
                         }
                     } else {
                         throw Exception("No se pudo comprimir la foto del punto ${idx + 1}.")
                     }
                 } else {
-                    // Si el archivo físico no existe localmente, entonces sí la mandamos como null para no romper la ruta
                     punto.copy(fotoPath = null)
                 }
             } else {
@@ -725,144 +567,108 @@ object CloudSyncManager {
         val encryptedBytes = CryptoUtils.encrypt(jsonPayload.toString())
         val encryptedBase64 = Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
 
-        // 6. Subir a Postgres
-        onProgress("Guardando en Neon PostgreSQL...")
-        val sql = """
-            INSERT INTO rutas (
-                id, nombre, fecha, latitud_orig, longitud_orig, telefono_creador, 
-                descripcion, distancia_gps, distancia_beacons, fecha_hora_inicio, fecha_hora_fin, 
-                duracion_segundos, desnivel_positivo, desnivel_negativo, contador_subidas, 
-                contador_bajadas, datos_encriptados, email_creador, conectividad, codigo, publico, agrupacion
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (id) DO UPDATE SET
-                nombre = EXCLUDED.nombre,
-                fecha = EXCLUDED.fecha,
-                latitud_orig = EXCLUDED.latitud_orig,
-                longitud_orig = EXCLUDED.longitud_orig,
-                telefono_creador = EXCLUDED.telefono_creador,
-                descripcion = EXCLUDED.descripcion,
-                distancia_gps = EXCLUDED.distancia_gps,
-                distancia_beacons = EXCLUDED.distancia_beacons,
-                fecha_hora_inicio = EXCLUDED.fecha_hora_inicio,
-                fecha_hora_fin = EXCLUDED.fecha_hora_fin,
-                duracion_segundos = EXCLUDED.duracion_segundos,
-                desnivel_positivo = EXCLUDED.desnivel_positivo,
-                desnivel_negativo = EXCLUDED.desnivel_negativo,
-                contador_subidas = EXCLUDED.contador_subidas,
-                contador_bajadas = EXCLUDED.contador_bajadas,
-                datos_encriptados = EXCLUDED.datos_encriptados,
-                email_creador = EXCLUDED.email_creador,
-                conectividad = EXCLUDED.conectividad,
-                codigo = EXCLUDED.codigo,
-                publico = EXCLUDED.publico,
-                agrupacion = EXCLUDED.agrupacion;
-        """.trimIndent()
+        // 6. Subir a PostgREST
+        onProgress("Guardando ruta en la nube vía API REST...")
 
-        getConnection().use { conn ->
-            conn.prepareStatement(sql).use { pstmt ->
-                pstmt.setString(1, ruta.id)
-                pstmt.setString(2, ruta.nombre)
+        val parsedDate = try { dateFormat.parse(ruta.fecha) } catch (e: Exception) { null }
+        val formattedDate = if (parsedDate != null) SimpleDateFormat("yyyy-MM-dd", Locale.US).format(parsedDate) else ruta.fecha
 
-                val parsedDate = dateFormat.parse(ruta.fecha)
-                pstmt.setDate(3, java.sql.Date(parsedDate?.time ?: System.currentTimeMillis()))
-                pstmt.setDouble(4, ruta.latitudOrig)
-                pstmt.setDouble(5, ruta.longitudOrig)
-                pstmt.setString(6, ruta.telefono.ifEmpty { senderista.telefono })
-                pstmt.setString(7, ruta.descripcion)
-                pstmt.setDouble(8, ruta.distanciaGps)
-                pstmt.setDouble(9, ruta.distanciaBeacons)
-
-                val parsedInicio = ruta.fechaHoraInicio?.let { dateTimeFormat.parse(it) }
-                pstmt.setTimestamp(10, parsedInicio?.let { java.sql.Timestamp(it.time) })
-
-                val parsedFin = ruta.fechaHoraFin?.let { dateTimeFormat.parse(it) }
-                pstmt.setTimestamp(11, parsedFin?.let { java.sql.Timestamp(it.time) })
-
-                pstmt.setLong(12, ruta.duracionSegundos)
-                pstmt.setDouble(13, ruta.desnivelPositivo)
-                pstmt.setDouble(14, ruta.desnivelNegativo)
-                pstmt.setInt(15, ruta.contadorSubidas)
-                pstmt.setInt(16, ruta.contadorBajadas)
-                pstmt.setString(17, encryptedBase64)
-                pstmt.setString(18, senderista.email)
-                pstmt.setFloat(19, ruta.conectividad)
-                pstmt.setString(20, ruta.codigo)
-                pstmt.setBoolean(21, ruta.publico)
-                pstmt.setString(22, senderista.idAgrupacion ?: "MH")
-
-                pstmt.executeUpdate()
-            }
+        val rutaPayload = JSONObject().apply {
+            put("id", ruta.id)
+            put("nombre", ruta.nombre)
+            put("fecha", formattedDate)
+            put("latitud_orig", ruta.latitudOrig)
+            put("longitud_orig", ruta.longitudOrig)
+            put("telefono_creador", ruta.telefono.ifEmpty { senderista.telefono })
+            put("descripcion", ruta.descripcion)
+            put("distancia_gps", ruta.distanciaGps)
+            put("distancia_beacons", ruta.distanciaBeacons)
+            put("fecha_hora_inicio", ruta.fechaHoraInicio?.let { formatToIso(it) } ?: JSONObject.NULL)
+            put("fecha_hora_fin", ruta.fechaHoraFin?.let { formatToIso(it) } ?: JSONObject.NULL)
+            put("duracion_segundos", ruta.duracionSegundos)
+            put("desnivel_positivo", ruta.desnivelPositivo)
+            put("desnivel_negativo", ruta.desnivelNegativo)
+            put("contador_subidas", ruta.contadorSubidas)
+            put("contador_bajadas", ruta.contadorBajadas)
+            put("datos_encriptados", encryptedBase64)
+            put("email_creador", senderista.email)
+            put("conectividad", ruta.conectividad)
+            put("codigo", ruta.codigo)
+            put("publico", ruta.publico)
+            put("agrupacion", senderista.idAgrupacion ?: "MH")
         }
+
+        executePostUpsert("rutas", rutaPayload.toString())
         onProgress("¡Ruta sincronizada con éxito!")
     }
 
+    /**
+     * Consulta las rutas registradas en la nube mediante PostgREST.
+     */
     suspend fun fetchCloudRoutes(): List<Map<String, Any>> = withContext(Dispatchers.IO) {
         initDatabaseSchema()
         val routesList = mutableListOf<Map<String, Any>>()
-        val sql = """
-            SELECT r.id, r.nombre, r.fecha, r.latitud_orig, r.longitud_orig, 
-                   r.descripcion, r.distancia_gps, r.email_creador, r.telefono_creador, s.nombre AS senderista_nombre,
-                   r.publico, r.codigo
-            FROM rutas r 
-            LEFT JOIN senderistas s ON r.telefono_creador = s.telefono 
-            ORDER BY r.fecha_registro_nube DESC
-        """.trimIndent()
-
         try {
-            getConnection().use { conn ->
-                conn.createStatement().use { stmt ->
-                    stmt.executeQuery(sql).use { rs ->
-                        while (rs.next()) {
-                            routesList.add(mapOf(
-                                "id" to rs.getString("id"),
-                                "nombre" to rs.getString("nombre"),
-                                "fecha" to dateFormat.format(rs.getDate("fecha")),
+            val query = "rutas?select=id,nombre,fecha,latitud_orig,longitud_orig,descripcion,distancia_gps,email_creador,telefono_creador,publico,codigo,senderistas(nombre)&order=fecha_registro_nube.desc"
+            val jsonStr = executeGet(query)
+            val array = JSONArray(jsonStr)
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val senderistaObj = obj.optJSONObject("senderistas")
+                val senderistaNombre = senderistaObj?.optString("nombre") ?: "Senderista Anónimo"
 
-                                "latitud_orig" to rs.getDouble("latitud_orig"),
-                                "longitud_orig" to rs.getDouble("longitud_orig"),
-                                "descripcion" to rs.getString("descripcion"),
-                                "senderista_nombre" to (rs.getString("senderista_nombre") ?: "Senderista Anónimo"),
-                                "distancia_gps" to rs.getDouble("distancia_gps"),
-                                "email_creador" to (rs.getString("email_creador") ?: ""),
-                                "telefono_creador" to (rs.getString("telefono_creador") ?: ""),
-                                "publico" to rs.getBoolean("publico"),
-                                "codigo" to (rs.getString("codigo") ?: "")
-                            ))
-                        }
-                    }
+                val rawFecha = obj.optString("fecha", "")
+                val displayFecha = try {
+                    val p = SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(rawFecha)
+                    if (p != null) dateFormat.format(p) else rawFecha
+                } catch (e: Exception) {
+                    rawFecha
                 }
+
+                routesList.add(mapOf(
+                    "id" to obj.optString("id", ""),
+                    "nombre" to obj.optString("nombre", ""),
+                    "fecha" to displayFecha,
+                    "latitud_orig" to obj.optDouble("latitud_orig", 0.0),
+                    "longitud_orig" to obj.optDouble("longitud_orig", 0.0),
+                    "descripcion" to obj.optString("descripcion", ""),
+                    "senderista_nombre" to senderistaNombre,
+                    "distancia_gps" to obj.optDouble("distancia_gps", 0.0),
+                    "email_creador" to obj.optString("email_creador", ""),
+                    "telefono_creador" to obj.optString("telefono_creador", ""),
+                    "publico" to obj.optBoolean("publico", false),
+                    "codigo" to obj.optString("codigo", "")
+                ))
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Error consultando rutas en la nube: ${e.message}", e)
+            Log.e(TAG, "Error consultando rutas en PostgREST: ${e.message}", e)
         }
         routesList
     }
 
     /**
-     * Elimina una ruta de la base de datos PostgreSQL de Neon en la nube.
+     * Elimina una ruta de la base de datos PostgreSQL en la nube vía PostgREST.
      */
     suspend fun deleteRouteFromCloud(routeId: String, creatorEmail: String, creatorPhone: String = "") = withContext(Dispatchers.IO) {
-        val sql = "DELETE FROM rutas WHERE id = ? AND (email_creador = ? OR telefono_creador = ?)"
         try {
-            getConnection().use { conn ->
-                conn.prepareStatement(sql).use { pstmt ->
-                    pstmt.setString(1, routeId)
-                    pstmt.setString(2, creatorEmail)
-                    pstmt.setString(3, creatorPhone)
-                    val affectedRows = pstmt.executeUpdate()
-                    Log.d(TAG, "deleteRouteFromCloud: Filas eliminadas = $affectedRows para ruta = $routeId")
-                }
+            val encodedId = URLEncoder.encode(routeId, "UTF-8")
+            val encodedEmail = URLEncoder.encode(creatorEmail, "UTF-8")
+            val query = if (creatorPhone.isNotBlank()) {
+                val encodedPhone = URLEncoder.encode(creatorPhone, "UTF-8")
+                "rutas?id=eq.$encodedId&or=(email_creador.eq.$encodedEmail,telefono_creador.eq.$encodedPhone)"
+            } else {
+                "rutas?id=eq.$encodedId&email_creador=eq.$encodedEmail"
             }
+            val affectedRows = executeDelete(query)
+            Log.d(TAG, "deleteRouteFromCloud: Filas eliminadas = $affectedRows para ruta = $routeId")
         } catch (e: Throwable) {
             Log.e(TAG, "Error al eliminar ruta de la nube: ${e.message}", e)
             throw e
         }
     }
 
-
     /**
-     * Descarga, descifra e inserta en Room una ruta desde PostgreSQL.
-     * Si ya existe localmente, interrumpe el proceso.
+     * Descarga, descifra e inserta en Room una ruta desde PostgREST.
      */
     suspend fun downloadRoute(
         context: Context,
@@ -873,23 +679,16 @@ object CloudSyncManager {
         onProgress("Comprobando existencia local...")
         val existing = db.rutasDao().getRutaById(routeId)
 
-
-        onProgress("Descargando ruta desde PostgreSQL...")
-        var encryptedBase64: String? = null
-        var telefonoCreador: String? = null
-        val sql = "SELECT datos_encriptados, telefono_creador FROM rutas WHERE id = ?"
-
-        getConnection().use { conn ->
-            conn.prepareStatement(sql).use { pstmt ->
-                pstmt.setString(1, routeId)
-                pstmt.executeQuery().use { rs ->
-                    if (rs.next()) {
-                        encryptedBase64 = rs.getString("datos_encriptados")
-                        telefonoCreador = rs.getString("telefono_creador")
-                    }
-                }
-            }
+        onProgress("Descargando ruta desde la nube...")
+        val encodedId = URLEncoder.encode(routeId, "UTF-8")
+        val jsonStr = executeGet("rutas?id=eq.$encodedId&select=datos_encriptados,telefono_creador&limit=1")
+        val array = JSONArray(jsonStr)
+        if (array.length() == 0) {
+            throw Exception("No se encontró la ruta en la nube.")
         }
+        val routeObj = array.getJSONObject(0)
+        val encryptedBase64 = if (routeObj.isNull("datos_encriptados")) null else routeObj.getString("datos_encriptados")
+        val telefonoCreador = if (routeObj.isNull("telefono_creador")) null else routeObj.getString("telefono_creador")
 
         if (encryptedBase64.isNullOrEmpty()) {
             throw Exception("Los datos encriptados de la ruta no se encontraron en la nube.")
@@ -930,19 +729,17 @@ object CloudSyncManager {
 
         val pArray = root.getJSONArray("puntos")
 
-        // 1. Extraer y filtrar a una lista temporal para poder ordenar
         data class TempPunto(val fechaHoraMillis: Long, val originalId: Int, val pObj: JSONObject)
         val tempPuntos = mutableListOf<TempPunto>()
-        val sdf = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm:ss", java.util.Locale.getDefault())
+        val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
         for (i in 0 until pArray.length()) {
             val pObj = pArray.getJSONObject(i)
             val desc = pObj.optString("descripcion", "")
-            
-            // Filtrar los puntos espurios generados automáticamente por vehículo (glitch de versiones viejas)
+
             if (desc == "Pausado por vehículo" || desc == "Reanudando a pie") {
                 continue
             }
-            
+
             val originalId = pObj.optInt("id", i)
             val fechaHoraStr = pObj.optString("fecha_hora", "")
             val millis = try {
@@ -952,16 +749,13 @@ object CloudSyncManager {
             }
             tempPuntos.add(TempPunto(millis, originalId, pObj))
         }
-        
-        // 2. Ordenar cronológicamente usando fecha_hora, y si falla (mismos millis o nulos), usar el ID original
+
         tempPuntos.sortWith(compareBy({ it.fechaHoraMillis }, { it.originalId }))
-        
-        // 3. Eliminar duplicados exactos (misma hora y mismas coordenadas) producto de resincronizaciones erróneas
+
         val uniquePuntos = tempPuntos.distinctBy { 
             "${it.fechaHoraMillis}_${it.pObj.optDouble("latitud", 0.0)}_${it.pObj.optDouble("longitud", 0.0)}"
         }
-        
-        // 4. Procesar los puntos ya ordenados y filtrados
+
         val puntosList = mutableListOf<PuntoRutaEntity>()
         for ((idx, temp) in uniquePuntos.withIndex()) {
             val pObj = temp.pObj
@@ -975,14 +769,13 @@ object CloudSyncManager {
                         onProgress("bajando $pct%..")
                         val localFile = File(context.filesDir, fileName)
                         java.net.URL(cloudPath).openStream().use { input ->
-                            java.io.FileOutputStream(localFile).use { output ->
+                            FileOutputStream(localFile).use { output ->
                                 input.copyTo(output)
                             }
                         }
                         localPath = localFile.absolutePath
                     } catch (e: Exception) {
                         Log.e(TAG, "Error al descargar foto de la nube ($cloudPath): ${e.message}", e)
-                        // No interrumpir la descarga de la ruta por un fallo en una foto
                         localPath = null
                     }
                 } else {
@@ -991,7 +784,7 @@ object CloudSyncManager {
             }
 
             puntosList.add(PuntoRutaEntity(
-                id = 0, // Room generará una nueva PK secuencial (y en el orden correcto)
+                id = 0,
                 idRuta = pObj.optString("id_ruta", routeId),
                 fechaHora = pObj.optString("fecha_hora", ""),
                 latitud = pObj.optDouble("latitud", 0.0),
@@ -1010,7 +803,7 @@ object CloudSyncManager {
         for (i in 0 until tArray.length()) {
             val tObj = tArray.getJSONObject(i)
             trazaList.add(TrazaRutaEntity(
-                id = 0, // Room generará una nueva PK
+                id = 0,
                 idRuta = tObj.optString("id_ruta", routeId),
                 orden = tObj.optInt("orden", i),
                 latitud = tObj.optDouble("latitud", 0.0),
@@ -1024,36 +817,32 @@ object CloudSyncManager {
             if (existing == null) {
                 db.rutasDao().insertRuta(rutaEntity)
             } else {
-                // Si la ruta ya existía localmente, limpiamos sus puntos y trazas previos antes de re-importar los de la nube
                 db.rutasDao().deletePuntosForRuta(routeId)
                 db.rutasDao().deleteTrazaForRuta(routeId)
             }
             for (p in puntosList) {
-                // Insertar los puntos de ruta importados
                 db.rutasDao().insertPuntoRuta(p)
             }
             for (t in trazaList) {
-                // Insertar la traza de ruta importada
                 db.rutasDao().insertTrazaRuta(t)
             }
         }
-        
+
         onProgress("¡Ruta importada con éxito!")
     }
 
     /**
      * Verifica si una ruta local está descargada correctamente, incluyendo sus fotos.
-     * Retorna true si todo está bien, false si faltan fotos, puntos, o si la ruta no existe.
      */
     suspend fun verifyRouteDownloadedCorrectly(context: Context, db: RutasDatabase, routeId: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val ruta = db.rutasDao().getRutaById(routeId) ?: return@withContext false
             val puntos = db.rutasDao().getPuntosForRuta(routeId)
-            
+
             if (puntos.isEmpty()) {
                 return@withContext false
             }
-            
+
             for (punto in puntos) {
                 val path = punto.fotoPath
                 if (!path.isNullOrEmpty()) {
@@ -1074,7 +863,7 @@ object CloudSyncManager {
     }
 
     /**
-     * Recupera y descarga la foto de un punto de ruta específico desde Neon PostgreSQL.
+     * Recupera y descarga la foto de un punto de ruta específico desde PostgREST.
      */
     suspend fun recoverWaypointPhoto(
         context: Context,
@@ -1083,51 +872,45 @@ object CloudSyncManager {
         longitud: Double,
         fechaHora: String
     ): PhotoRecoveryDetails = withContext(Dispatchers.IO) {
-        var encryptedBase64: String? = null
         var cloudPhotoPath: String? = null
-        val sql = "SELECT datos_encriptados FROM rutas WHERE id = ?"
         try {
-            getConnection().use { conn ->
-                conn.prepareStatement(sql).use { pstmt ->
-                    pstmt.setString(1, routeId)
-                    pstmt.executeQuery().use { rs ->
-                        if (rs.next()) {
-                            encryptedBase64 = rs.getString("datos_encriptados")
-                        }
-                    }
-                }
-            }
-            if (encryptedBase64.isNullOrEmpty()) return@withContext PhotoRecoveryDetails(null, null)
+            val encodedId = URLEncoder.encode(routeId, "UTF-8")
+            val jsonStr = executeGet("rutas?id=eq.$encodedId&select=datos_encriptados&limit=1")
+            val array = JSONArray(jsonStr)
+            if (array.length() == 0) return@withContext PhotoRecoveryDetails(null, null)
+
+            val encryptedBase64 = array.getJSONObject(0).optString("datos_encriptados", "")
+            if (encryptedBase64.isEmpty()) return@withContext PhotoRecoveryDetails(null, null)
 
             val encryptedBytes = Base64.decode(encryptedBase64, Base64.NO_WRAP)
             val decryptedJson = CryptoUtils.decrypt(encryptedBytes)
             val root = JSONObject(decryptedJson)
             val pArray = root.getJSONArray("puntos")
-            
+
             for (i in 0 until pArray.length()) {
                 val pObj = pArray.getJSONObject(i)
                 val pLat = pObj.getDouble("latitud")
                 val pLon = pObj.getDouble("longitud")
                 val pTime = pObj.getString("fecha_hora")
-                
+
                 if (Math.abs(pLat - latitud) < 0.000001 && Math.abs(pLon - longitud) < 0.000001 && pTime == fechaHora) {
                     cloudPhotoPath = if (pObj.isNull("foto_path")) null else pObj.getString("foto_path")
                     break
                 }
             }
-            
+
             if (cloudPhotoPath.isNullOrEmpty()) {
                 return@withContext PhotoRecoveryDetails(null, null)
             }
-            
+
             if (!cloudPhotoPath.startsWith("http")) {
                 return@withContext PhotoRecoveryDetails(null, cloudPhotoPath)
             }
-            
+
             val fileName = cloudPhotoPath.substringAfterLast("/")
             val localFile = File(context.filesDir, fileName)
             java.net.URL(cloudPhotoPath).openStream().use { input ->
-                java.io.FileOutputStream(localFile).use { output ->
+                FileOutputStream(localFile).use { output ->
                     input.copyTo(output)
                 }
             }
@@ -1144,78 +927,72 @@ object CloudSyncManager {
     )
 
     /**
-     * Obtiene las invitaciones a salir de PostgreSQL disponibles para el senderista.
-     * Rango de fechas de 'diasRango' partiendo de la fecha actual.
-     * Excluye las invitaciones en las que el usuario ya está registrado como participante.
+     * Obtiene las invitaciones a salir desde PostgREST disponibles para el senderista.
      */
     suspend fun fetchAvailableInvitations(diasRango: Int, userEmail: String): List<Map<String, Any>> = withContext(Dispatchers.IO) {
         val list = mutableListOf<Map<String, Any>>()
         val nowMs = System.currentTimeMillis()
         val endMs = nowMs + (diasRango * 24L * 60L * 60L * 1000L)
-        val nowTS = java.sql.Timestamp(nowMs)
-        val endTS = java.sql.Timestamp(endMs)
-        
-        val sql = """
-            SELECT i.id_invitacion, i.id_ruta, i.telefono, i.fecha_hora_salida, i.punto_reunion, 
-                   i.link_google_maps, i.cooperacion_minima, i.fecha_limite_registro, i.nivel, 
-                   i.instrucciones, i.latitud, i.longitud, r.nombre AS ruta_nombre, 
-                   r.conectividad, r.distancia_gps, r.desnivel_positivo, r.desnivel_negativo,
-                   r.contador_subidas, r.contador_bajadas, r.duracion_segundos
-            FROM invitaciones_ruta i
-            LEFT JOIN rutas r ON i.id_ruta = r.id
-            LEFT JOIN senderistas s ON i.telefono = s.telefono
-            WHERE i.fecha_hora_salida >= ? AND i.fecha_hora_salida <= ?
-              AND i.id_invitacion NOT IN (
-                  SELECT p.id_invitacion 
-                  FROM participantes_invitacion p 
-                  WHERE p.email_senderista = ?
-              )
-            ORDER BY i.fecha_hora_salida ASC
-        """.trimIndent()
-        
-        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-        
+        val sdfIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        val startIso = sdfIso.format(Date(nowMs))
+        val endIso = sdfIso.format(Date(endMs))
+
+        val query = "invitaciones_ruta?fecha_hora_salida=gte.$startIso&fecha_hora_salida=lte.$endIso&select=id_invitacion,id_ruta,telefono,fecha_hora_salida,punto_reunion,link_google_maps,cooperacion_minima,fecha_limite_registro,nivel,instrucciones,latitud,longitud,rutas(nombre,conectividad,distancia_gps,desnivel_positivo,desnivel_negativo,contador_subidas,contador_bajadas,duracion_segundos),participantes_invitacion(email_senderista)&order=fecha_hora_salida.asc"
+
+        val sdfDisplay = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+
         try {
-            getConnection().use { conn ->
-                conn.prepareStatement(sql).use { pstmt ->
-                    pstmt.setTimestamp(1, nowTS)
-                    pstmt.setTimestamp(2, endTS)
-                    pstmt.setString(3, userEmail)
-                    pstmt.executeQuery().use { rs ->
-                        while (rs.next()) {
-                            val map = mutableMapOf<String, Any>()
-                            map["id_invitacion"] = rs.getInt("id_invitacion")
-                            map["id_ruta"] = rs.getString("id_ruta") ?: ""
-                            map["telefono"] = rs.getString("telefono") ?: ""
-                            
-                            val salidaTS = rs.getTimestamp("fecha_hora_salida")
-                            map["fecha_hora_salida"] = if (salidaTS != null) sdf.format(salidaTS) else ""
-                            
-                            map["punto_reunion"] = rs.getString("punto_reunion") ?: ""
-                            map["link_google_maps"] = rs.getString("link_google_maps") ?: ""
-                            map["cooperacion_minima"] = rs.getDouble("cooperacion_minima")
-                            
-                            val limiteTS = rs.getTimestamp("fecha_limite_registro")
-                            map["fecha_limite_registro"] = if (limiteTS != null) sdf.format(limiteTS) else ""
-                            
-                            map["nivel"] = rs.getString("nivel") ?: ""
-                            map["instrucciones"] = rs.getString("instrucciones") ?: ""
-                            map["latitud"] = rs.getDouble("latitud")
-                            map["longitud"] = rs.getDouble("longitud")
-                            map["ruta_nombre"] = rs.getString("ruta_nombre") ?: "Ruta sin nombre"
-                            
-                            map["conectividad"] = rs.getFloat("conectividad")
-                            map["distancia_gps"] = rs.getDouble("distancia_gps")
-                            map["desnivel_positivo"] = rs.getDouble("desnivel_positivo")
-                            map["desnivel_negativo"] = rs.getDouble("desnivel_negativo")
-                            map["contador_subidas"] = rs.getInt("contador_subidas")
-                            map["contador_bajadas"] = rs.getInt("contador_bajadas")
-                            map["duracion_segundos"] = rs.getLong("duracion_segundos")
-                            
-                            list.add(map)
+            val jsonStr = executeGet(query)
+            val array = JSONArray(jsonStr)
+            for (i in 0 until array.length()) {
+                val inv = array.getJSONObject(i)
+
+                // Filtrar si el usuario ya está registrado en los participantes
+                val participantesArray = inv.optJSONArray("participantes_invitacion")
+                var yaRegistrado = false
+                if (participantesArray != null) {
+                    for (pIdx in 0 until participantesArray.length()) {
+                        val pEmail = participantesArray.getJSONObject(pIdx).optString("email_senderista", "")
+                        if (pEmail.equals(userEmail, ignoreCase = true)) {
+                            yaRegistrado = true
+                            break
                         }
                     }
                 }
+                if (yaRegistrado) continue
+
+                val rutaObj = inv.optJSONObject("rutas")
+
+                val map = mutableMapOf<String, Any>()
+                map["id_invitacion"] = inv.optInt("id_invitacion", 0)
+                map["id_ruta"] = inv.optString("id_ruta", "")
+                map["telefono"] = inv.optString("telefono", "")
+
+                val salidaRaw = inv.optString("fecha_hora_salida", "")
+                map["fecha_hora_salida"] = formatIsoToDisplay(salidaRaw, sdfDisplay)
+
+                map["punto_reunion"] = inv.optString("punto_reunion", "")
+                map["link_google_maps"] = inv.optString("link_google_maps", "")
+                map["cooperacion_minima"] = inv.optDouble("cooperacion_minima", 0.0)
+
+                val limiteRaw = inv.optString("fecha_limite_registro", "")
+                map["fecha_limite_registro"] = formatIsoToDisplay(limiteRaw, sdfDisplay)
+
+                map["nivel"] = inv.optString("nivel", "")
+                map["instrucciones"] = inv.optString("instrucciones", "")
+                map["latitud"] = inv.optDouble("latitud", 0.0)
+                map["longitud"] = inv.optDouble("longitud", 0.0)
+                map["ruta_nombre"] = rutaObj?.optString("nombre") ?: "Ruta sin nombre"
+
+                map["conectividad"] = rutaObj?.optDouble("conectividad", 0.0)?.toFloat() ?: 0.0f
+                map["distancia_gps"] = rutaObj?.optDouble("distancia_gps", 0.0) ?: 0.0
+                map["desnivel_positivo"] = rutaObj?.optDouble("desnivel_positivo", 0.0) ?: 0.0
+                map["desnivel_negativo"] = rutaObj?.optDouble("desnivel_negativo", 0.0) ?: 0.0
+                map["contador_subidas"] = rutaObj?.optInt("contador_subidas", 0) ?: 0
+                map["contador_bajadas"] = rutaObj?.optInt("contador_bajadas", 0) ?: 0
+                map["duracion_segundos"] = rutaObj?.optLong("duracion_segundos", 0L) ?: 0L
+
+                list.add(map)
             }
         } catch (e: Throwable) {
             Log.e(TAG, "Error consultando invitaciones disponibles: ${e.message}", e)
@@ -1224,7 +1001,7 @@ object CloudSyncManager {
     }
 
     /**
-     * Registra o actualiza la participación del senderista en una invitación específica en PostgreSQL.
+     * Registra o actualiza la participación del senderista en una invitación específica en PostgREST.
      */
     suspend fun registerParticipationInCloud(
         idInvitacion: Int, 
@@ -1233,91 +1010,44 @@ object CloudSyncManager {
         cooperacion: Double?, 
         fechaCooperacionStr: String?
     ): Unit = withContext(Dispatchers.IO) {
-        val sql = """
-            INSERT INTO participantes_invitacion (id_invitacion, email_senderista, telefono_senderista, cooperacion, fecha_cooperacion, fecha_registro)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT (id_invitacion, email_senderista) DO UPDATE SET
-                cooperacion = EXCLUDED.cooperacion,
-                fecha_cooperacion = EXCLUDED.fecha_cooperacion;
-        """.trimIndent()
-        
-        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-        val parsedFechaCoop = if (!fechaCooperacionStr.isNullOrEmpty()) {
-            try {
-                sdf.parse(fechaCooperacionStr)
-            } catch (e: Exception) {
-                null
-            }
-        } else {
-            null
+        val payload = JSONObject().apply {
+            put("id_invitacion", idInvitacion)
+            put("email_senderista", emailSenderista)
+            put("telefono_senderista", telefonoSenderista)
+            put("cooperacion", cooperacion ?: JSONObject.NULL)
+            put("fecha_cooperacion", if (!fechaCooperacionStr.isNullOrEmpty()) formatToIso(fechaCooperacionStr) else JSONObject.NULL)
         }
-        val sqlFechaCoop = parsedFechaCoop?.let { java.sql.Timestamp(it.time) }
-        
-        getConnection().use { conn ->
-            conn.prepareStatement(sql).use { pstmt ->
-                pstmt.setInt(1, idInvitacion)
-                pstmt.setString(2, emailSenderista)
-                pstmt.setString(3, telefonoSenderista)
-                if (cooperacion != null) {
-                    pstmt.setDouble(4, cooperacion)
-                } else {
-                    pstmt.setNull(4, java.sql.Types.DOUBLE)
-                }
-                pstmt.setTimestamp(5, sqlFechaCoop)
-                pstmt.executeUpdate()
-            }
-        }
+        executePostUpsert("participantes_invitacion", payload.toString())
     }
 
     /**
-     * Elimina el registro de participación del senderista en PostgreSQL.
+     * Elimina el registro de participación del senderista en PostgREST.
      */
     suspend fun deleteParticipationFromCloud(idInvitacion: Int, emailSenderista: String): Unit = withContext(Dispatchers.IO) {
-        val sql = "DELETE FROM participantes_invitacion WHERE id_invitacion = ? AND email_senderista = ?"
-        getConnection().use { conn ->
-            conn.prepareStatement(sql).use { pstmt ->
-                pstmt.setInt(1, idInvitacion)
-                pstmt.setString(2, emailSenderista)
-                pstmt.executeUpdate()
-            }
-        }
+        val encodedEmail = URLEncoder.encode(emailSenderista, "UTF-8")
+        executeDelete("participantes_invitacion?id_invitacion=eq.$idInvitacion&email_senderista=eq.$encodedEmail")
     }
 
     /**
-     * Elimina el registro de la invitación en PostgreSQL.
+     * Elimina el registro de la invitación en PostgREST.
      */
     suspend fun deleteInvitationFromCloud(idInvitacion: Int): Unit = withContext(Dispatchers.IO) {
-        val sql = "DELETE FROM invitaciones_ruta WHERE id_invitacion = ?"
-        getConnection().use { conn ->
-            conn.prepareStatement(sql).use { pstmt ->
-                pstmt.setInt(1, idInvitacion)
-                pstmt.executeUpdate()
-            }
-        }
+        executeDelete("invitaciones_ruta?id_invitacion=eq.$idInvitacion")
     }
 
     /**
-     * Consulta si la participación del senderista sigue registrada en PostgreSQL.
+     * Consulta si la participación del senderista sigue registrada en PostgREST.
      */
     suspend fun isParticipantRegisteredInCloud(idInvitacion: Int, emailSenderista: String): Boolean = withContext(Dispatchers.IO) {
-        val sql = "SELECT COUNT(*) FROM participantes_invitacion WHERE id_invitacion = ? AND email_senderista = ?"
         try {
-            getConnection().use { conn ->
-                conn.prepareStatement(sql).use { pstmt ->
-                    pstmt.setInt(1, idInvitacion)
-                    pstmt.setString(2, emailSenderista)
-                    pstmt.executeQuery().use { rs ->
-                        if (rs.next()) {
-                            return@withContext rs.getInt(1) > 0
-                        }
-                    }
-                }
-            }
+            val encodedEmail = URLEncoder.encode(emailSenderista, "UTF-8")
+            val jsonStr = executeGet("participantes_invitacion?id_invitacion=eq.$idInvitacion&email_senderista=eq.$encodedEmail&select=id_invitacion")
+            val array = JSONArray(jsonStr)
+            return@withContext array.length() > 0
         } catch (e: Exception) {
             Log.e(TAG, "Error checking participation in cloud: ${e.message}", e)
-            return@withContext true // Asumir que sí para no borrar falsamente sin conexión
+            return@withContext true
         }
-        false
     }
 
     /**
@@ -1332,7 +1062,7 @@ object CloudSyncManager {
             if (folderIndex != -1 && folderIndex < parts.size - 1) {
                 val filename = parts.subList(folderIndex, parts.size).joinToString("/")
                 val publicId = filename.substringBeforeLast(".")
-                
+
                 val config = SecureCredentialsManager.getCloudinaryConfig()
                 val cloudinary = Cloudinary(config)
                 cloudinary.uploader().destroy(publicId, ObjectUtils.emptyMap())
@@ -1344,54 +1074,36 @@ object CloudSyncManager {
     }
 
     /**
-     * Verifica si una invitación existe en la base de datos de PostgreSQL.
+     * Verifica si una invitación existe en la base de datos vía PostgREST.
      */
     suspend fun doesInvitationExistInCloud(idInvitacion: Int): Boolean = withContext(Dispatchers.IO) {
-        val sql = "SELECT COUNT(*) FROM invitaciones_ruta WHERE id_invitacion = ?"
         try {
-            getConnection().use { conn ->
-                conn.prepareStatement(sql).use { pstmt ->
-                    pstmt.setInt(1, idInvitacion)
-                    pstmt.executeQuery().use { rs ->
-                        if (rs.next()) {
-                            return@withContext rs.getInt(1) > 0
-                        }
-                    }
-                }
-            }
+            val jsonStr = executeGet("invitaciones_ruta?id_invitacion=eq.$idInvitacion&select=id_invitacion")
+            val array = JSONArray(jsonStr)
+            return@withContext array.length() > 0
         } catch (e: Exception) {
             Log.e(TAG, "Error checking invitation existence in cloud: ${e.message}", e)
-            return@withContext true // Asumir que sí ante problemas de red para evitar borrado accidental
+            return@withContext true
         }
-        false
     }
 
     /**
-     * Obtiene el listado de participantes de una invitación desde PostgreSQL.
+     * Obtiene el listado de participantes de una invitación desde PostgREST.
      */
     suspend fun fetchOutingParticipants(idInvitacion: Int): List<Map<String, Any>> = withContext(Dispatchers.IO) {
         val list = mutableListOf<Map<String, Any>>()
-        val sql = """
-            SELECT p.telefono_senderista, s.nombre, s.id_beacon
-            FROM participantes_invitacion p
-            LEFT JOIN senderistas s ON p.email_senderista = s.email
-            WHERE p.id_invitacion = ?
-        """.trimIndent()
         try {
-            getConnection().use { conn ->
-                conn.prepareStatement(sql).use { pstmt ->
-                    pstmt.setInt(1, idInvitacion)
-                    pstmt.executeQuery().use { rs ->
-                        while (rs.next()) {
-                            val map = mapOf(
-                                "telefono_senderista" to (rs.getString("telefono_senderista") ?: ""),
-                                "nombre" to (rs.getString("nombre") ?: ""),
-                                "id_beacon" to (rs.getString("id_beacon") ?: "")
-                            )
-                            list.add(map)
-                        }
-                    }
-                }
+            val query = "participantes_invitacion?id_invitacion=eq.$idInvitacion&select=telefono_senderista,senderistas(nombre,id_beacon)"
+            val jsonStr = executeGet(query)
+            val array = JSONArray(jsonStr)
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val sObj = obj.optJSONObject("senderistas")
+                list.add(mapOf(
+                    "telefono_senderista" to obj.optString("telefono_senderista", ""),
+                    "nombre" to (sObj?.optString("nombre") ?: ""),
+                    "id_beacon" to (sObj?.optString("id_beacon") ?: "")
+                ))
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error consultando participantes de la invitacion: ${e.message}", e)
@@ -1400,20 +1112,14 @@ object CloudSyncManager {
     }
 
     /**
-     * Elimina todos los datos de un senderista de la base de datos PostgreSQL.
-     * Debido a la integridad referencial (ON DELETE CASCADE), esto también debería
-     * eliminar las rutas asociadas en la tabla 'rutas' y otros registros dependientes.
+     * Elimina todos los datos de un senderista de la base de datos vía PostgREST.
+     * Debido a la integridad referencial (ON DELETE CASCADE), se eliminan sus rutas y participaciones.
      */
     suspend fun deleteAccountFromCloud(email: String): Unit = withContext(Dispatchers.IO) {
-        val sql = "DELETE FROM senderistas WHERE email = ?"
         try {
-            getConnection().use { conn ->
-                conn.prepareStatement(sql).use { pstmt ->
-                    pstmt.setString(1, email)
-                    val affectedRows = pstmt.executeUpdate()
-                    Log.d(TAG, "Cuenta eliminada de la nube ($email). Filas afectadas: $affectedRows")
-                }
-            }
+            val encodedEmail = URLEncoder.encode(email, "UTF-8")
+            val affectedRows = executeDelete("senderistas?email=eq.$encodedEmail")
+            Log.d(TAG, "Cuenta eliminada de la nube ($email). Filas afectadas: $affectedRows")
         } catch (e: Exception) {
             Log.e(TAG, "Error al eliminar la cuenta de la nube: ${e.message}", e)
             throw e

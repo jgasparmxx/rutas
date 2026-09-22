@@ -47,6 +47,11 @@ object SecureCredentialsManager {
         return String(result, Charsets.UTF_8)
     }
 
+    /**
+     * URL base de la API REST de PostgREST desplegada en Render (o servidor propio).
+     */
+    fun getPostgrestBaseUrl(): String = "https://postgrest-latest-09dh.onrender.com"
+
     fun getPostgresUri(): String = deobfuscate(OBFUSCATED_PG_URI)
     fun getPostgresUser(): String = deobfuscate(OBFUSCATED_PG_USER)
     fun getPostgresPassword(): String = deobfuscate(OBFUSCATED_PG_PASS)

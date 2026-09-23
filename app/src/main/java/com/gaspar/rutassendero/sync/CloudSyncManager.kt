@@ -448,6 +448,13 @@ object CloudSyncManager {
         onProgress("Obteniendo datos de la ruta...")
         val ruta = db.rutasDao().getRutaById(routeId)
             ?: throw Exception("No se encontró la ruta seleccionada localmente.")
+
+        val isOwn = ruta.telefono.isEmpty() || com.gaspar.rutassendero.ui.components.matchPhones(ruta.telefono, senderista.telefono)
+        if (!isOwn) {
+            Log.w(TAG, "No se sincroniza la ruta '${ruta.nombre}' (${ruta.id}) a la nube porque pertenece a otro senderista (${ruta.telefono}).")
+            return@withContext
+        }
+
         val puntos = db.rutasDao().getPuntosForRuta(routeId)
         val traza = db.rutasDao().getTrazaForRuta(routeId)
 
@@ -462,6 +469,13 @@ object CloudSyncManager {
                         try {
                             val publicId = "${routeId}_${punto.id}"
                             val cloudUrl = uploadToCloudinary(compressed, publicId)
+                            
+                            // Asegurar que exista una copia local con el nombre del archivo de la nube en filesDir
+                            val cloudFileName = cloudUrl.substringAfterLast("/")
+                            val localCanonicalFile = File(context.filesDir, cloudFileName)
+                            if (!localCanonicalFile.exists() && rawFile.exists()) {
+                                rawFile.copyTo(localCanonicalFile, overwrite = true)
+                            }
                             compressed.delete() // Limpiar temporal
 
                             // Actualizar localmente para no volver a subirla
@@ -476,7 +490,13 @@ object CloudSyncManager {
                         throw Exception("No se pudo comprimir la foto del punto ${idx + 1}.")
                     }
                 } else {
-                    punto.copy(fotoPath = null)
+                    // Si el archivo en disco no está en la ruta guardada, verificar si está con su nombre en filesDir
+                    val altFile = File(context.filesDir, File(punto.fotoPath).name)
+                    if (altFile.exists() && altFile.length() > 0) {
+                        punto.copy(fotoPath = altFile.absolutePath)
+                    } else {
+                        punto
+                    }
                 }
             } else {
                 punto
@@ -655,6 +675,7 @@ object CloudSyncManager {
         context: Context,
         db: RutasDatabase,
         routeId: String,
+        targetPhone: String? = null,
         onProgress: (String) -> Unit
     ): Unit = withContext(Dispatchers.IO) {
         onProgress("Comprobando existencia local...")
@@ -685,6 +706,9 @@ object CloudSyncManager {
         val root = JSONObject(decryptedJson)
         val rJson = root.getJSONObject("ruta")
 
+        val finalPhone = targetPhone?.takeIf { it.isNotBlank() }
+            ?: (telefonoCreador ?: rJson.optString("telefono", "")).ifEmpty { rJson.optString("telefono", "") }
+
         val rutaEntity = RutaEntity(
             id = rJson.getString("id"),
             nombre = rJson.getString("nombre"),
@@ -701,11 +725,11 @@ object CloudSyncManager {
             desnivelNegativo = rJson.optDouble("desnivel_negativo", 0.0),
             contadorSubidas = rJson.optInt("contador_subidas", 0),
             contadorBajadas = rJson.optInt("contador_bajadas", 0),
-            telefono = (telefonoCreador ?: rJson.optString("telefono", "")).ifEmpty { rJson.optString("telefono", "") },
+            telefono = finalPhone,
             conectividad = rJson.optDouble("conectividad", 0.0).toFloat(),
             codigo = rJson.optString("codigo", ""),
             publico = rJson.optBoolean("publico", false),
-            fechaImportacion = System.currentTimeMillis()
+            fechaImportacion = if (!targetPhone.isNullOrBlank()) null else System.currentTimeMillis()
         )
 
         val pArray = root.getJSONArray("puntos")
@@ -737,6 +761,7 @@ object CloudSyncManager {
             "${it.fechaHoraMillis}_${it.pObj.optDouble("latitud", 0.0)}_${it.pObj.optDouble("longitud", 0.0)}"
         }
 
+        val existingLocalPoints = if (existing != null) db.rutasDao().getPuntosForRuta(routeId) else emptyList()
         val puntosList = mutableListOf<PuntoRutaEntity>()
         for ((idx, temp) in uniquePuntos.withIndex()) {
             val pObj = temp.pObj
@@ -744,23 +769,41 @@ object CloudSyncManager {
             var localPath: String? = null
             if (!cloudPath.isNullOrEmpty()) {
                 if (cloudPath.startsWith("http")) {
-                    try {
-                        val fileName = cloudPath.substringAfterLast("/")
-                        val pct = ((idx + 1).toFloat() / tempPuntos.size * 100).toInt()
-                        onProgress("bajando $pct%..")
-                        val localFile = File(context.filesDir, fileName)
-                        java.net.URL(cloudPath).openStream().use { input ->
-                            FileOutputStream(localFile).use { output ->
-                                input.copyTo(output)
-                            }
-                        }
+                    val fileName = cloudPath.substringAfterLast("/")
+                    val localFile = File(context.filesDir, fileName)
+                    if (localFile.exists() && localFile.length() > 0) {
+                        // 1. La foto ya existe físicamente en el teléfono
                         localPath = localFile.absolutePath
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error al descargar foto de la nube ($cloudPath): ${e.message}", e)
-                        localPath = null
+                    } else {
+                        // 2. Intentar descargarla de la nube
+                        try {
+                            val pct = ((idx + 1).toFloat() / tempPuntos.size * 100).toInt()
+                            onProgress("bajando $pct%..")
+                            java.net.URL(cloudPath).openStream().use { input ->
+                                FileOutputStream(localFile).use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            if (localFile.exists() && localFile.length() > 0) {
+                                localPath = localFile.absolutePath
+                            } else {
+                                localPath = cloudPath
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error al descargar foto de la nube ($cloudPath): ${e.message}", e)
+                            // Si falla la red, preservar la foto local previa si existía, o mantener la URL
+                            val matchedExisting = existingLocalPoints.getOrNull(idx) ?: existingLocalPoints.find { it.descripcion == pObj.optString("descripcion") }
+                            localPath = matchedExisting?.fotoPath ?: cloudPath
+                        }
                     }
                 } else {
                     localPath = cloudPath
+                }
+            } else {
+                // Si la nube no tenía foto, pero localmente ya teníamos una foto válida, ¡conservarla!
+                val matchedExisting = existingLocalPoints.getOrNull(idx) ?: existingLocalPoints.find { it.descripcion == pObj.optString("descripcion") }
+                if (matchedExisting != null && !matchedExisting.fotoPath.isNullOrEmpty()) {
+                    localPath = matchedExisting.fotoPath
                 }
             }
 
@@ -795,12 +838,11 @@ object CloudSyncManager {
 
         // Guardar transaccionalmente en Room
         db.withTransaction {
-            if (existing == null) {
-                db.rutasDao().insertRuta(rutaEntity)
-            } else {
+            if (existing != null) {
                 db.rutasDao().deletePuntosForRuta(routeId)
                 db.rutasDao().deleteTrazaForRuta(routeId)
             }
+            db.rutasDao().insertRuta(rutaEntity)
             for (p in puntosList) {
                 db.rutasDao().insertPuntoRuta(p)
             }
@@ -828,11 +870,16 @@ object CloudSyncManager {
                 val path = punto.fotoPath
                 if (!path.isNullOrEmpty()) {
                     if (path.startsWith("http")) {
-                        return@withContext false
-                    }
-                    val file = File(path)
-                    if (!file.exists() || file.length() == 0L) {
-                        return@withContext false
+                        val fileName = path.substringAfterLast("/")
+                        val localFile = File(context.filesDir, fileName)
+                        if (!localFile.exists() || localFile.length() == 0L) {
+                            return@withContext false
+                        }
+                    } else {
+                        val file = File(path)
+                        if (!file.exists() || file.length() == 0L) {
+                            return@withContext false
+                        }
                     }
                 }
             }

@@ -160,10 +160,13 @@ class PreferencesHelper(context: Context) {
         set(value) = prefs.edit().putInt(KEY_LAUNCH_COUNT, value).apply()
 
     /**
-     * Límite de días de prueba (por defecto 40 días).
+     * Límite de días de prueba (por defecto 90 días / 3 meses).
      */
     var trialDaysLimit: Int
-        get() = prefs.getInt(KEY_TRIAL_DAYS_LIMIT, 30) // GASPAR CAMBIA EL VALOR A 30 DIAS
+        get() {
+            val days = prefs.getInt(KEY_TRIAL_DAYS_LIMIT, 90)
+            return if (days < 90) 90 else days
+        }
         set(value) = prefs.edit().putInt(KEY_TRIAL_DAYS_LIMIT, value).apply()
 
     /**
@@ -226,6 +229,13 @@ class PreferencesHelper(context: Context) {
         val synced = prefs.getStringSet("synced_cloud_routes", emptySet())?.toMutableSet() ?: mutableSetOf()
         synced.add(routeId)
         prefs.edit().putStringSet("synced_cloud_routes", synced).apply()
+    }
+
+    fun clearRouteSyncedToCloud(routeId: String) {
+        val synced = prefs.getStringSet("synced_cloud_routes", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (synced.remove(routeId)) {
+            prefs.edit().putStringSet("synced_cloud_routes", synced).apply()
+        }
     }
 
     fun clearAll() {

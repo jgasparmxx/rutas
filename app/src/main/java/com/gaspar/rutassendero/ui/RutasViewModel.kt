@@ -43,6 +43,7 @@ import java.util.Date
 import com.gaspar.rutassendero.bluetooth.BeaconEmitterManager
 import com.gaspar.rutassendero.bluetooth.BleSupportStatus
 import com.gaspar.rutassendero.bluetooth.BeaconScannerManager
+import com.gaspar.rutassendero.ui.components.matchPhones
 import com.gaspar.rutassendero.data.ParticipanteEntity
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -287,6 +288,7 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                                     Log.d("RutasViewModel", "Updated local senderista with server rol=$normalizedServerRol, bloqueado=${cloudSenderista.bloqueado}, minimoLongitud=${cloudSenderista.minimoLongitud}")
                                 }
                             }
+                            syncOwnRoutesFromCloud(cloudSenderista)
                         }
                     } catch (e: Exception) {
                         Log.e("RutasViewModel", "Failed to sync senderista role on startup: ${e.message}")
@@ -314,6 +316,7 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                         _ownerEmailFlow.value = senderista.email
                     }
                     cleanupPastOutings(senderista.telefono)
+                    syncOwnRoutesFromCloud(senderista)
                     if (senderista.idBeacon.isNullOrBlank()) {
                         viewModelScope.launch(Dispatchers.IO) {
                             try {
@@ -488,58 +491,100 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 com.gaspar.rutassendero.sync.CloudSyncManager.syncSenderista(updatedProfile)
                 Log.d("RutasViewModel", "Sincronización automática de perfil completada con éxito.")
-
-                // Descargar de forma transparente las rutas del senderista que están en la nube
-                launch(Dispatchers.IO) {
-                    try {
-                        fun matchPhones(p1: String, p2: String): Boolean {
-                            val clean1 = p1.filter { it.isDigit() }
-                            val clean2 = p2.filter { it.isDigit() }
-                            if (clean1.isEmpty() || clean2.isEmpty()) return false
-                            return if (clean1.length >= 10 && clean2.length >= 10) {
-                                clean1.takeLast(10) == clean2.takeLast(10)
-                            } else {
-                                clean1 == clean2
-                            }
-                        }
-
-                        val cloudRoutes = com.gaspar.rutassendero.sync.CloudSyncManager.fetchCloudRoutes()
-                        val ownCloudRoutes = cloudRoutes.filter { routeMap ->
-                            val email = routeMap["email_creador"] as? String ?: ""
-                            val phone = routeMap["telefono_creador"] as? String ?: ""
-                            val matchesEmail = email.isNotEmpty() && email.equals(updatedProfile.email, ignoreCase = true)
-                            val matchesPhone = phone.isNotEmpty() && matchPhones(phone, updatedProfile.telefono)
-                            matchesEmail || matchesPhone
-                        }
-
-                        var downloadedCount = 0
-                        for (routeMap in ownCloudRoutes) {
-                            val routeId = routeMap["id"] as String
-                            val localRoute = db.rutasDao().getRutaById(routeId)
-                            if (localRoute == null) {
-                                Log.d("RutasViewModel", "Descargando de forma transparente ruta propia '${routeMap["nombre"]}'...")
-                                com.gaspar.rutassendero.sync.CloudSyncManager.downloadRoute(app, db, routeId) { progress ->
-                                    Log.d("RutasViewModel", "Descarga transparente: $progress")
-                                }
-                                prefs.markRouteSyncedToCloud(routeId)
-                                downloadedCount++
-                            }
-                        }
-                        if (downloadedCount > 0) {
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(app, "Sincronización inicial: Se descargaron automáticamente $downloadedCount rutas tuyas desde la nube.", Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e("RutasViewModel", "Error al descargar rutas propias de forma transparente: ${e.message}", e)
-                    }
-                }
             } catch (e: Throwable) {
                 Log.e("RutasViewModel", "Error al sincronizar perfil con PostgreSQL en la nube: ${e.message}", e)
                 saveCrashLogToDownloads(app, e)
                 withContext(Dispatchers.Main) {
                     Toast.makeText(app, "Error de sincronización: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show()
                 }
+            }
+            // Sincronizar de forma transparente las rutas del senderista que están en la nube
+            syncOwnRoutesFromCloud(updatedProfile)
+        }
+    }
+
+    /**
+     * Sincroniza las rutas pertenecientes al senderista (por email o teléfono) desde la nube:
+     * - Si la ruta no existe localmente, la descarga y le asigna el teléfono actual del dueño.
+     * - Si la ruta ya existe localmente con un teléfono anterior o vacío, la actualiza con el teléfono actual del dueño
+     *   para que siempre aparezca en "Mis Rutas".
+     */
+    fun syncOwnRoutesFromCloud(ownerProfile: SenderistaEntity? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val profile = ownerProfile ?: db.rutasDao().getSenderistaFlow().first() ?: return@launch
+                val ownerEmail = profile.email.trim()
+                val ownerPhone = profile.telefono.trim()
+
+                fun matchPhones(p1: String, p2: String): Boolean {
+                    val clean1 = p1.filter { it.isDigit() }
+                    val clean2 = p2.filter { it.isDigit() }
+                    if (clean1.isEmpty() || clean2.isEmpty()) return false
+                    return if (clean1.length >= 10 && clean2.length >= 10) {
+                        clean1.takeLast(10) == clean2.takeLast(10)
+                    } else {
+                        clean1 == clean2
+                    }
+                }
+
+                // 1. Asegurar que las rutas de otros senderistas en la base local conserven su teléfono de creador y fechaImportacion
+                val marcosRoutes = setOf("FECHI", "VILAC", "PRUEB", "VILLA", "JALAAUPKZJ", "RODRO", "PICACSA217", "CAMPA", "LACUMXP2KD", "RÍOSAN2J98", "COMALWZP79", "COLOMXPZFZ")
+                val miboroRoutes = setOf("LACAM", "RANCH6Z45D")
+                val lourdesRoutes = setOf("CASCADE4XL", "GASXXOPVK1", "RÍOSA8BHZH")
+
+                val allLocal = db.rutasDao().getAllRutas()
+                for (lr in allLocal) {
+                    if (marcosRoutes.contains(lr.id) && (lr.telefono != "3121220253" || lr.fechaImportacion == null)) {
+                        db.rutasDao().insertRuta(lr.copy(telefono = "3121220253", fechaImportacion = lr.fechaImportacion ?: System.currentTimeMillis()))
+                    } else if (miboroRoutes.contains(lr.id) && (lr.telefono != "3122440776" || lr.fechaImportacion == null)) {
+                        db.rutasDao().insertRuta(lr.copy(telefono = "3122440776", fechaImportacion = lr.fechaImportacion ?: System.currentTimeMillis()))
+                    } else if (lourdesRoutes.contains(lr.id) && (lr.telefono != "3122716544" || lr.fechaImportacion == null)) {
+                        db.rutasDao().insertRuta(lr.copy(telefono = "3122716544", fechaImportacion = lr.fechaImportacion ?: System.currentTimeMillis()))
+                    }
+                }
+
+                // 2. Obtener rutas propias desde la nube (filtradas estrictamente por el teléfono del senderista actual)
+                val cloudRoutes = com.gaspar.rutassendero.sync.CloudSyncManager.fetchCloudRoutes()
+                val ownCloudRoutes = cloudRoutes.filter { routeMap ->
+                    val phone = routeMap["telefono_creador"] as? String ?: ""
+                    phone.isNotEmpty() && matchPhones(phone, ownerPhone)
+                }
+
+                var downloadedCount = 0
+                for (routeMap in ownCloudRoutes) {
+                    val routeId = routeMap["id"] as? String ?: continue
+                    try {
+                        val localRoute = db.rutasDao().getRutaById(routeId)
+                        if (localRoute == null) {
+                            Log.d("RutasViewModel", "Descargando de forma transparente ruta propia '${routeMap["nombre"]}'...")
+                            com.gaspar.rutassendero.sync.CloudSyncManager.downloadRoute(
+                                context = app,
+                                db = db,
+                                routeId = routeId,
+                                targetPhone = ownerPhone
+                            ) { progress ->
+                                Log.d("RutasViewModel", "Descarga propia: $progress")
+                            }
+                            prefs.markRouteSyncedToCloud(routeId)
+                            downloadedCount++
+                        } else {
+                            if (localRoute.telefono != ownerPhone) {
+                                val updatedRoute = localRoute.copy(telefono = ownerPhone)
+                                db.rutasDao().insertRuta(updatedRoute)
+                                Log.d("RutasViewModel", "Actualizado teléfono de ruta local propia '${localRoute.nombre}' a '$ownerPhone'")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("RutasViewModel", "Error al sincronizar ruta propia individual '$routeId': ${e.message}", e)
+                    }
+                }
+                if (downloadedCount > 0) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(app, "Sincronización de rutas: Se descargaron automáticamente $downloadedCount rutas tuyas desde la nube.", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("RutasViewModel", "Error general al descargar/sincronizar rutas propias de la nube: ${e.message}", e)
             }
         }
     }
@@ -1000,35 +1045,53 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteRuta(ruta: RutaEntity) {
-        if (!com.gaspar.rutassendero.utils.NetworkUtils.isNetworkAvailable(app)) {
-            networkErrorMessage.value = "Para eliminar una ruta, el dispositivo necesita tener conexión a Internet (Datos o WiFi)."
-            return
-        }
         viewModelScope.launch {
+            val senderista = withContext(Dispatchers.IO) {
+                db.rutasDao().getSenderistaFlow().first()
+            }
+            val userPhone = senderista?.telefono ?: ""
+            val isOwnRoute = if (senderista != null) {
+                ruta.fechaImportacion == null || matchPhones(ruta.telefono, userPhone) || ruta.telefono.isEmpty()
+            } else {
+                ruta.fechaImportacion == null || ruta.telefono.isEmpty()
+            }
+
+            val isSynced = prefs.isRouteSyncedToCloud(ruta.id)
+            val hasNetwork = com.gaspar.rutassendero.utils.NetworkUtils.isNetworkAvailable(app)
+
+            if (isOwnRoute && isSynced && !hasNetwork) {
+                networkErrorMessage.value = "Para eliminar tu propia ruta de la nube, el dispositivo necesita tener conexión a Internet (Datos o WiFi)."
+                return@launch
+            }
+
             // 1. Obtener puntos antes de borrarlos para saber las rutas de las fotos
             val puntos = withContext(Dispatchers.IO) {
                 db.rutasDao().getPuntosForRuta(ruta.id)
             }
 
-            db.rutasDao().deleteRuta(ruta)
-            db.rutasDao().deletePuntosForRuta(ruta.id)
-            db.rutasDao().deleteTrazaForRuta(ruta.id)
+            withContext(Dispatchers.IO) {
+                db.rutasDao().deleteRuta(ruta)
+                db.rutasDao().deletePuntosForRuta(ruta.id)
+                db.rutasDao().deleteTrazaForRuta(ruta.id)
+            }
             if (selectedRoute.value?.id == ruta.id) {
                 GpsTrackingService.setSelectedRoute(null)
             }
 
-            // También borrar la Invitación Aceptada si existe (y cancelar participación en nube)
+            // También borrar la Invitación Aceptada si existe (y cancelar participación en nube si hay red)
             try {
-                val invitaciones = db.rutasDao().getInvitacionesAceptadas()
+                val invitaciones = withContext(Dispatchers.IO) { db.rutasDao().getInvitacionesAceptadas() }
                 val matchingInv = invitaciones.find { it.idRuta == ruta.id }
                 if (matchingInv != null) {
-                    db.rutasDao().deleteInvitacionAceptada(matchingInv)
-                    val currentSenderista = db.rutasDao().getSenderistaFlow().first()
-                    if (currentSenderista != null) {
-                        com.gaspar.rutassendero.sync.CloudSyncManager.deleteParticipationFromCloud(
-                            idInvitacion = matchingInv.idInvitacion,
-                            emailSenderista = currentSenderista.email
-                        )
+                    withContext(Dispatchers.IO) { db.rutasDao().deleteInvitacionAceptada(matchingInv) }
+                    val currentSenderista = withContext(Dispatchers.IO) { db.rutasDao().getSenderistaFlow().first() }
+                    if (currentSenderista != null && hasNetwork) {
+                        withContext(Dispatchers.IO) {
+                            com.gaspar.rutassendero.sync.CloudSyncManager.deleteParticipationFromCloud(
+                                idInvitacion = matchingInv.idInvitacion,
+                                emailSenderista = currentSenderista.email
+                            )
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -1037,17 +1100,7 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
             
             // Borrar de Neon Postgres, Cloudinary y script de Drive solo si es la propia ruta del senderista
             try {
-                val senderista = withContext(Dispatchers.IO) {
-                    db.rutasDao().getSenderistaFlow().first()
-                }
-                
-                val isOwnRoute = if (senderista != null) {
-                    ruta.telefono == senderista.telefono || ruta.telefono.isEmpty()
-                } else {
-                    ruta.telefono.isEmpty()
-                }
-
-                if (isOwnRoute && senderista != null) {
+                if (isOwnRoute && senderista != null && hasNetwork) {
                     // 1. Borrar en PostgreSQL (en la nube)
                     withContext(Dispatchers.IO) {
                         com.gaspar.rutassendero.sync.CloudSyncManager.deleteRouteFromCloud(ruta.id, senderista.email, senderista.telefono)
@@ -1093,7 +1146,7 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 Log.d("RutasViewModel", "Fotos locales eliminadas de la ruta ${ruta.id}.")
 
-                if (isOwnRoute && senderista != null) {
+                if (isOwnRoute && senderista != null && hasNetwork) {
                     // 4. Borrar únicamente el script SQL en Google Drive (conservando fotos)
                     val gAccount = com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(app)
                     val account = gAccount?.account
@@ -1119,6 +1172,40 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 Log.w("RutasViewModel", "No se pudo eliminar la ruta de la nube: ${e.message}")
             }
+
+            withContext(Dispatchers.Main) {
+                val label = if (isOwnRoute) "Tu ruta" else "Ruta descargada"
+                Toast.makeText(app, "$label '${ruta.nombre}' ha sido eliminada.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private suspend fun deleteRutaLocalOnly(ruta: RutaEntity) {
+        withContext(Dispatchers.IO) {
+            val puntos = db.rutasDao().getPuntosForRuta(ruta.id)
+            db.rutasDao().deleteRuta(ruta)
+            db.rutasDao().deletePuntosForRuta(ruta.id)
+            db.rutasDao().deleteTrazaForRuta(ruta.id)
+            if (selectedRoute.value?.id == ruta.id) {
+                withContext(Dispatchers.Main) {
+                    GpsTrackingService.setSelectedRoute(null)
+                }
+            }
+            for (punto in puntos) {
+                if (!punto.fotoPath.isNullOrEmpty()) {
+                    val file = File(punto.fotoPath)
+                    if (file.exists()) file.delete()
+                    if (punto.fotoPath.startsWith("http")) {
+                        val fileName = punto.fotoPath.substringAfterLast("/")
+                        val internalFile = File(app.filesDir, fileName)
+                        if (internalFile.exists()) internalFile.delete()
+                    }
+                }
+            }
+            val rootDir = app.getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES)
+            val safeRouteName = ruta.nombre.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            val souvenirDir = File(rootDir, "TekinsRutas/$safeRouteName")
+            if (souvenirDir.exists()) souvenirDir.deleteRecursively()
         }
     }
 
@@ -1136,19 +1223,18 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 // 3. Obtener todas las rutas locales
                 val localRutas = db.rutasDao().getAllRutas()
 
-                // 4. Filtrar las que son "otras rutas"
+                // 4. Filtrar las que son estrictamente "otras rutas" importadas (fechaImportacion != null)
+                // JAMÁS considerar como ajena una ruta local creada en este dispositivo (fechaImportacion == null)
                 val otherRutas = localRutas.filter {
-                    val isOwn = (senderista != null && (it.telefono == userPhone || it.telefono.isEmpty()))
-                    !isOwn
+                    val isOwn = it.fechaImportacion == null || matchPhones(it.telefono, userPhone) || it.telefono.isEmpty()
+                    !isOwn && it.fechaImportacion != null
                 }
 
                 // 5. Borrar las que no estén en la nube
                 for (ruta in otherRutas) {
                     if (!cloudRouteIds.contains(ruta.id)) {
                         Log.d("RutasViewModel", "Ruta ajena huérfana detectada: ${ruta.nombre} (ID: ${ruta.id}). Borrando localmente...")
-                        withContext(Dispatchers.Main) {
-                            deleteRuta(ruta)
-                        }
+                        deleteRutaLocalOnly(ruta)
                     }
                 }
             } catch (e: Exception) {
@@ -1177,7 +1263,8 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                                 Log.d("RutasViewModel", "Cleanup: Deleted invitation accepted ${invitation.idInvitacion} (older than 3 days)")
 
                                 val localRoute = db.rutasDao().getRutaById(invitation.idRuta)
-                                if (localRoute != null && localRoute.telefono != userPhone) {
+                                val isLocalRouteOwn = localRoute?.let { it.fechaImportacion == null || matchPhones(it.telefono, userPhone) || it.telefono.isEmpty() } ?: true
+                                if (localRoute != null && !isLocalRouteOwn && localRoute.fechaImportacion != null) {
                                     db.rutasDao().deleteRuta(localRoute)
                                     db.rutasDao().deletePuntosForRuta(localRoute.id)
                                     db.rutasDao().deleteTrazaForRuta(localRoute.id)
@@ -1212,13 +1299,13 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 val rutasDeSalidaMap = invitaciones.associateBy { it.idRuta }
                 
                 for (ruta in allLocalRoutes) {
-                    val isOwnRoute = if (userPhone.isNotEmpty()) {
-                        ruta.telefono == userPhone || ruta.telefono.isEmpty()
+                    val isOwnRoute = ruta.fechaImportacion == null || (if (userPhone.isNotEmpty()) {
+                        matchPhones(ruta.telefono, userPhone) || ruta.telefono.isEmpty()
                     } else {
                         ruta.telefono.isEmpty()
-                    }
+                    })
                     
-                    if (!isOwnRoute) {
+                    if (!isOwnRoute && ruta.fechaImportacion != null) {
                         var shouldDelete = false
                         val invitacion = rutasDeSalidaMap[ruta.id]
                         
@@ -1528,6 +1615,91 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Escanea el almacenamiento interno de la app buscando fotos huérfanas tomadas durante las rutas
+     * y las vuelve a vincular a los puntos de ruta correspondientes si su fotoPath es nula, vacía o inexistente.
+     */
+    suspend fun repairLocalRoutePhotos(context: Context, targetRouteId: String? = null): Int = withContext(Dispatchers.IO) {
+        var repairedCount = 0
+        try {
+            val routesToCheck = if (targetRouteId != null) {
+                listOfNotNull(db.rutasDao().getRutaById(targetRouteId))
+            } else {
+                db.rutasDao().getAllRutas()
+            }
+
+            val filesDir = context.filesDir ?: return@withContext 0
+            val allPhotos = filesDir.listFiles { file ->
+                file.isFile && (file.extension.equals("jpg", true) || file.extension.equals("jpeg", true)) && file.length() > 0
+            } ?: emptyArray()
+
+            if (allPhotos.isEmpty()) return@withContext 0
+
+            val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
+
+            data class PhotoCandidate(val file: File, val timestamp: Long)
+            val candidates = allPhotos.map { file ->
+                val timeFromName = if (file.name.startsWith("foto_")) {
+                    file.name.removePrefix("foto_").substringBefore(".").toLongOrNull()
+                } else null
+                PhotoCandidate(file, timeFromName ?: file.lastModified())
+            }.sortedBy { it.timestamp }
+
+            for (ruta in routesToCheck) {
+                val puntos = db.rutasDao().getPuntosForRuta(ruta.id)
+                var routeNeedsResync = false
+
+                for (punto in puntos) {
+                    val currentPath = punto.fotoPath
+                    val fileExists = !currentPath.isNullOrEmpty() && (
+                        File(currentPath).exists() ||
+                        File(context.filesDir, currentPath.substringAfterLast("/")).exists()
+                    )
+
+                    if (!fileExists) {
+                        // 1. Buscar coincidencia exacta por ID canónico: <routeId>_<puntoId>.jpg
+                        val exactNameMatch = allPhotos.find { it.name.startsWith("${ruta.id}_${punto.id}") }
+                        if (exactNameMatch != null) {
+                            db.rutasDao().insertPuntoRuta(punto.copy(fotoPath = exactNameMatch.absolutePath))
+                            repairedCount++
+                            routeNeedsResync = true
+                            continue
+                        }
+
+                        // 2. Si el punto tiene fechaHora, buscar la foto más cercana en el tiempo
+                        val puntoMillis = try {
+                            if (punto.fechaHora.isNotEmpty()) sdf.parse(punto.fechaHora)?.time ?: 0L else 0L
+                        } catch (e: Exception) {
+                            0L
+                        }
+
+                        if (puntoMillis > 0L) {
+                            // Buscar foto con diferencia menor a 30 minutos
+                            val bestMatch = candidates.minByOrNull { kotlin.math.abs(it.timestamp - puntoMillis) }
+                            if (bestMatch != null && kotlin.math.abs(bestMatch.timestamp - puntoMillis) < 1800000L) {
+                                db.rutasDao().insertPuntoRuta(punto.copy(fotoPath = bestMatch.file.absolutePath))
+                                repairedCount++
+                                routeNeedsResync = true
+                                continue
+                            }
+                        }
+                    }
+                }
+
+                if (routeNeedsResync && prefs.isRouteSyncedToCloud(ruta.id)) {
+                    prefs.clearRouteSyncedToCloud(ruta.id)
+                }
+            }
+
+            if (repairedCount > 0) {
+                Log.d("RutasViewModel", "repairLocalRoutePhotos: Se repararon y vincularon $repairedCount fotos locales.")
+            }
+        } catch (e: Exception) {
+            Log.e("RutasViewModel", "Error al reparar fotos locales: ${e.message}", e)
+        }
+        repairedCount
+    }
+
     fun checkAndResolveRoute(
         context: Context,
         routeId: String,
@@ -1535,6 +1707,8 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
         onResolveNeeded: () -> Unit
     ) {
         viewModelScope.launch {
+            // Reparar fotos huérfanas en disco antes de verificar
+            repairLocalRoutePhotos(context, routeId)
             val isCorrect = com.gaspar.rutassendero.sync.CloudSyncManager.verifyRouteDownloadedCorrectly(context, db, routeId)
             val isSynced = prefs.isRouteSyncedToCloud(routeId)
             if (isCorrect || !isSynced) {
@@ -1552,18 +1726,24 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
     fun triggerAutomaticCloudSync() {
         viewModelScope.launch(Dispatchers.IO) {
             val context = app.applicationContext
-            if (!com.gaspar.rutassendero.sync.GoogleDriveSyncManager.isWifiConnected(context)) {
-                Log.d("RutasViewModel", "AutoSync: No Wi-Fi connection. Skipping sync.")
+            repairLocalRoutePhotos(context)
+            if (!com.gaspar.rutassendero.utils.NetworkUtils.isNetworkAvailable(context) ||
+                !com.gaspar.rutassendero.utils.NetworkUtils.hasRealInternetConnection()) {
+                Log.d("RutasViewModel", "AutoSync: No real network connection available. Skipping sync.")
                 return@launch
             }
 
             try {
-                // 1. Sincronizar rutas finalizadas no respaldadas
+                val senderista = db.rutasDao().getSenderistaFlow().first()
+                val userPhone = senderista?.telefono ?: ""
+
+                // 1. Sincronizar rutas finalizadas no respaldadas (solo rutas propias)
                 val allRoutes = db.rutasDao().getAllRutas()
                 for (ruta in allRoutes) {
                     val isFinalized = db.rutasDao().isRutaFinalized(ruta.id)
                     val isSynced = prefs.isRouteSyncedToCloud(ruta.id)
-                    if (isFinalized && !isSynced) {
+                    val isOwn = matchPhones(ruta.telefono, userPhone) || (ruta.fechaImportacion == null && ruta.telefono.isEmpty())
+                    if (isFinalized && !isSynced && isOwn) {
                         Log.d("RutasViewModel", "AutoSync: Syncing finalized route '${ruta.nombre}' (${ruta.id}) to cloud...")
                         com.gaspar.rutassendero.sync.CloudSyncManager.syncRoute(context, db, ruta.id) { progress ->
                             Log.d("RutasViewModel", "AutoSync Progress for '${ruta.nombre}': $progress")
@@ -1576,7 +1756,6 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 // 2. Sincronizar participaciones de salidas pendientes
-                val senderista = db.rutasDao().getSenderistaFlow().first()
                 if (senderista != null) {
                     val pendingOutings = db.rutasDao().getInvitacionesAceptadas().filter { !it.sincronizadoConNube }
                     for (outing in pendingOutings) {
@@ -1609,14 +1788,40 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
     fun triggerManualCloudSync(context: android.content.Context) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // 1. Sincronizar rutas finalizadas no respaldadas
+                // 0. Reparar y revincular fotos huérfanas antes de la sincronización
+                val repaired = repairLocalRoutePhotos(context)
+                if (repaired > 0) {
+                    withContext(Dispatchers.Main) {
+                        android.widget.Toast.makeText(context, "Se recuperaron y vincularon $repaired fotos locales.", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+                // Comprobar si hay conexión real a Internet
+                if (!com.gaspar.rutassendero.utils.NetworkUtils.isNetworkAvailable(context) ||
+                    !com.gaspar.rutassendero.utils.NetworkUtils.hasRealInternetConnection()) {
+                    withContext(Dispatchers.Main) {
+                        val msg = if (repaired > 0) {
+                            "Fotos locales recuperadas ($repaired). Conéctate a Internet para sincronizar con la nube."
+                        } else {
+                            "Sin conexión a Internet. Conéctate a una red con datos para sincronizar."
+                        }
+                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+
+                val senderista = db.rutasDao().getSenderistaFlow().first()
+                val userPhone = senderista?.telefono ?: ""
+
+                // 1. Sincronizar rutas finalizadas no respaldadas (solo rutas propias)
                 val allRoutes = db.rutasDao().getAllRutas()
                 var syncedAny = false
                 
                 for (ruta in allRoutes) {
                     val isFinalized = db.rutasDao().isRutaFinalized(ruta.id)
                     val isSynced = prefs.isRouteSyncedToCloud(ruta.id)
-                    if (isFinalized && !isSynced) {
+                    val isOwn = matchPhones(ruta.telefono, userPhone) || (ruta.fechaImportacion == null && ruta.telefono.isEmpty())
+                    if (isFinalized && !isSynced && isOwn) {
                         Log.d("RutasViewModel", "ManualSync: Syncing finalized route '${ruta.nombre}' (${ruta.id}) to cloud...")
                         withContext(Dispatchers.Main) {
                             android.widget.Toast.makeText(context, "Sincronizando ruta '${ruta.nombre}'...", android.widget.Toast.LENGTH_SHORT).show()
@@ -1639,7 +1844,6 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 // 2. Sincronizar participaciones de salidas pendientes
-                val senderista = db.rutasDao().getSenderistaFlow().first()
                 if (senderista != null) {
                     val pendingOutings = db.rutasDao().getInvitacionesAceptadas().filter { !it.sincronizadoConNube }
                     for (outing in pendingOutings) {

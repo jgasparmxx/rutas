@@ -641,7 +641,8 @@ fun TrialExpiredScreen(
                 val expiredMessage = if (useLaunchLimit) {
                     "Esta aplicación es una versión de evaluación con un límite de $maxLaunches inicios/ejecuciones. El período de prueba ha expirado.\n\nPor favor, póngase en contacto con el administrador para adquirir una licencia o renovar el acceso."
                 } else {
-                    "Esta aplicación es una versión de evaluación con un límite de $daysLimit días. El período de prueba ha expirado.\n\nPor favor, póngase en contacto con el administrador para adquirir una licencia o renovar el acceso."
+                    val durationText = if (daysLimit % 30 == 0) "$daysLimit días (${daysLimit / 30} meses)" else "$daysLimit días"
+                    "Esta aplicación es una versión de evaluación con un límite de $durationText. El período de prueba ha expirado.\n\nPor favor, póngase en contacto con el administrador para adquirir una licencia o renovar el acceso."
                 }
 
                 Text(
@@ -718,10 +719,11 @@ fun TrialWarningDialog(
             }
         },
         text = {
+            val durationText = if (daysLimit % 30 == 0) "$daysLimit días (${daysLimit / 30} meses)" else "$daysLimit días"
             val warningMessage = if (useLaunchLimit) {
                 "Esta es una versión de evaluación de la aplicación. Cuenta con un límite de $maxLaunches inicios/ejecuciones.\n\nUna vez cumplido el plazo, se requerirá una licencia para continuar utilizándola."
             } else {
-                "Esta es una versión de evaluación de la aplicación. Cuenta con un límite de uso de $daysLimit días a partir de este momento.\n\nUna vez cumplido el plazo, se requerirá una licencia para continuar utilizándola."
+                "Esta es una versión de evaluación de la aplicación. Cuenta con un límite de uso de $durationText a partir de este momento.\n\nUna vez cumplido el plazo, se requerirá una licencia para continuar utilizándola."
             }
             Text(
                 text = warningMessage,

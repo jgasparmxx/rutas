@@ -9,6 +9,7 @@ import java.sql.DriverManager
 
 class CloudPhotoFixTest {
 
+    @org.junit.Ignore("One-time DB migration script")
     @Test
     fun fixPorLaPiedraRoute() {
         println("=== DEOBFUSCATING CREDENTIALS ===")
@@ -127,5 +128,38 @@ class CloudPhotoFixTest {
         conn.close()
 
         println("=== DATABASE UPDATED SUCCESSFULLY FOR ROUTE PORLA ===")
+    }
+
+    @Test
+    fun searchAllRoutesAndBambu() {
+        val uri = SecureCredentialsManager.getPostgresUri()
+        val user = SecureCredentialsManager.getPostgresUser()
+        val password = SecureCredentialsManager.getPostgresPassword()
+
+        Class.forName("org.postgresql.Driver")
+        DriverManager.getConnection(uri, user, password).use { conn ->
+            conn.createStatement().use { stmt ->
+                val rs = stmt.executeQuery("SELECT id, nombre, email_creador, telefono_creador, datos_encriptados FROM rutas")
+                while (rs.next()) {
+                    val id = rs.getString("id")
+                    val nombre = rs.getString("nombre")
+                    val email = rs.getString("email_creador")
+                    val tel = rs.getString("telefono_creador")
+                    val enc = rs.getString("datos_encriptados")
+                    println("RUTA: id=$id, nombre=$nombre, email=$email, tel=$tel")
+
+                    if (!enc.isNullOrEmpty()) {
+                        try {
+                            val dec = CryptoUtils.decrypt(java.util.Base64.getDecoder().decode(enc))
+                            if (dec.contains("bambu", ignoreCase = true)) {
+                                println("   --> FOUND BAMBU in route $id ($nombre)!")
+                            }
+                        } catch (e: Exception) {
+                            println("   --> Error decrypting $id: ${e.message}")
+                        }
+                    }
+                }
+            }
+        }
     }
 }

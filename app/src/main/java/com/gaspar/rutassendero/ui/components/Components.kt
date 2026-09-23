@@ -187,7 +187,30 @@ suspend fun aplicarRotacionFisicaAArchivo(rutaArchivo: String, gradosRotacion: F
 }
 
 /**
- * COMPONENTE: Mostrar imagen local de forma nativa y segura.
+ * Resuelve el archivo físico local para una ruta dada (ruta directa, URL o nombre de archivo en filesDir/cacheDir).
+ */
+fun resolveImageFile(context: Context, filePath: String): File? {
+    if (filePath.isEmpty() || filePath.startsWith("res://")) return null
+    val direct = File(filePath)
+    if (direct.exists() && direct.length() > 0) return direct
+
+    val fileName = if (filePath.startsWith("http://") || filePath.startsWith("https://")) {
+        filePath.substringAfterLast("/")
+    } else {
+        direct.name
+    }
+
+    if (fileName.isNotEmpty()) {
+        val fFiles = File(context.filesDir, fileName)
+        if (fFiles.exists() && fFiles.length() > 0) return fFiles
+        val fCache = File(context.cacheDir, fileName)
+        if (fCache.exists() && fCache.length() > 0) return fCache
+    }
+    return null
+}
+
+/**
+ * COMPONENTE: Mostrar imagen local o de la nube de forma nativa, resiliente y segura.
  */
 @Composable
 fun LocalImage(filePath: String, modifier: Modifier = Modifier) {
@@ -212,11 +235,41 @@ fun LocalImage(filePath: String, modifier: Modifier = Modifier) {
         return
     }
 
-    val file = remember(filePath) { File(filePath) }
-    if (file.exists()) {
-        val bitmap = remember(filePath) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var resolvedFile by remember(filePath) { mutableStateOf(resolveImageFile(context, filePath)) }
+    var isDownloading by remember(filePath) { mutableStateOf(false) }
+
+    LaunchedEffect(filePath) {
+        if (resolvedFile == null && (filePath.startsWith("http://") || filePath.startsWith("https://"))) {
+            if (com.gaspar.rutassendero.utils.NetworkUtils.isNetworkAvailable(context)) {
+                isDownloading = true
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    try {
+                        val fileName = filePath.substringAfterLast("/")
+                        val target = File(context.filesDir, fileName)
+                        java.net.URL(filePath).openStream().use { input ->
+                            java.io.FileOutputStream(target).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        if (target.exists() && target.length() > 0) {
+                            resolvedFile = target
+                        }
+                    } catch (e: Exception) {
+                        Log.w("LocalImage", "No se pudo cachear foto remota: ${e.message}")
+                    } finally {
+                        isDownloading = false
+                    }
+                }
+            }
+        }
+    }
+
+    val file = resolvedFile
+    if (file != null && file.exists()) {
+        val bitmap = remember(file.absolutePath) {
             try {
-                decodeAndRotateBitmap(filePath)?.asImageBitmap()
+                decodeAndRotateBitmap(file.absolutePath)?.asImageBitmap()
             } catch (e: Exception) {
                 null
             }
@@ -234,6 +287,28 @@ fun LocalImage(filePath: String, modifier: Modifier = Modifier) {
                 contentAlignment = Alignment.Center
             ) {
                 Text("Error de imagen", color = Color.White, fontSize = 12.sp)
+            }
+        }
+    } else if (isDownloading) {
+        Box(
+            modifier = modifier.background(ColorTekinsCardMuted),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(color = ColorTekinsAccent, modifier = Modifier.size(28.dp))
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("Cargando foto...", color = ColorTextoSecundario, fontSize = 11.sp)
+            }
+        }
+    } else if (filePath.startsWith("http://") || filePath.startsWith("https://")) {
+        Box(
+            modifier = modifier.background(ColorTekinsCardMuted),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.CloudOff, contentDescription = null, tint = ColorTextoSecundario, modifier = Modifier.size(28.dp))
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Foto en la nube (Sin conexión)", color = ColorTextoSecundario, fontSize = 11.sp)
             }
         }
     } else {
@@ -257,14 +332,17 @@ fun FullScreenPhotoViewerDialog(
 ) {
     val context = LocalContext.current
     val isResource = filePath.startsWith("res://")
+    val effectivePath = remember(filePath) {
+        resolveImageFile(context, filePath)?.absolutePath ?: filePath
+    }
     
     // Key para recargar la imagen si se guarda rotada
     var reloadKey by remember { mutableIntStateOf(0) }
 
-    val bitmap = remember(filePath, reloadKey) {
+    val bitmap = remember(effectivePath, reloadKey) {
         if (isResource) null else {
             try {
-                decodeAndRotateBitmap(filePath)
+                decodeAndRotateBitmap(effectivePath)
             } catch (e: Exception) {
                 null
             }
@@ -899,6 +977,17 @@ private fun getSortKey(fechaStr: String): String {
     return fechaStr
 }
 
+internal fun matchPhones(p1: String, p2: String): Boolean {
+    val clean1 = p1.filter { it.isDigit() }
+    val clean2 = p2.filter { it.isDigit() }
+    if (clean1.isEmpty() || clean2.isEmpty()) return clean1 == clean2
+    return if (clean1.length >= 10 && clean2.length >= 10) {
+        clean1.takeLast(10) == clean2.takeLast(10)
+    } else {
+        clean1 == clean2
+    }
+}
+
 /**
  * DIÁLOGO: Seleccionar una ruta existente o eliminar.
  */
@@ -924,22 +1013,10 @@ fun SelectRutaDialog(
     var activeTab by remember { mutableStateOf(if (isGuia) 0 else 1) } // 0: Mis Rutas, 1: Otras Rutas
     var rutaToDeleteConfirm by remember { mutableStateOf<RutaEntity?>(null) }
 
-    // Helper para comparar números telefónicos de manera robusta
-    fun matchPhones(p1: String, p2: String): Boolean {
-        val clean1 = p1.filter { it.isDigit() }
-        val clean2 = p2.filter { it.isDigit() }
-        if (clean1.isEmpty() || clean2.isEmpty()) return clean1 == clean2
-        return if (clean1.length >= 10 && clean2.length >= 10) {
-            clean1.takeLast(10) == clean2.takeLast(10)
-        } else {
-            clean1 == clean2
-        }
-    }
-
     // Filtrar rutas según la pestaña seleccionada
     val filteredRutas = remember(rutas, activeTab, userPhone) {
         rutas.filter {
-            val isOwn = matchPhones(it.telefono, userPhone) || it.telefono.isEmpty()
+            val isOwn = matchPhones(it.telefono, userPhone) || (it.fechaImportacion == null && it.telefono.isEmpty())
             if (activeTab == 0) {
                 isOwn
             } else {
@@ -1049,107 +1126,109 @@ fun SelectRutaDialog(
                     ) {
                         val displayRutas = if (showAll) sortedRutas else sortedRutas.take(5)
                         displayRutas.forEach { ruta ->
-                            val distToStart = if (location != null) {
-                                val rLoc = Location("").apply {
-                                    latitude = ruta.latitudOrig
-                                    longitude = ruta.longitudOrig
-                                }
-                                location.distanceTo(rLoc)
-                            } else {
-                                null
-                            }
-                            val distStr = if (distToStart != null) {
-                                if (distToStart >= 1000f) {
-                                    String.format(java.util.Locale.US, " | A %.1f km", distToStart / 1000f)
+                            key(ruta.id) {
+                                val distToStart = if (location != null) {
+                                    val rLoc = Location("").apply {
+                                        latitude = ruta.latitudOrig
+                                        longitude = ruta.longitudOrig
+                                    }
+                                    location.distanceTo(rLoc)
                                 } else {
-                                    " | A ${distToStart.toInt()} m"
+                                    null
                                 }
-                            } else {
-                                ""
-                            }
-
-                            val dismissState = rememberSwipeToDismissBoxState(
-                                confirmValueChange = { dismissValue ->
-                                    if (dismissValue == SwipeToDismissBoxValue.StartToEnd) {
-                                        rutaToDeleteConfirm = ruta
+                                val distStr = if (distToStart != null) {
+                                    if (distToStart >= 1000f) {
+                                        String.format(java.util.Locale.US, " | A %.1f km", distToStart / 1000f)
+                                    } else {
+                                        " | A ${distToStart.toInt()} m"
                                     }
-                                    false
+                                } else {
+                                    ""
                                 }
-                            )
 
-                            SwipeToDismissBox(
-                                state = dismissState,
-                                enableDismissFromStartToEnd = true,
-                                enableDismissFromEndToStart = false,
-                                backgroundContent = {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(vertical = 4.dp)
-                                            .background(ColorTekinsAlert, RoundedCornerShape(12.dp)),
-                                        contentAlignment = Alignment.CenterStart
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 16.dp),
-                                            verticalAlignment = Alignment.CenterVertically
+                                val dismissState = rememberSwipeToDismissBoxState(
+                                    confirmValueChange = { dismissValue ->
+                                        if (dismissValue == SwipeToDismissBoxValue.StartToEnd) {
+                                            rutaToDeleteConfirm = ruta
+                                        }
+                                        false
+                                    }
+                                )
+
+                                SwipeToDismissBox(
+                                    state = dismissState,
+                                    enableDismissFromStartToEnd = true,
+                                    enableDismissFromEndToStart = false,
+                                    backgroundContent = {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(vertical = 4.dp)
+                                                .background(ColorTekinsAlert, RoundedCornerShape(12.dp)),
+                                            contentAlignment = Alignment.CenterStart
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Delete,
-                                                contentDescription = "Eliminar",
-                                                tint = Color.White
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = "Eliminar",
-                                                color = Color.White,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
-                                    }
-                                },
-                                content = {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(ColorTekinsCardBg)
-                                            .clickable { onSelect(ruta) }
-                                            .padding(vertical = 10.dp, horizontal = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(ruta.nombre, fontWeight = FontWeight.Bold, color = ColorTextoPrincipal)
-                                            val dateParts = ruta.fecha.split("/")
-                                            val dateFormatted = if (dateParts.size == 3) {
-                                                val day = dateParts[0]
-                                                val month = dateParts[1]
-                                                val year = dateParts[2]
-                                                val shortYear = if (year.length == 4) year.substring(2) else year
-                                                "$day/$month/$shortYear"
-                                            } else {
-                                                ruta.fecha
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 16.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "Eliminar",
+                                                    tint = Color.White
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = "Eliminar",
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold
+                                                )
                                             }
-                                            val distKm = ruta.distanciaGps / 1000.0
-                                            val distStrFormatted = String.format(java.util.Locale("es", "ES"), "%.2f", distKm)
+                                        }
+                                    },
+                                    content = {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(ColorTekinsCardBg)
+                                                .clickable { onSelect(ruta) }
+                                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(ruta.nombre, fontWeight = FontWeight.Bold, color = ColorTextoPrincipal)
+                                                val dateParts = ruta.fecha.split("/")
+                                                val dateFormatted = if (dateParts.size == 3) {
+                                                    val day = dateParts[0]
+                                                    val month = dateParts[1]
+                                                    val year = dateParts[2]
+                                                    val shortYear = if (year.length == 4) year.substring(2) else year
+                                                    "$day/$month/$shortYear"
+                                                } else {
+                                                    ruta.fecha
+                                                }
+                                                val distKm = ruta.distanciaGps / 1000.0
+                                                val distStrFormatted = String.format(java.util.Locale("es", "ES"), "%.2f", distKm)
 
-                                            Spacer(modifier = Modifier.height(2.dp))
-                                            val autorStr = if (activeTab == 0) {
-                                                if (senderistaName.isNotEmpty()) senderistaName else "Mío"
-                                            } else {
-                                                ruta.telefono.ifEmpty { "Desconocido" }
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                val autorStr = if (activeTab == 0) {
+                                                    if (senderistaName.isNotEmpty()) senderistaName else "Mío"
+                                                } else {
+                                                    ruta.telefono.ifEmpty { "Desconocido" }
+                                                }
+                                                val keyLabel = if (!ruta.publico && ruta.codigo.isNotEmpty()) {
+                                                    "\nClave de acceso: ${ruta.codigo}"
+                                                } else {
+                                                    ""
+                                                }
+                                                Text("autor: $autorStr, $dateFormatted, $distStrFormatted kms$distStr$keyLabel", fontSize = 11.sp, color = ColorTextoSecundario)
                                             }
-                                            val keyLabel = if (!ruta.publico && ruta.codigo.isNotEmpty()) {
-                                                "\nClave de acceso: ${ruta.codigo}"
-                                            } else {
-                                                ""
-                                            }
-                                            Text("autor: $autorStr, $dateFormatted, $distStrFormatted kms$distStr$keyLabel", fontSize = 11.sp, color = ColorTextoSecundario)
+                                            Icon(Icons.Default.ArrowForwardIos, contentDescription = null, tint = ColorTekinsAccent, modifier = Modifier.size(16.dp))
                                         }
-                                        Icon(Icons.Default.ArrowForwardIos, contentDescription = null, tint = ColorTekinsAccent, modifier = Modifier.size(16.dp))
                                     }
-                                }
-                            )
-                            Divider(color = ColorTekinsCardMuted)
+                                )
+                                Divider(color = ColorTekinsCardMuted)
+                            }
                         }
 
                         if (!showAll && sortedRutas.size > 5) {
@@ -1240,7 +1319,7 @@ fun SelectRutaDialog(
     }
 
     if (rutaToDeleteConfirm != null) {
-        val isOwn = matchPhones(rutaToDeleteConfirm!!.telefono, userPhone) || rutaToDeleteConfirm!!.telefono.isEmpty()
+        val isOwn = matchPhones(rutaToDeleteConfirm!!.telefono, userPhone) || (rutaToDeleteConfirm!!.fechaImportacion == null && rutaToDeleteConfirm!!.telefono.isEmpty())
         val title = if (isOwn) "Eliminar Mi Ruta" else "Eliminar Ruta de Otros"
         val message = if (isOwn) {
             "¿Deseas eliminar tu ruta '${rutaToDeleteConfirm!!.nombre}'? Se borrará localmente y en el servidor, incluyendo las fotos locales y en la nube."
@@ -6372,7 +6451,10 @@ fun CloudRoutesDialog(
         // 3. Mostrar solo rutas de otros senderistas
         baseList.filter { routeMap ->
             val routePhone = routeMap["telefono_creador"] as? String ?: ""
-            routePhone != userTelefono
+            val routeEmail = routeMap["email_creador"] as? String ?: ""
+            val isOwn = (userEmail.isNotBlank() && routeEmail.equals(userEmail, ignoreCase = true)) ||
+                        (userTelefono.isNotBlank() && matchPhones(routePhone, userTelefono))
+            !isOwn
         }
     }
 

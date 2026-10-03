@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Informe Técnico Forense: Análisis Comparativo de Rutas</title>
+    <style>
+        @page {
+            size: A4 portrait;
+            margin: 16mm 14mm 16mm 14mm;
+        }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: #1e293b;
+            background-color: #ffffff;
+            font-size: 10pt;
+            line-height: 1.5;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+
+        .header-container {
+            border-bottom: 2px solid #0f766e;
+            padding-bottom: 12px;
+            margin-bottom: 18px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+        .header-title h1 {
+            font-size: 16pt;
+            color: #0f172a;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: -0.3px;
+        }
+        .header-title .subtitle {
+            font-size: 10pt;
+            color: #0f766e;
+            font-weight: 600;
+            margin-top: 2px;
+        }
+        .header-meta {
+            text-align: right;
+            font-size: 8.5pt;
+            color: #64748b;
+        }
+        .header-meta strong {
+            color: #334155;
+        }
+
+        .alert-box {
+            background-color: #f0fdfa;
+            border-left: 4px solid #0d9488;
+            border-radius: 4px;
+            padding: 10px 14px;
+            margin-bottom: 16px;
+        }
+        .alert-box h3 {
+            font-size: 10.5pt;
+            color: #115e59;
+            font-weight: 700;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .alert-box p {
+            font-size: 9.5pt;
+            color: #134e4a;
+        }
+
+        .section-title {
+            font-size: 11pt;
+            font-weight: 700;
+            color: #0f172a;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 4px;
+            margin-top: 14px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.2px;
+        }
+
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .stat-card {
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 8px 10px;
+            text-align: center;
+        }
+        .stat-card .label {
+            font-size: 7.5pt;
+            color: #64748b;
+            text-transform: uppercase;
+            font-weight: 600;
+            margin-bottom: 3px;
+        }
+        .stat-card .value {
+            font-size: 12pt;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .stat-card .sub {
+            font-size: 7.5pt;
+            color: #059669;
+            font-weight: 600;
+            margin-top: 2px;
+        }
+        .stat-card.alert .sub {
+            color: #dc2626;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 8.5pt;
+            margin-bottom: 14px;
+        }
+        th, td {
+            padding: 6px 8px;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        th {
+            background-color: #f1f5f9;
+            color: #334155;
+            font-weight: 700;
+            text-transform: uppercase;
+            font-size: 7.5pt;
+            letter-spacing: 0.3px;
+        }
+        tr:nth-child(even) td {
+            background-color: #fafbfc;
+        }
+        .td-highlight {
+            font-weight: 600;
+            color: #0f766e;
+        }
+        .td-danger {
+            font-weight: 600;
+            color: #dc2626;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 7pt;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .badge-success {
+            background-color: #dcfce7;
+            color: #166534;
+        }
+        .badge-danger {
+            background-color: #fee2e2;
+            color: #991b1b;
+        }
+
+        .code-box {
+            background-color: #0f172a;
+            color: #e2e8f0;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 8pt;
+            padding: 10px 12px;
+            border-radius: 5px;
+            margin-bottom: 12px;
+            line-height: 1.4;
+        }
+        .code-box .highlight {
+            color: #f87171;
+            font-weight: 700;
+        }
+        .code-box .cyan {
+            color: #38bdf8;
+        }
+
+        .two-cols {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .col {
+            flex: 1;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 5px;
+            padding: 10px;
+        }
+        .col h4 {
+            font-size: 9pt;
+            color: #0f172a;
+            margin-bottom: 6px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .col p, .col li {
+            font-size: 8pt;
+            color: #475569;
+        }
+        .col ul {
+            margin-left: 14px;
+            margin-top: 4px;
+        }
+
+        .page-break {
+            page-break-before: always;
+        }
+
+        .footer {
+            margin-top: 20px;
+            border-top: 1px solid #cbd5e1;
+            padding-top: 8px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 7.5pt;
+            color: #94a3b8;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header-container">
+        <div class="header-title">
+            <h1>Informe Técnico y Forense de Geolocalización</h1>
+            <div class="subtitle">Auditoría Topométrica Satelital: villa -coqui vs Coquimatlan</div>
+        </div>
+        <div class="header-meta">
+            <div><strong>Fecha de emisión:</strong> 23/Sep/2026</div>
+            <div><strong>Sistema:</strong> Rutas Sendero (Android + PostgreSQL/Neon)</div>
+            <div><strong>Estado:</strong> Dictamen Pericial Concluyente</div>
+        </div>
+    </div>
+
+    <div class="alert-box">
+        <h3>VEREDICTO TÉCNICO INMEDIATO</h3>
+        <p>
+            <strong>El motor de cálculo geodésico y los algoritmos de la aplicación funcionan con total precisión y exactitud.</strong>
+            La discrepancia de <strong>1,089 metros (~1.1 km)</strong> se debe exclusivamente a que el dispositivo donde se registró la ruta <em>Coquimatlan</em> sufrió <strong>suspensión de ubicación en segundo plano por el sistema operativo Android (Doze Mode / Ahorro agresivo de batería)</strong> al apagarse la pantalla. Dicho teléfono apagó el GPS durante largos intervalos (con un salto ciego de hasta 4.5 km), trazando líneas rectas imaginarias por el aire que recortaron todas las curvas reales del trayecto.
+        </p>
+    </div>
+
+    <div class="cards-grid">
+        <div class="stat-card">
+            <div class="label">Coincidencia en Tiempo</div>
+            <div class="value">99.8%</div>
+            <div class="sub">Dif: sólo 25 segundos</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Coincidencia en Balizas</div>
+            <div class="value">99.88%</div>
+            <div class="sub">Dif: apenas 16.7 metros</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Muestreo Villa-Coqui</div>
+            <div class="value">1,212 pts</div>
+            <div class="sub">1 punto cada 12.5 m</div>
+        </div>
+        <div class="stat-card alert">
+            <div class="label">Muestreo Coquimatlán</div>
+            <div class="value">208 pts</div>
+            <div class="sub">-83% puntos perdidos</div>
+        </div>
+    </div>
+
+    <div class="section-title">1. Telemetría Comparativa de Ambas Rutas</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Parámetro Analizado</th>
+                <th>Ruta A: `villa -coqui` (VILLA4NE13)</th>
+                <th>Ruta B: `Coquimatlan` (COQUICL8WW)</th>
+                <th>Delta / Discrepancia</th>
+                <th>Diagnóstico Pericial</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Hora de Inicio (UTC)</strong></td>
+                <td>08:09:41</td>
+                <td>08:11:11</td>
+                <td>1 min 30 s</td>
+                <td><span class="badge badge-success">Simultáneo</span></td>
+            </tr>
+            <tr>
+                <td><strong>Hora de Finalización</strong></td>
+                <td>11:46:44</td>
+                <td>11:47:49</td>
+                <td>1 min 05 s</td>
+                <td><span class="badge badge-success">Llegada conjunta</span></td>
+            </tr>
+            <tr>
+                <td><strong>Duración Registrada</strong></td>
+                <td>3h 37m 03s (13,023 s)</td>
+                <td>3h 36m 38s (12,998 s)</td>
+                <td>25 segundos</td>
+                <td><span class="badge badge-success">Mismo tiempo</span></td>
+            </tr>
+            <tr>
+                <td><strong>Punto de Partida (Lat, Lon)</strong></td>
+                <td>19.24677, -103.75178</td>
+                <td>19.24676, -103.75183</td>
+                <td>4.43 metros</td>
+                <td><span class="badge badge-success">Mismo origen</span></td>
+            </tr>
+            <tr>
+                <td><strong>Punto de Meta (Lat, Lon)</strong></td>
+                <td>19.24651, -103.75170</td>
+                <td>19.24644, -103.75176</td>
+                <td>9.56 metros</td>
+                <td><span class="badge badge-success">Mismo destino</span></td>
+            </tr>
+            <tr>
+                <td><strong>Distancia Balizas (Beacons)</strong></td>
+                <td class="td-highlight">13,954.22 m (13.95 km)</td>
+                <td class="td-highlight">13,970.98 m (13.97 km)</td>
+                <td class="td-highlight">16.75 m (0.016 km)</td>
+                <td><span class="badge badge-success">Prueba Reina: 99.88%</span></td>
+            </tr>
+            <tr>
+                <td><strong>Distancia Traza GPS</strong></td>
+                <td>15,410.90 m (15.41 km)</td>
+                <td class="td-danger">14,321.68 m (14.32 km)</td>
+                <td class="td-danger">1,089.21 m (1.09 km)</td>
+                <td><span class="badge badge-danger">Recorte por saltos</span></td>
+            </tr>
+            <tr>
+                <td><strong>Densidad de Puntos Traza</strong></td>
+                <td>1,212 puntos GPS</td>
+                <td class="td-danger">208 puntos GPS</td>
+                <td class="td-danger">-1,004 puntos (-83%)</td>
+                <td><span class="badge badge-danger">Apagón satelital</span></td>
+            </tr>
+            <tr>
+                <td><strong>Desnivel Positivo (+)</strong></td>
+                <td>+504.4 m (366 subidas)</td>
+                <td class="td-danger">+197.4 m (51 subidas)</td>
+                <td class="td-danger">-307.0 m de elevación</td>
+                <td>Omitió cumbres y valles</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="section-title">2. La Prueba Contundente: Registro de Balizas Hombro a Hombro</div>
+    <p style="font-size: 8.5pt; color: #475569; margin-bottom: 8px;">
+        Las balizas se registran manualmente cuando el senderista confirma un punto de control. Ambos dispositivos marcaron exactamente las mismas balizas con segundos de diferencia:
+    </p>
+    <table>
+        <thead>
+            <tr>
+                <th>Baliza / Hito</th>
+                <th>Hora Villa-Coqui</th>
+                <th>Hora Coquimatlán</th>
+                <th>Coordenadas Registradas</th>
+                <th>Estado</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Baliza #1 (Inicio de Ruta)</strong></td>
+                <td>08:09:41</td>
+                <td>08:11:11</td>
+                <td>Lat: 19.2467, Lon: -103.7518</td>
+                <td><span class="badge badge-success">Idéntico</span></td>
+            </tr>
+            <tr>
+                <td><strong>Baliza #2 (Faro #2)</strong></td>
+                <td>08:41:24</td>
+                <td>08:42:16</td>
+                <td>Lat: 19.2346, Lon: -103.7673</td>
+                <td><span class="badge badge-success">Idéntico</span></td>
+            </tr>
+            <tr>
+                <td><strong>Baliza #3 (Faro #3)</strong></td>
+                <td>09:20:58</td>
+                <td>09:20:12</td>
+                <td>Lat: 19.2269, Lon: -103.7934</td>
+                <td><span class="badge badge-success">Idéntico</span></td>
+            </tr>
+            <tr>
+                <td><strong>Baliza #4 (Faro #4)</strong></td>
+                <td>09:29:08</td>
+                <td>09:30:16</td>
+                <td>Lat: 19.2233, Lon: -103.7968</td>
+                <td><span class="badge badge-success">Idéntico</span></td>
+            </tr>
+            <tr>
+                <td><strong>Baliza #5 (Faro #5)</strong></td>
+                <td>09:49:58</td>
+                <td>09:50:35</td>
+                <td>Lat: 19.2123, Lon: -103.8059</td>
+                <td><span class="badge badge-success">Idéntico</span></td>
+            </tr>
+            <tr>
+                <td><strong>Baliza #6 (Faro #6)</strong></td>
+                <td>11:15:01</td>
+                <td>11:15:41</td>
+                <td>Lat: 19.2339, Lon: -103.7676</td>
+                <td><span class="badge badge-success">Idéntico</span></td>
+            </tr>
+            <tr>
+                <td><strong>Baliza #7/8 (Fin de Ruta)</strong></td>
+                <td>11:46:44</td>
+                <td>11:47:49</td>
+                <td>Lat: 19.2465, Lon: -103.7517</td>
+                <td><span class="badge badge-success">Idéntico</span></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="page-break"></div>
+
+    <div class="section-title">3. Análisis Forense: ¿Dónde se perdieron los 1,089 Metros?</div>
+    <p style="font-size: 8.5pt; color: #475569; margin-bottom: 8px;">
+        Al examinar punto por punto los 208 registros de la ruta <em>Coquimatlan</em>, se detectaron <strong>5 apagones satelitales masivos</strong> provocados por la suspensión del proceso en segundo plano de Android. Cada vez que el tester encendía la pantalla para marcar un Faro, el GPS despertaba por un instante y volvía a dormirse:
+    </p>
+
+    <div class="code-box">
+        <span class="cyan"># TELEMETRÍA DE SALTOS CRÍTICOS EN COQUIMATLÁN (COQUICL8WW):</span><br>
+        1. Salto #34  -> #35:  <span class="highlight">1,921.09 metros</span> en línea recta (despertó al marcar Faro #2)<br>
+        2. Salto #76  -> #77:  <span class="highlight">2,361.05 metros</span> en línea recta (despertó al marcar Faro #3)<br>
+        3. Salto #145 -> #146: <span class="highlight">1,080.27 metros</span> en línea recta (despertó al marcar Faro #5)<br>
+        4. Salto #169 -> #170: <span class="highlight">4,499.89 metros</span> en línea recta (DURANTE EL REGRESO, 1H 25M DORMIDO)<br>
+        5. Salto #206 -> #207: <span class="highlight">1,750.58 metros</span> en línea recta (despertó al llegar a la Meta)
+    </div>
+
+    <div class="two-cols">
+        <div class="col">
+            <h4>COMPORTAMIENTO VILLA-COQUI <span class="badge badge-success">NORMAL</span></h4>
+            <p><strong>Rastreo activo continuo (1,212 puntos):</strong></p>
+            <ul>
+                <li>Muestreo fluido cada 12.5 metros.</li>
+                <li>Salto máximo en toda la ruta: <strong>14.19 metros</strong>.</li>
+                <li>Acompañó cada curva del sendero, desvío y ondulación.</li>
+                <li>Capturó +504 metros de desnivel real en 3D.</li>
+                <li><strong>Distancia real acumulada: 15.41 km.</strong></li>
+            </ul>
+        </div>
+        <div class="col">
+            <h4>COMPORTAMIENTO COQUIMATLÁN <span class="badge badge-danger">DOZE MODE</span></h4>
+            <p><strong>Rastreo suspendido (sólo 208 puntos):</strong></p>
+            <ul>
+                <li>Android congeló el servicio en segundo plano con pantalla apagada.</li>
+                <li>Unió puntos lejanos mediante "cuerdas rectas euclidianas".</li>
+                <li>Ignoró curvas en 5 tramos enormes (1.9km, 2.3km, 4.5km).</li>
+                <li>Omitió +307 metros de subidas intermedias.</li>
+                <li><strong>Pérdida acumulada: 1,089.21 metros.</strong></li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="section-title">4. El Tramo Crítico de Regreso: Salto de 4.5 Kilómetros</div>
+    <p style="font-size: 8.5pt; color: #475569; margin-bottom: 8px;">
+        Entre las <strong>09:50</strong> y las <strong>11:15</strong> (retorno del Faro #5 al Faro #6), el teléfono de Coquimatlán no tomó una sola muestra durante <strong>1 hora y 25 minutos</strong>:
+    </p>
+    <ul>
+        <li style="font-size: 8.5pt; color: #334155; margin-bottom: 4px;">
+            <strong>Coquimatlán (1 solo salto):</strong> Trazó una línea recta a través de barrancas y cerros de <strong>4,499.89 metros</strong>.
+        </li>
+        <li style="font-size: 8.5pt; color: #334155; margin-bottom: 4px;">
+            <strong>Villa-Coqui (390 puntos en ese mismo tramo):</strong> Registró la sinuosidad exacta del sendero y sus curvas, sumando <strong>4,913.70 metros</strong>.
+        </li>
+        <li style="font-size: 8.5pt; color: #dc2626; font-weight: 600;">
+            Pérdida directa en ese único apagón: 413.80 metros amputados del recorrido real.
+        </li>
+    </ul>
+
+    <div class="section-title">5. Conclusión y Plan de Acción Inmediato</div>
+    <div style="font-size: 8.5pt; color: #334155; line-height: 1.6;">
+        <p><strong>1. Demostración para los Testers:</strong> La prueba matemática de las balizas (13.95 km vs 13.97 km, diferencia de 16 metros) acredita de forma concluyente que la lógica de cálculo geodésico de la aplicación es impecable. El recorte de 1 km se debió a fallos de captura de hardware/SO en uno de los dispositivos móviles.</p>
+        <p style="margin-top: 6px;"><strong>2. Medidas Preventivas en la Aplicación:</strong>
+            <ul>
+                <li>Exigir al inicio de cada ruta la exención de ahorro de batería de Android (<code>ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS</code>).</li>
+                <li>Verificar que el permiso de ubicación esté concedido como <em>"Permitir todo el tiempo"</em> (<code>ACCESS_BACKGROUND_LOCATION</code>).</li>
+                <li>Implementar detección en tiempo real de saltos anómalos (&gt; 100m) para alertar al usuario si el GPS fue suspendido por el fabricante.</li>
+            </ul>
+        </p>
+    </div>
+
+    <div class="footer">
+        <div>Rutas Sendero - Sistema de Auditoría y Certificación de Rutas Satelitales</div>
+        <div>Página 2 de 2</div>
+    </div>
+
+</body>
+</html>

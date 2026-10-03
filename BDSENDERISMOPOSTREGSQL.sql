@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS "participantes_invitacion" (
     "telefono_senderista" VARCHAR(50) NOT NULL,
     "cooperacion" DOUBLE PRECISION DEFAULT 0.0,
     "fecha_cooperacion" TIMESTAMP,
+    "comprobante_pago" TEXT,
+    "fecha_subida_comprobante" TIMESTAMP,
     "fecha_registro" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "participantes_invitacion_pkey" PRIMARY KEY ("id_invitacion", "email_senderista")
 );

@@ -53,5 +53,8 @@ data class PuntoRutaEntity(
     val tieneConectividad: Boolean = false,
 
     @ColumnInfo(name = "estado", defaultValue = "1")
-    val estado: Int = 1
+    val estado: Int = 1,
+
+    @ColumnInfo(name = "fupdate", defaultValue = "0")
+    val fupdate: Long = System.currentTimeMillis()
 )

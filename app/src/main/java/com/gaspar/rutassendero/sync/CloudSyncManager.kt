@@ -44,50 +44,228 @@ object CloudSyncManager {
 
     private fun baseUrl(): String = SecureCredentialsManager.getPostgrestBaseUrl().trimEnd('/')
 
-    private fun executeGet(endpointAndQuery: String): String {
+    @Volatile
+    private var cachedJwtToken: String? = null
+    @Volatile
+    private var cachedJwtEmail: String? = null
+
+    /**
+     * Establece o actualiza el contexto de autenticación JWT para las peticiones a PostgREST.
+     */
+    fun setAuthContext(
+        email: String, 
+        telefono: String = "",
+        rol: String = "S",
+        idAgrupacion: String? = null
+    ) {
+        val cleanEmail = email.trim().lowercase()
+        if (cleanEmail.isNotEmpty()) {
+            cachedJwtEmail = cleanEmail
+            cachedJwtToken = JwtManager.generateToken(cleanEmail, telefono, rol, idAgrupacion)
+            Log.d(TAG, "Contexto de autenticación JWT actualizado para: $cleanEmail con rol: $rol")
+        }
+    }
+
+    /**
+     * Limpia el token JWT actual (por ejemplo al cerrar sesión).
+     */
+    fun clearAuthContext() {
+        cachedJwtToken = null
+        cachedJwtEmail = null
+    }
+
+    /**
+     * Obtiene el token JWT actual en memoria o lo resuelve desde la base de datos local.
+     */
+    fun getActiveJwtToken(): String? {
+        cachedJwtToken?.let { return it }
+        // Intentar autogenerar desde la sesión local en Room
+        return try {
+            val app = com.gaspar.rutassendero.BachesApplication.instance
+            val db = app.database
+            val ownerEmail = app.preferencesHelper.ownerEmail
+            val senderista = kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                if (!ownerEmail.isNullOrBlank()) {
+                    db.rutasDao().getSenderistaByEmail(ownerEmail)
+                } else {
+                    db.rutasDao().getFirstSenderista()
+                }
+            }
+            if (senderista != null && senderista.email.isNotBlank()) {
+                val token = JwtManager.generateToken(senderista.email, senderista.telefono, senderista.rol, senderista.idAgrupacion)
+                cachedJwtEmail = senderista.email.trim().lowercase()
+                cachedJwtToken = token
+                Log.d(TAG, "JWT autogenerado desde BD local para: ${senderista.email} (rol=${senderista.rol})")
+                token
+            } else {
+                null
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "No se pudo autogenerar JWT: ${e.message}")
+            null
+        }
+    }
+
+    @Volatile
+    private var isJwtSupportedByServer: Boolean = true
+    @Volatile
+    private var lastJwtCheckTime: Long = 0L
+
+    private fun shouldAttemptJwt(): Boolean {
+        if (isJwtSupportedByServer) return true
+        val now = System.currentTimeMillis()
+        if (now - lastJwtCheckTime > 5 * 60 * 1000L) {
+            return true
+        }
+        return false
+    }
+
+    private fun isJwtSecretMissingError(code: Int, body: String): Boolean {
+        return (code == 500 || code == 401) && (
+            body.contains("Server lacks JWT secret", ignoreCase = true) ||
+            body.contains("PGRST300", ignoreCase = true) ||
+            body.contains("JWT secret not found", ignoreCase = true) ||
+            body.contains("secret not found", ignoreCase = true)
+        )
+    }
+
+    private fun executeGet(endpointAndQuery: String, overrideToken: String? = null): String {
         val url = "${baseUrl()}/$endpointAndQuery"
-        val request = Request.Builder()
-            .url(url)
-            .get()
-            .header("Accept", "application/json")
-            .build()
-        client.newCall(request).execute().use { response ->
+
+        fun buildRequest(useToken: Boolean): Request {
+            val builder = Request.Builder()
+                .url(url)
+                .get()
+                .header("Accept", "application/json")
+            if (useToken) {
+                val token = overrideToken ?: getActiveJwtToken()
+                if (!token.isNullOrEmpty()) {
+                    builder.header("Authorization", "Bearer $token")
+                }
+            }
+            return builder.build()
+        }
+
+        val tryJwt = shouldAttemptJwt() && (overrideToken != null || getActiveJwtToken() != null)
+        val initialRequest = buildRequest(useToken = tryJwt)
+
+        client.newCall(initialRequest).execute().use { response ->
             val bodyStr = response.body?.string() ?: ""
+            if (tryJwt && isJwtSecretMissingError(response.code, bodyStr)) {
+                Log.w(TAG, "PostgREST aún no tiene configurada la variable PGRST_JWT_SECRET en el servidor. Degradando de forma transparente y segura a modo anónimo...")
+                isJwtSupportedByServer = false
+                lastJwtCheckTime = System.currentTimeMillis()
+                client.newCall(buildRequest(useToken = false)).execute().use { retryResp ->
+                    val retryBody = retryResp.body?.string() ?: ""
+                    if (!retryResp.isSuccessful) {
+                        throw Exception("HTTP ${retryResp.code} en GET $endpointAndQuery: $retryBody")
+                    }
+                    return retryBody
+                }
+            }
+
             if (!response.isSuccessful) {
                 throw Exception("HTTP ${response.code} en GET $endpointAndQuery: $bodyStr")
             }
-            return bodyStr
-        }
-    }
-
-    private fun executePostUpsert(table: String, jsonPayload: String): String {
-        val url = "${baseUrl()}/$table"
-        val request = Request.Builder()
-            .url(url)
-            .post(jsonPayload.toRequestBody(JSON_MEDIA_TYPE))
-            .header("Prefer", "resolution=merge-duplicates,return=representation")
-            .header("Accept", "application/json")
-            .build()
-        client.newCall(request).execute().use { response ->
-            val bodyStr = response.body?.string() ?: ""
-            if (!response.isSuccessful) {
-                throw Exception("HTTP ${response.code} en POST $table: $bodyStr")
+            if (tryJwt) {
+                isJwtSupportedByServer = true
             }
             return bodyStr
         }
     }
 
-    private fun executeDelete(endpointAndQuery: String): Int {
+    private fun executePostUpsert(table: String, jsonPayload: String, overrideToken: String? = null): String {
+        val url = "${baseUrl()}/$table"
+
+        fun buildRequest(useToken: Boolean): Request {
+            val builder = Request.Builder()
+                .url(url)
+                .post(jsonPayload.toRequestBody(JSON_MEDIA_TYPE))
+                .header("Prefer", "resolution=merge-duplicates,return=representation")
+                .header("Accept", "application/json")
+            if (useToken) {
+                val token = overrideToken ?: getActiveJwtToken()
+                if (!token.isNullOrEmpty()) {
+                    builder.header("Authorization", "Bearer $token")
+                }
+            }
+            return builder.build()
+        }
+
+        val tryJwt = shouldAttemptJwt() && (overrideToken != null || getActiveJwtToken() != null)
+        val initialRequest = buildRequest(useToken = tryJwt)
+
+        client.newCall(initialRequest).execute().use { response ->
+            val bodyStr = response.body?.string() ?: ""
+            if (tryJwt && isJwtSecretMissingError(response.code, bodyStr)) {
+                Log.w(TAG, "PostgREST aún no tiene configurada la variable PGRST_JWT_SECRET en el servidor. Reintentando POST $table anónimamente...")
+                isJwtSupportedByServer = false
+                lastJwtCheckTime = System.currentTimeMillis()
+                client.newCall(buildRequest(useToken = false)).execute().use { retryResp ->
+                    val retryBody = retryResp.body?.string() ?: ""
+                    if (!retryResp.isSuccessful) {
+                        throw Exception("HTTP ${retryResp.code} en POST $table: $retryBody")
+                    }
+                    return retryBody
+                }
+            }
+
+            if (!response.isSuccessful) {
+                throw Exception("HTTP ${response.code} en POST $table: $bodyStr")
+            }
+            if (tryJwt) {
+                isJwtSupportedByServer = true
+            }
+            return bodyStr
+        }
+    }
+
+    private fun executeDelete(endpointAndQuery: String, overrideToken: String? = null): Int {
         val url = "${baseUrl()}/$endpointAndQuery"
-        val request = Request.Builder()
-            .url(url)
-            .delete()
-            .header("Prefer", "count=exact")
-            .build()
-        client.newCall(request).execute().use { response ->
+
+        fun buildRequest(useToken: Boolean): Request {
+            val builder = Request.Builder()
+                .url(url)
+                .delete()
+                .header("Prefer", "count=exact")
+            if (useToken) {
+                val token = overrideToken ?: getActiveJwtToken()
+                if (!token.isNullOrEmpty()) {
+                    builder.header("Authorization", "Bearer $token")
+                }
+            }
+            return builder.build()
+        }
+
+        val tryJwt = shouldAttemptJwt() && (overrideToken != null || getActiveJwtToken() != null)
+        val initialRequest = buildRequest(useToken = tryJwt)
+
+        client.newCall(initialRequest).execute().use { response ->
+            if (tryJwt && (response.code == 500 || response.code == 401)) {
+                val bodyStr = response.body?.string() ?: ""
+                if (isJwtSecretMissingError(response.code, bodyStr)) {
+                    Log.w(TAG, "PostgREST aún no tiene PGRST_JWT_SECRET. Reintentando DELETE $endpointAndQuery anónimamente...")
+                    isJwtSupportedByServer = false
+                    lastJwtCheckTime = System.currentTimeMillis()
+                    client.newCall(buildRequest(useToken = false)).execute().use { retryResp ->
+                        if (!retryResp.isSuccessful) {
+                            val retryBody = retryResp.body?.string() ?: ""
+                            throw Exception("HTTP ${retryResp.code} en DELETE $endpointAndQuery: $retryBody")
+                        }
+                        val contentRange = retryResp.header("Content-Range")
+                        return contentRange?.substringAfterLast('/')?.toIntOrNull() ?: if (retryResp.code == 204) 1 else 0
+                    }
+                } else {
+                    throw Exception("HTTP ${response.code} en DELETE $endpointAndQuery: $bodyStr")
+                }
+            }
+
             if (!response.isSuccessful) {
                 val bodyStr = response.body?.string() ?: ""
                 throw Exception("HTTP ${response.code} en DELETE $endpointAndQuery: $bodyStr")
+            }
+            if (tryJwt) {
+                isJwtSupportedByServer = true
             }
             val contentRange = response.header("Content-Range")
             return contentRange?.substringAfterLast('/')?.toIntOrNull() ?: if (response.code == 204) 1 else 0
@@ -213,27 +391,36 @@ object CloudSyncManager {
     suspend fun descargarAgrupaciones(): List<AgrupacionEntity> = withContext(Dispatchers.IO) {
         val agrupaciones = mutableListOf<AgrupacionEntity>()
         try {
-            val jsonStr = executeGet("agrupaciones?select=id_agrupacion,nombre")
+            val jsonStr = executeGet("agrupaciones?select=id_agrupacion,nombre&order=nombre.asc")
             val array = JSONArray(jsonStr)
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
-                agrupaciones.add(
-                    AgrupacionEntity(
-                        idAgrupacion = obj.getString("id_agrupacion"),
-                        nombre = obj.getString("nombre")
+                val id = obj.optString("id_agrupacion", "").trim()
+                val nombre = obj.optString("nombre", "").trim()
+                if (id.isNotEmpty()) {
+                    agrupaciones.add(
+                        AgrupacionEntity(
+                            idAgrupacion = id,
+                            nombre = if (nombre.isNotEmpty()) nombre else id
+                        )
                     )
-                )
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error descargando agrupaciones: ${e.message}", e)
         }
-        agrupaciones
+        if (agrupaciones.isEmpty()) {
+            AgrupacionEntity.SEED_AGRUPACIONES
+        } else {
+            agrupaciones
+        }
     }
 
     /**
      * Sincroniza el perfil de un senderista con PostgREST mediante Upsert.
      */
     suspend fun syncSenderista(senderista: SenderistaEntity): Unit = withContext(Dispatchers.IO) {
+        setAuthContext(senderista.email, senderista.telefono, senderista.rol, senderista.idAgrupacion)
         initDatabaseSchema()
 
         val parsedNac = try {
@@ -652,6 +839,7 @@ object CloudSyncManager {
      */
     suspend fun deleteRouteFromCloud(routeId: String, creatorEmail: String, creatorPhone: String = "") = withContext(Dispatchers.IO) {
         try {
+            val token = JwtManager.generateToken(creatorEmail, creatorPhone)
             val encodedId = URLEncoder.encode(routeId, "UTF-8")
             val encodedEmail = URLEncoder.encode(creatorEmail, "UTF-8")
             val query = if (creatorPhone.isNotBlank()) {
@@ -660,7 +848,7 @@ object CloudSyncManager {
             } else {
                 "rutas?id=eq.$encodedId&email_creador=eq.$encodedEmail"
             }
-            val affectedRows = executeDelete(query)
+            val affectedRows = executeDelete(query, overrideToken = token)
             Log.d(TAG, "deleteRouteFromCloud: Filas eliminadas = $affectedRows para ruta = $routeId")
         } catch (e: Throwable) {
             Log.e(TAG, "Error al eliminar ruta de la nube: ${e.message}", e)
@@ -965,11 +1153,12 @@ object CloudSyncManager {
         val startIso = sdfIso.format(Date(nowMs))
         val endIso = sdfIso.format(Date(endMs))
 
-        val query = "invitaciones_ruta?fecha_hora_salida=gte.$startIso&fecha_hora_salida=lte.$endIso&select=id_invitacion,id_ruta,telefono,fecha_hora_salida,punto_reunion,link_google_maps,cooperacion_minima,fecha_limite_registro,nivel,instrucciones,latitud,longitud,rutas(nombre,conectividad,distancia_gps,desnivel_positivo,desnivel_negativo,contador_subidas,contador_bajadas,duracion_segundos),participantes_invitacion(email_senderista)&order=fecha_hora_salida.asc"
+        val query = "invitaciones_ruta?fecha_hora_salida=gte.$startIso&fecha_hora_salida=lte.$endIso&select=id_invitacion,id_ruta,telefono,fecha_hora_salida,punto_reunion,link_google_maps,cooperacion_minima,fecha_limite_registro,nivel,instrucciones,latitud,longitud,tipo_ruta,comentario,rutas(nombre,conectividad,distancia_gps,desnivel_positivo,desnivel_negativo,contador_subidas,contador_bajadas,duracion_segundos)&order=fecha_hora_salida.asc"
 
         val sdfDisplay = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
 
         try {
+            // 1. Fetch invitaciones_ruta
             val jsonStr = executeGet(query)
             val array = JSONArray(jsonStr)
             for (i in 0 until array.length()) {
@@ -1010,6 +1199,8 @@ object CloudSyncManager {
                 map["instrucciones"] = inv.optString("instrucciones", "")
                 map["latitud"] = inv.optDouble("latitud", 0.0)
                 map["longitud"] = inv.optDouble("longitud", 0.0)
+                map["tipo_ruta"] = inv.optString("tipo_ruta", "S")
+                map["comentario"] = inv.optString("comentario", "")
                 map["ruta_nombre"] = rutaObj?.optString("nombre") ?: "Ruta sin nombre"
 
                 map["conectividad"] = rutaObj?.optDouble("conectividad", 0.0)?.toFloat() ?: 0.0f
@@ -1022,8 +1213,68 @@ object CloudSyncManager {
 
                 list.add(map)
             }
+
+            // 2. Fetch eventos con manejo de errores específico
+            var jsonStrEv = ""
+            try {
+                val queryEventos = "eventos?select=*" // Remove varchar date filters, filter locally later if needed
+                jsonStrEv = executeGet(queryEventos)
+                
+                val arrayEv = JSONArray(jsonStrEv)
+                for (i in 0 until arrayEv.length()) {
+                    val ev = arrayEv.getJSONObject(i)
+                    val map = mutableMapOf<String, Any>()
+                    val idEv = ev.optInt("id_invitacion", ev.optInt("id_evento", ev.optInt("id", 0)))
+                    if (idEv == 0) continue
+                    map["id_invitacion"] = -idEv
+                    map["id_ruta"] = "EVENTO"
+                    map["telefono"] = ev.optString("telefono", ev.optString("telefono_creador", ""))
+
+                    val salidaRaw = ev.optString("fecha_hora_salida", "")
+                    map["fecha_hora_salida"] = formatIsoToDisplay(salidaRaw, sdfDisplay)
+
+                    map["punto_reunion"] = ev.optString("punto_reunion", "")
+                    map["link_google_maps"] = ev.optString("link_google_maps", "")
+                    map["cooperacion_minima"] = ev.optDouble("cooperacion_minima", 0.0)
+
+                    val limiteRaw = ev.optString("fecha_limite_registro", "")
+                    map["fecha_limite_registro"] = formatIsoToDisplay(limiteRaw, sdfDisplay)
+
+                    map["nivel"] = "Evento"
+                    map["instrucciones"] = ev.optString("instrucciones", "")
+                    map["latitud"] = ev.optDouble("latitud", 0.0)
+                    map["longitud"] = ev.optDouble("longitud", 0.0)
+                    map["tipo_ruta"] = "E"
+                    map["comentario"] = ev.optString("comentario", "")
+                    map["ruta_nombre"] = ev.optString("id_ruta", ev.optString("nombre_agrupacion", "Evento"))
+
+                    map["conectividad"] = 0.0f
+                    map["distancia_gps"] = 0.0
+                    map["desnivel_positivo"] = 0.0
+                    map["desnivel_negativo"] = 0.0
+                    map["contador_subidas"] = 0
+                    map["contador_bajadas"] = 0
+                    map["duracion_segundos"] = 0L
+
+                    list.add(map)
+                }
+            } catch (e: Exception) {
+                val errorMsg = "Error parseando evento: ${e.message}\nTrace:\n${android.util.Log.getStackTraceString(e)}\nResponse: $jsonStrEv"
+                Log.e(TAG, errorMsg)
+                try {
+                    val dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    val file = java.io.File(dir, "error_evento_api.txt")
+                    file.writeText(errorMsg)
+                } catch (ioe: Exception) {
+                    Log.e(TAG, "No se pudo guardar el txt", ioe)
+                }
+            }
+            
+            // Re-ordenar por fecha combinada
+            list.sortBy { it["fecha_hora_salida"].toString() }
+
         } catch (e: Throwable) {
-            Log.e(TAG, "Error consultando invitaciones disponibles: ${e.message}", e)
+            Log.e(TAG, "Error consultando invitaciones y eventos disponibles: ${e.message}", e)
         }
         list
     }
@@ -1036,14 +1287,20 @@ object CloudSyncManager {
         emailSenderista: String, 
         telefonoSenderista: String, 
         cooperacion: Double?, 
-        fechaCooperacionStr: String?
+        fechaCooperacionStr: String?,
+        comprobanteBase64: String? = null,
+        tipoRuta: String = "S"
     ): Unit = withContext(Dispatchers.IO) {
+        val realId = if (idInvitacion < 0) -idInvitacion else idInvitacion
         val payload = JSONObject().apply {
-            put("id_invitacion", idInvitacion)
+            put("id_invitacion", realId)
             put("email_senderista", emailSenderista)
             put("telefono_senderista", telefonoSenderista)
             put("cooperacion", cooperacion ?: JSONObject.NULL)
             put("fecha_cooperacion", if (!fechaCooperacionStr.isNullOrEmpty()) formatToIso(fechaCooperacionStr) else JSONObject.NULL)
+            put("comprobante_pago", comprobanteBase64 ?: JSONObject.NULL)
+            put("fecha_subida_comprobante", if (!comprobanteBase64.isNullOrEmpty() && !fechaCooperacionStr.isNullOrEmpty()) formatToIso(fechaCooperacionStr) else JSONObject.NULL)
+            put("tipo_ruta", tipoRuta)
         }
         executePostUpsert("participantes_invitacion", payload.toString())
     }
@@ -1051,9 +1308,10 @@ object CloudSyncManager {
     /**
      * Elimina el registro de participación del senderista en PostgREST.
      */
-    suspend fun deleteParticipationFromCloud(idInvitacion: Int, emailSenderista: String): Unit = withContext(Dispatchers.IO) {
+    suspend fun deleteParticipationFromCloud(idInvitacion: Int, emailSenderista: String, tipoRuta: String = "S"): Unit = withContext(Dispatchers.IO) {
         val encodedEmail = URLEncoder.encode(emailSenderista, "UTF-8")
-        executeDelete("participantes_invitacion?id_invitacion=eq.$idInvitacion&email_senderista=eq.$encodedEmail")
+        val realId = if (idInvitacion < 0) -idInvitacion else idInvitacion
+        executeDelete("participantes_invitacion?id_invitacion=eq.$realId&email_senderista=eq.$encodedEmail&tipo_ruta=eq.$tipoRuta")
     }
 
     /**
@@ -1066,10 +1324,11 @@ object CloudSyncManager {
     /**
      * Consulta si la participación del senderista sigue registrada en PostgREST.
      */
-    suspend fun isParticipantRegisteredInCloud(idInvitacion: Int, emailSenderista: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun isParticipantRegisteredInCloud(idInvitacion: Int, emailSenderista: String, tipoRuta: String = "S"): Boolean = withContext(Dispatchers.IO) {
         try {
             val encodedEmail = URLEncoder.encode(emailSenderista, "UTF-8")
-            val jsonStr = executeGet("participantes_invitacion?id_invitacion=eq.$idInvitacion&email_senderista=eq.$encodedEmail&select=id_invitacion")
+            val realId = if (idInvitacion < 0) -idInvitacion else idInvitacion
+            val jsonStr = executeGet("participantes_invitacion?id_invitacion=eq.$realId&email_senderista=eq.$encodedEmail&tipo_ruta=eq.$tipoRuta&select=id_invitacion")
             val array = JSONArray(jsonStr)
             return@withContext array.length() > 0
         } catch (e: Exception) {
@@ -1145,12 +1404,202 @@ object CloudSyncManager {
      */
     suspend fun deleteAccountFromCloud(email: String): Unit = withContext(Dispatchers.IO) {
         try {
+            val token = JwtManager.generateToken(email)
             val encodedEmail = URLEncoder.encode(email, "UTF-8")
-            val affectedRows = executeDelete("senderistas?email=eq.$encodedEmail")
+            val affectedRows = executeDelete("senderistas?email=eq.$encodedEmail", overrideToken = token)
             Log.d(TAG, "Cuenta eliminada de la nube ($email). Filas afectadas: $affectedRows")
         } catch (e: Exception) {
             Log.e(TAG, "Error al eliminar la cuenta de la nube: ${e.message}", e)
             throw e
+        }
+    }
+
+    /**
+     * Sincroniza en background las tablas principales desde la nube hacia la base de datos local
+     * consultando solo los registros donde fupdate (nube) > fupdate (local).
+     */
+    suspend fun syncDeltaFromCloud(context: Context, db: RutasDatabase) = withContext(Dispatchers.IO) {
+        val sdfIso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", java.util.Locale.US)
+        
+        // 1. Sincronizar Frases Dificultad
+        try {
+            val cursor = db.openHelper.readableDatabase.query("SELECT MAX(fupdate) FROM frases_dificultad")
+            var maxFupdate = 0L
+            if (cursor.moveToFirst()) maxFupdate = cursor.getLong(0)
+            cursor.close()
+            
+            val fupdateFilter = if (maxFupdate > 0) "?fupdate=gt.${sdfIso.format(java.util.Date(maxFupdate))}" else ""
+            val jsonStr = executeGet("frases_dificultad$fupdateFilter")
+            if (jsonStr.isNotBlank() && jsonStr != "[]") {
+                val array = JSONArray(jsonStr)
+                val frasesList = mutableListOf<FraseDificultadEntity>()
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val fupdateStr = obj.optString("fupdate", "")
+                    val fupdateMillis = parseFupdate(fupdateStr)
+                    frasesList.add(FraseDificultadEntity(
+                        id = obj.getString("id"),
+                        categoria = obj.getString("categoria"),
+                        frase = obj.getString("frase"),
+                        fupdate = fupdateMillis
+                    ))
+                }
+                if (frasesList.isNotEmpty()) db.rutasDao().insertFrases(frasesList)
+                Log.d(TAG, "Sincronizadas ${frasesList.size} frases de dificultad.")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error syncing frases: ${e.message}")
+        }
+        
+        // 2. Sincronizar Agrupaciones
+        try {
+            val cursor = db.openHelper.readableDatabase.query("SELECT MAX(fupdate) FROM agrupaciones")
+            var maxFupdate = 0L
+            if (cursor.moveToFirst()) maxFupdate = cursor.getLong(0)
+            cursor.close()
+            
+            val fupdateFilter = if (maxFupdate > 0) "?fupdate=gt.${sdfIso.format(java.util.Date(maxFupdate))}" else ""
+            val jsonStr = executeGet("agrupaciones$fupdateFilter")
+            if (jsonStr.isNotBlank() && jsonStr != "[]") {
+                val array = JSONArray(jsonStr)
+                val agrupacionesList = mutableListOf<AgrupacionEntity>()
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val fupdateStr = obj.optString("fupdate", "")
+                    val fupdateMillis = parseFupdate(fupdateStr)
+                    agrupacionesList.add(AgrupacionEntity(
+                        idAgrupacion = obj.getString("id_agrupacion"),
+                        nombre = obj.getString("nombre"),
+                        fupdate = fupdateMillis
+                    ))
+                }
+                if (agrupacionesList.isNotEmpty()) db.rutasDao().insertAgrupaciones(agrupacionesList)
+                Log.d(TAG, "Sincronizadas ${agrupacionesList.size} agrupaciones.")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error syncing agrupaciones: ${e.message}")
+        }
+        
+        // 2.5 Sincronizar Eventos
+        try {
+            // Usar un filtro similar para la fecha, calculando startIso localmente
+            val nowMs = System.currentTimeMillis()
+            val sdfIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+            val startIso = sdfIso.format(Date(nowMs))
+            val jsonStr = executeGet("eventos?select=*")
+            if (jsonStr.isNotBlank() && jsonStr != "[]") {
+                val array = JSONArray(jsonStr)
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val fupdateStr = obj.optString("fupdate", "")
+                    val fupdateMillis = if (fupdateStr.isNotBlank()) parseFupdate(fupdateStr) else System.currentTimeMillis()
+                    val idEv = obj.optInt("id_invitacion", obj.optInt("id_evento", obj.optInt("id", 0)))
+                    if (idEv == 0) continue // Skip if no ID is found
+                    val evento = EventoEntity(
+                        idEvento = idEv,
+                        nombreEvento = obj.optString("id_ruta", obj.optString("nombre_agrupacion", "Evento")),
+                        telefonoCreador = obj.optString("telefono", obj.optString("telefono_creador", "")),
+                        fechaHoraSalida = obj.optString("fecha_hora_salida", ""),
+                        puntoReunion = obj.optString("punto_reunion", ""),
+                        linkGoogleMaps = obj.optString("link_google_maps").takeIf { it.isNotBlank() },
+                        cooperacionMinima = obj.optDouble("cooperacion_minima", 0.0),
+                        fechaLimiteRegistro = obj.optString("fecha_limite_registro").takeIf { it.isNotBlank() },
+                        instrucciones = obj.optString("instrucciones").takeIf { it.isNotBlank() },
+                        latitud = obj.optDouble("latitud").takeIf { !it.isNaN() },
+                        longitud = obj.optDouble("longitud").takeIf { !it.isNaN() },
+                        cooperacionRealizada = null,
+                        fechaCooperacionRealizada = null,
+                        sincronizadoConNube = true,
+                        fupdate = fupdateMillis,
+                        comentario = obj.optString("comentario").takeIf { it.isNotBlank() }
+                    )
+                    db.rutasDao().insertEvento(evento)
+                }
+                Log.d(TAG, "Sincronizados eventos delta.")
+            }
+        } catch (e: Exception) {
+            val errorMsg = "Error leyendo tabla evento: ${e.message}\nTrace:\n${android.util.Log.getStackTraceString(e)}"
+            Log.e(TAG, errorMsg)
+            try {
+                val dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                val file = java.io.File(dir, "error_evento_api.txt")
+                file.appendText("\n\n--- SYNC DELTA ---\n$errorMsg")
+            } catch (ioe: Exception) {
+                Log.e(TAG, "No se pudo guardar el txt", ioe)
+            }
+            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                android.widget.Toast.makeText(context, "Error API Eventos: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+        
+        // 3. Sincronizar Rutas (esto automáticamente actualiza puntos y traza porque están en datos_encriptados)
+        try {
+            val cursor = db.openHelper.readableDatabase.query("SELECT MAX(fupdate) FROM rutas")
+            var maxFupdate = 0L
+            if (cursor.moveToFirst()) maxFupdate = cursor.getLong(0)
+            cursor.close()
+            
+            val fupdateFilter = if (maxFupdate > 0) "?fupdate=gt.${sdfIso.format(java.util.Date(maxFupdate))}" else ""
+            val jsonStr = executeGet("rutas$fupdateFilter&select=id")
+            if (jsonStr.isNotBlank() && jsonStr != "[]") {
+                val array = JSONArray(jsonStr)
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val routeId = obj.getString("id")
+                    // Download full route which handles decrypting points and trace
+                    downloadRoute(context, db, routeId, null) { progress ->
+                        Log.d(TAG, "Delta sync route $routeId progress: $progress")
+                    }
+                    Log.d(TAG, "Ruta actualizada desde delta sync: $routeId")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error syncing rutas: ${e.message}")
+        }
+        
+        // 4. Sincronizar Senderista actual
+        try {
+            val senderistaLocal = db.rutasDao().getFirstSenderista()
+            if (senderistaLocal != null) {
+                val encodedEmail = URLEncoder.encode(senderistaLocal.email, "UTF-8")
+                val filter = "?email=eq.$encodedEmail&fupdate=gt.${sdfIso.format(java.util.Date(senderistaLocal.fupdate))}"
+                val jsonStr = executeGet("senderistas$filter")
+                if (jsonStr.isNotBlank() && jsonStr != "[]") {
+                    val array = JSONArray(jsonStr)
+                    if (array.length() > 0) {
+                        val obj = array.getJSONObject(0)
+                        val fupdateStr = obj.optString("fupdate", "")
+                        val fupdateMillis = parseFupdate(fupdateStr)
+                        
+                        // Solo actualizamos atributos relevantes que pudieron cambiar del lado admin
+                        val updatedSenderista = senderistaLocal.copy(
+                            bloqueado = obj.optBoolean("bloqueado", senderistaLocal.bloqueado),
+                            nombre = obj.optString("nombre", senderistaLocal.nombre),
+                            rol = obj.optString("rol", senderistaLocal.rol),
+                            nivelSenderista = obj.optString("nivel_senderista", senderistaLocal.nivelSenderista),
+                            maxPrivadas = obj.optInt("max_privadas", senderistaLocal.maxPrivadas),
+                            fupdate = fupdateMillis
+                        )
+                        db.rutasDao().insertSenderista(updatedSenderista)
+                        Log.d(TAG, "Senderista local actualizado desde delta sync.")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error syncing senderista: ${e.message}")
+        }
+    }
+    
+    private fun parseFupdate(fupdateStr: String): Long {
+        return try {
+            if (fupdateStr.isNotEmpty()) {
+                val cleaned = fupdateStr.replace("Z", "+00:00")
+                java.time.OffsetDateTime.parse(cleaned).toInstant().toEpochMilli()
+            } else {
+                System.currentTimeMillis()
+            }
+        } catch (e: Throwable) {
+            System.currentTimeMillis()
         }
     }
 }

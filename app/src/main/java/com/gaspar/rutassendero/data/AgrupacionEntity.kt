@@ -11,5 +11,15 @@ data class AgrupacionEntity(
     val idAgrupacion: String,
 
     @ColumnInfo(name = "nombre")
-    val nombre: String
-)
+    val nombre: String,
+
+    @ColumnInfo(name = "fupdate", defaultValue = "0")
+    val fupdate: Long = System.currentTimeMillis()
+) {
+    companion object {
+        val SEED_AGRUPACIONES = listOf(
+            AgrupacionEntity(idAgrupacion = "MH", nombre = "Miguel Hidalgo"),
+            AgrupacionEntity(idAgrupacion = "CL1", nombre = "COLIBRI")
+        )
+    }
+}

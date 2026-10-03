@@ -11,6 +11,8 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.PowerManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
@@ -62,6 +64,9 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
     private var lastStepTime = 0L
     private var stepsSincePause = 0f
     private var initialStepCount = -1f
+
+    // --- Protección contra Doze Mode y Bloqueo de Pantalla ---
+    private var wakeLock: PowerManager.WakeLock? = null
 
 
 
@@ -174,7 +179,22 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             }
         }
 
-        startForeground(NOTIFICATION_SERVICE_ID, createForegroundNotification("Esperando ruta..."))
+        // Android 14+ requiere explícitamente FOREGROUND_SERVICE_TYPE_LOCATION
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_SERVICE_ID,
+                    createForegroundNotification("Rastreo de ruta activo..."),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                )
+            } else {
+                startForeground(NOTIFICATION_SERVICE_ID, createForegroundNotification("Rastreo de ruta activo..."))
+            }
+        } else {
+            startForeground(NOTIFICATION_SERVICE_ID, createForegroundNotification("Rastreo de ruta activo..."))
+        }
+
+        acquireWakeLock()
         startLocationUpdates()
         _gpsRunningState.value = true
         _recordingState.value = RecordingState.RECORDING
@@ -192,6 +212,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
         instance = null
 
         stopLocationUpdates()
+        releaseWakeLock()
         sensorManager.unregisterListener(this)
         _recordingState.value = RecordingState.STOPPED
         beepJob?.cancel()
@@ -376,6 +397,12 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                     Float.MAX_VALUE // Si es el primer punto, se inserta inmediatamente
                 }
                 
+                // Detección proactiva de saltos o pérdidas de señal satelital (> 80 metros)
+                if (lastPt != null && distance > 80.0f && distance < 25000f) {
+                    Log.w(TAG, "Alerta telemetría: Salto GPS anormal detectado (${distance.toInt()}m). Posible pérdida de señal o suspensión de segundo plano.")
+                    speakTts("Señal GPS restablecida")
+                }
+
                 // Mínimo 10-15 metros entre puntos (usaremos 12 metros)
                 if (distance >= 12.0f) {
                     val nextOrder = (lastPt?.orden ?: 0) + 1
@@ -404,6 +431,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
         ).apply {
             setMinUpdateIntervalMillis(500L)
             setMinUpdateDistanceMeters(0f)
+            setMaxUpdateDelayMillis(2000L)
         }.build()
 
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
@@ -422,6 +450,38 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
 
     private fun stopLocationUpdates() {
         fusedLocationClient.removeLocationUpdates(locationCallback)
+    }
+
+    private fun acquireWakeLock() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "RutasSendero:GpsTrackingWakeLock"
+                ).apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wakeLock?.isHeld == false) {
+                wakeLock?.acquire(8 * 60 * 60 * 1000L) // Hasta 8 horas de protección activa
+                Log.d(TAG, "GpsTrackingService: WakeLock parcial adquirido contra Doze Mode")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error adquiriendo WakeLock: ${e.message}", e)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Log.d(TAG, "GpsTrackingService: WakeLock liberado")
+            }
+            wakeLock = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error liberando WakeLock: ${e.message}", e)
+        }
     }
 
     // --- EVALUACIÃ“N DE GUÍA Y DOPPLER ---
@@ -862,6 +922,8 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(openAppIntent)
             .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_NAVIGATION)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Apagar GPS", stopSelfIntent)
             .build()
     }

@@ -30,6 +30,7 @@ class BachesApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         
         // Inicializar Cloudinary de manera segura
         try {
@@ -81,6 +82,9 @@ class BachesApplication : Application() {
     }
 
     companion object {
+        lateinit var instance: BachesApplication
+            private set
+
         // Constantes de identificación de los canales para usarse en el servicio
         const val CHANNEL_SERVICE_ID = "baches_service_channel"
         const val CHANNEL_ALERT_ID = "baches_alert_channel_kotlin"

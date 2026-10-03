@@ -76,7 +76,10 @@ data class RutaEntity(
     val publico: Boolean = true,
 
     @ColumnInfo(name = "fecha_importacion")
-    val fechaImportacion: Long? = null
+    val fechaImportacion: Long? = null,
+
+    @ColumnInfo(name = "fupdate", defaultValue = "0")
+    val fupdate: Long = System.currentTimeMillis()
 ) {
     companion object {
         /**

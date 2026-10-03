@@ -2,11 +2,14 @@ package com.gaspar.rutassendero
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.util.Log
 import android.widget.Toast
@@ -153,11 +156,22 @@ class MainActivity : FragmentActivity() {
 
         if (fineGranted) {
             Toast.makeText(this, "Permiso de ubicación concedido.", Toast.LENGTH_SHORT).show()
-            // Iniciar el servicio automáticamente tras conceder permisos
+            checkBackgroundLocationAndBattery()
             startGpsService()
         } else {
             Toast.makeText(this, "Se requiere permiso de ubicación para el radar.", Toast.LENGTH_LONG).show()
         }
+    }
+
+    private val requestBackgroundLocationLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            Log.d(TAG, "Permiso de ubicación en segundo plano concedido.")
+        } else {
+            Log.w(TAG, "Permiso de ubicación en segundo plano no concedido.")
+        }
+        requestBatteryOptimizationExemption()
     }
 
     private var onBluetoothPermissionResult: ((Boolean) -> Unit)? = null
@@ -499,8 +513,43 @@ class MainActivity : FragmentActivity() {
         if (missingPermissions.isNotEmpty()) {
             requestPermissionLauncher.launch(missingPermissions.toTypedArray())
         } else {
-            // Si ya tenemos permisos, asegurar arranque inicial del GPS
+            // Si ya tenemos permisos básicos, asegurar segundo plano, batería y arranque del GPS
+            checkBackgroundLocationAndBattery()
             startGpsService()
+        }
+    }
+
+    private fun checkBackgroundLocationAndBattery() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val hasBackground = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (!hasBackground) {
+                requestBackgroundLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+            } else {
+                requestBatteryOptimizationExemption()
+            }
+        } else {
+            requestBatteryOptimizationExemption()
+        }
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                    Log.d(TAG, "Diálogo de exclusión de optimización de batería solicitado.")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "No se pudo solicitar la exclusión de optimización de batería: ${e.message}")
+            }
         }
     }
 

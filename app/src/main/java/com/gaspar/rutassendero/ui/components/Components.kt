@@ -1009,7 +1009,7 @@ fun SelectRutaDialog(
     onDismiss: () -> Unit
 ) {
     var showAll by remember { mutableStateOf(false) }
-    val isGuia = senderistaRol.equals("G", ignoreCase = true)
+    val isGuia = com.gaspar.rutassendero.data.RoleHierarchy.canCreateRoutes(senderistaRol)
     var activeTab by remember { mutableStateOf(if (isGuia) 0 else 1) } // 0: Mis Rutas, 1: Otras Rutas
     var rutaToDeleteConfirm by remember { mutableStateOf<RutaEntity?>(null) }
 
@@ -4948,7 +4948,7 @@ fun SenderistaDialog(
     var nivelSenderista by remember(currentSenderista) { mutableStateOf(currentSenderista?.nivelSenderista ?: "principiante") }
     var codigoConfianza by remember(currentSenderista) { mutableStateOf(currentSenderista?.codigoConfianza ?: "") }
     var pesoStr by remember(currentSenderista?.peso) { mutableStateOf(currentSenderista?.peso?.let { if (it == it.toLong().toDouble()) it.toLong().toString() else it.toString() } ?: "") }
-    var idAgrupacion by remember(currentSenderista) { mutableStateOf(currentSenderista?.idAgrupacion?.takeIf { it.isNotBlank() } ?: "MH") }
+    var idAgrupacion by remember(currentSenderista) { mutableStateOf(currentSenderista?.idAgrupacion?.takeIf { it.isNotBlank() && it != "@&" } ?: "MH") }
     var showAgrupacionMenu by remember { mutableStateOf(false) }
     var cloudRecovered by remember { mutableStateOf(false) }
 
@@ -4996,7 +4996,7 @@ fun SenderistaDialog(
                             nivelSenderista = cloudSenderista.nivelSenderista
                             codigoConfianza = cloudSenderista.codigoConfianza ?: ""
                             pesoStr = cloudSenderista.peso?.let { if (it == it.toLong().toDouble()) it.toLong().toString() else it.toString() } ?: ""
-                            idAgrupacion = cloudSenderista.idAgrupacion?.takeIf { it.isNotBlank() } ?: "MH"
+                            idAgrupacion = cloudSenderista.idAgrupacion?.takeIf { it.isNotBlank() && it != "@&" } ?: "MH"
                             Toast.makeText(context, "Se recuperaron los datos de la nube para $cleanEmail.", Toast.LENGTH_SHORT).show()
                         }
                     }
@@ -5142,7 +5142,12 @@ fun SenderistaDialog(
 
                     // Agrupación Dropdown
                     Box(modifier = Modifier.fillMaxWidth()) {
-                        val currentAgrupacionName = agrupaciones.find { it.idAgrupacion == idAgrupacion }?.nombre ?: "Sin Agrupación (Opcional)"
+                        val currentAgrupacionName = when {
+                            idAgrupacion == "@&" || idAgrupacion.isBlank() -> "Sin Agrupación (Opcional)"
+                            else -> agrupaciones.find { it.idAgrupacion.equals(idAgrupacion, ignoreCase = true) }?.nombre
+                                ?: com.gaspar.rutassendero.data.AgrupacionEntity.SEED_AGRUPACIONES.find { it.idAgrupacion.equals(idAgrupacion, ignoreCase = true) }?.nombre
+                                ?: if (idAgrupacion.equals("MH", ignoreCase = true)) "Miguel Hidalgo (MH)" else idAgrupacion
+                        }
                         OutlinedTextField(
                             value = currentAgrupacionName,
                             onValueChange = {},
@@ -5176,7 +5181,8 @@ fun SenderistaDialog(
                                     showAgrupacionMenu = false
                                 }
                             )
-                            agrupaciones.forEach { agru ->
+                            val options = if (agrupaciones.isNotEmpty()) agrupaciones else com.gaspar.rutassendero.data.AgrupacionEntity.SEED_AGRUPACIONES
+                            options.forEach { agru ->
                                 DropdownMenuItem(
                                     text = { Text("${agru.nombre} (${agru.idAgrupacion})") },
                                     onClick = {
@@ -5841,7 +5847,11 @@ fun SenderistaDialog(
                                 timestampConsentimientoUtc = System.currentTimeMillis(),
                                 codigoConfianza = codigoConfianza,
                                 peso = pesoStr.toDoubleOrNull(),
-                                idAgrupacion = idAgrupacion.takeIf { it.isNotBlank() }?.trim()
+                                idAgrupacion = when {
+                                    idAgrupacion == "@&" -> null
+                                    idAgrupacion.isBlank() -> "MH"
+                                    else -> idAgrupacion.trim()
+                                }
                             )
                             onSave(profile)
                         },
@@ -7270,11 +7280,20 @@ fun SalidasDialog(
 
                     val lat = o["latitud"] as? Double ?: 0.0
                     val lng = o["longitud"] as? Double ?: 0.0
+                    val tipoRuta = o["tipo_ruta"] as? String ?: "S"
+                    val comentario = o["comentario"] as? String
 
                     DetailField(label = "Agrupación", value = valueText)
-                    DetailField(label = "Ruta", value = rutaNombre)
-                    DetailField(label = "Fecha y Hora de Salida", value = fechaSalida)
-                    DetailField(label = "Dificultad (Nivel)", value = nivel)
+                    val displayTipoRuta = if (tipoRuta == "E") "Evento" else "Ruta"
+                    DetailField(label = "Tipo", value = displayTipoRuta)
+                    DetailField(label = "Nombre", value = rutaNombre)
+                    if (!comentario.isNullOrBlank()) {
+                        DetailField(label = "Comentario", value = comentario)
+                    }
+                    DetailField(label = "Fecha y Hora", value = fechaSalida)
+                    if (tipoRuta != "E") {
+                        DetailField(label = "Dificultad (Nivel)", value = nivel)
+                    }
                     DetailField(label = "Punto de Reunión", value = puntoReunion)
                     
                     // Link to Google Maps below Punto de Reunión
@@ -7429,9 +7448,16 @@ fun SalidasDialog(
                     )
 
                     DetailField(label = "Agrupación", value = valueText)
-                    DetailField(label = "Ruta", value = o.nombreRuta)
-                    DetailField(label = "Fecha y Hora de Salida", value = o.fechaHoraSalida)
-                    DetailField(label = "Dificultad (Nivel)", value = o.nivel ?: "No especificado")
+                    val displayTipoRuta = if (o.tipoRuta == "E") "Evento" else "Ruta"
+                    DetailField(label = "Tipo", value = displayTipoRuta)
+                    DetailField(label = "Nombre", value = o.nombreRuta)
+                    if (!o.comentario.isNullOrBlank()) {
+                        DetailField(label = "Comentario", value = o.comentario)
+                    }
+                    DetailField(label = "Fecha y Hora", value = o.fechaHoraSalida)
+                    if (o.tipoRuta != "E") {
+                        DetailField(label = "Dificultad (Nivel)", value = o.nivel ?: "No especificado")
+                    }
                     DetailField(label = "Punto de Reunión", value = o.puntoReunion)
 
                     // Link to Google Maps below Punto de Reunión
@@ -7560,6 +7586,7 @@ fun SalidasDialog(
                             Text("CONSULTA RUTA", color = Color.White, fontWeight = FontWeight.Bold)
                         }
 
+                        val yaPago = o.comprobantePago != null || (o.cooperacionRealizada != null && o.cooperacionRealizada > 0.0)
                         if (o.cooperacionMinima > 0.0) {
                             Button(
                                 onClick = {
@@ -7573,7 +7600,7 @@ fun SalidasDialog(
                             ) {
                                 Icon(Icons.Default.Payment, contentDescription = null, tint = ColorTekinsDarkBg)
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("REGISTRAR COOPERACIÓN", color = ColorTekinsDarkBg, fontWeight = FontWeight.Bold)
+                                Text(if (yaPago) "VER COOPERACIÓN" else "REGISTRAR COOPERACIÓN", color = ColorTekinsDarkBg, fontWeight = FontWeight.Bold)
                             }
                         }
                         
@@ -7581,16 +7608,18 @@ fun SalidasDialog(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Button(
-                                onClick = {
-                                    outingToCancelConfirm = o
-                                    selectedMyOutingForDetail = null
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAlert),
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text("CANCELAR", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            if (!yaPago) {
+                                Button(
+                                    onClick = {
+                                        outingToCancelConfirm = o
+                                        selectedMyOutingForDetail = null
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAlert),
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("CANCELAR", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                }
                             }
                             
                             TextButton(
@@ -7609,54 +7638,260 @@ fun SalidasDialog(
     // Diálogo para registrar cooperación
     val localCoop = showCooperationDialog
     if (localCoop != null) {
-        Dialog(onDismissRequest = { showCooperationDialog = null }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = ColorTekinsCardBg,
-                modifier = Modifier.padding(16.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Registrar Pago de Cooperación", color = ColorTextoPrincipal, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Introduce el monto aportado (Mínimo sugerido: $${localCoop.cooperacionMinima}):", color = ColorTextoSecundario, fontSize = 13.sp)
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = coopAmountInput,
-                        onValueChange = { coopAmountInput = it },
-                        label = { Text("Monto ($)") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = ColorTekinsAccent,
-                            unfocusedBorderColor = ColorTextoSecundario,
-                            focusedTextColor = ColorTextoPrincipal,
-                            unfocusedTextColor = ColorTextoPrincipal
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = { showCooperationDialog = null }) {
-                            Text("Cancelar", color = ColorTextoSecundario)
+        val yaRegistrado = localCoop.comprobantePago != null || (localCoop.cooperacionRealizada != null && localCoop.cooperacionRealizada > 0.0)
+
+        if (yaRegistrado) {
+            // Intentar resincronizar si quedó pendiente
+            androidx.compose.runtime.LaunchedEffect(localCoop.idInvitacion) {
+                if (!localCoop.sincronizadoConNube) {
+                    viewModel.reintentarSincronizarCooperacion(
+                        idInvitacion = localCoop.idInvitacion,
+                        onSuccess = {
+                            android.widget.Toast.makeText(context, "Sincronización en la nube exitosa.", android.widget.Toast.LENGTH_SHORT).show()
+                        },
+                        onError = { err ->
+                            android.widget.Toast.makeText(context, "No se pudo subir: $err", android.widget.Toast.LENGTH_LONG).show()
+                            try {
+                                val downloadsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                                val logFile = java.io.File(downloadsDir, "error_sync_cooperacion.txt")
+                                logFile.appendText("Error en sincronización:\n$err\n\n")
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
+                    )
+                }
+            }
+
+            // VERSIÓN SOLO LECTURA
+            Dialog(onDismissRequest = { showCooperationDialog = null }) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = ColorTekinsCardBg,
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Cooperación Registrada", color = ColorTekinsSuccess, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Monto aportado: $${localCoop.cooperacionRealizada ?: 0.0}", color = ColorTextoPrincipal, fontSize = 14.sp)
+                        Text("Fecha: ${localCoop.fechaSubidaComprobante ?: localCoop.fechaCooperacionRealizada ?: "Desconocida"}", color = ColorTextoSecundario, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        if (localCoop.comprobantePago != null) {
+                            val bitmap = remember(localCoop.comprobantePago) {
+                                BitmapFactory.decodeByteArray(localCoop.comprobantePago, 0, localCoop.comprobantePago.size)
+                            }
+                            if (bitmap != null) {
+                                Image(
+                                    bitmap = bitmap.asImageBitmap(),
+                                    contentDescription = "Comprobante de pago",
+                                    modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp),
+                                    contentScale = ContentScale.Fit
+                                )
+                            } else {
+                                Button(
+                                    onClick = {
+                                        try {
+                                            val file = java.io.File(context.cacheDir, "comprobante_pago_${localCoop.idInvitacion}.pdf")
+                                            file.writeBytes(localCoop.comprobantePago)
+                                            val uri = androidx.core.content.FileProvider.getUriForFile(context, "com.gaspar.rutassendero.fileprovider", file)
+                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                                setDataAndType(uri, "application/pdf")
+                                                flags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                            }
+                                            context.startActivity(android.content.Intent.createChooser(intent, "Abrir comprobante PDF"))
+                                        } catch (e: android.content.ActivityNotFoundException) {
+                                            android.widget.Toast.makeText(context, "No tienes una aplicación instalada para abrir archivos PDF.", android.widget.Toast.LENGTH_LONG).show()
+                                        } catch (e: Exception) {
+                                            android.widget.Toast.makeText(context, "No se pudo abrir el PDF: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAccent),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = ColorTekinsDarkBg)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("VER PDF ADJUNTADO", color = ColorTekinsDarkBg, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        } else {
+                            Text("No se adjuntó comprobante en este registro.", color = ColorTextoSecundario, fontSize = 12.sp)
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
                         Button(
                             onClick = {
-                                val amount = coopAmountInput.toDoubleOrNull() ?: localCoop.cooperacionMinima
-                                viewModel.registrarCooperacion(
-                                    localCoop.idInvitacion,
-                                    amount,
+                                viewModel.reintentarSincronizarCooperacion(
+                                    idInvitacion = localCoop.idInvitacion,
                                     onSuccess = {
-                                        Toast.makeText(context, "Cooperación registrada con éxito.", Toast.LENGTH_SHORT).show()
-                                        showCooperationDialog = null
+                                        android.widget.Toast.makeText(context, "Comprobante reenviado con éxito a la nube.", android.widget.Toast.LENGTH_SHORT).show()
                                     },
                                     onError = { err ->
-                                        Toast.makeText(context, "Error: $err", Toast.LENGTH_LONG).show()
+                                        android.widget.Toast.makeText(context, "Error al reenviar: $err", android.widget.Toast.LENGTH_LONG).show()
+                                        try {
+                                            val downloadsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                                            val logFile = java.io.File(downloadsDir, "error_sync_cooperacion.txt")
+                                            logFile.appendText("Error forzado:\n$err\n\n")
+                                        } catch (e: Exception) {
+                                            e.printStackTrace()
+                                        }
                                     }
                                 )
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsPrimary)
+                            colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsPrimary),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Guardar", color = Color.White)
+                            Text("REENVIAR COMPROBANTE", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            Button(
+                                onClick = { showCooperationDialog = null },
+                                colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsPrimary)
+                            ) {
+                                Text("Cerrar", color = Color.White)
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // VERSIÓN PARA REGISTRAR (OBLIGATORIO)
+            var selectedFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
+            var selectedFileName by remember { mutableStateOf<String?>(null) }
+            var fileError by remember { mutableStateOf<String?>(null) }
+
+            val filePickerLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.GetContent()
+            ) { uri: android.net.Uri? ->
+                uri?.let {
+                    val cursor = context.contentResolver.query(it, null, null, null, null)
+                    cursor?.use { c ->
+                        val nameIndex = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (nameIndex != -1 && c.moveToFirst()) {
+                            selectedFileName = c.getString(nameIndex)
+                        }
+                    }
+                    val mimeType = context.contentResolver.getType(it)
+                    val fileSize = context.contentResolver.openFileDescriptor(it, "r")?.statSize ?: 0
+                    if (mimeType == "application/pdf" && fileSize > 1.5 * 1024 * 1024) {
+                        fileError = "El PDF es demasiado grande. Límite: 1.5 MB"
+                        selectedFileUri = null
+                    } else {
+                        fileError = null
+                        selectedFileUri = it
+                    }
+                }
+            }
+
+            Dialog(onDismissRequest = { showCooperationDialog = null }) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = ColorTekinsCardBg,
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Registrar Pago de Cooperación", color = ColorTextoPrincipal, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Introduce el monto aportado (Mínimo sugerido: $${localCoop.cooperacionMinima}):", color = ColorTextoSecundario, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = coopAmountInput,
+                            onValueChange = { coopAmountInput = it },
+                            label = { Text("Monto ($)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = ColorTekinsAccent,
+                                unfocusedBorderColor = ColorTextoSecundario,
+                                focusedTextColor = ColorTextoPrincipal,
+                                unfocusedTextColor = ColorTextoPrincipal
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Text("Comprobante (Obligatorio):", color = ColorTextoPrincipal, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Button(
+                                onClick = { filePickerLauncher.launch("*/*") },
+                                colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsCardMuted)
+                            ) {
+                                Text("Adjuntar", color = Color.White)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = selectedFileName ?: "Sin archivo",
+                                color = ColorTextoSecundario,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (fileError != null) {
+                            Text(text = fileError!!, color = Color.Red, fontSize = 12.sp)
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = { showCooperationDialog = null }) {
+                                Text("Cancelar", color = ColorTextoSecundario)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    if (selectedFileUri == null) {
+                                        android.widget.Toast.makeText(context, "Es obligatorio adjuntar un comprobante de pago.", android.widget.Toast.LENGTH_LONG).show()
+                                        return@Button
+                                    }
+
+                                    val amount = coopAmountInput.toDoubleOrNull() ?: localCoop.cooperacionMinima
+                                    
+                                    var finalBytes: ByteArray? = null
+                                    selectedFileUri?.let { uri ->
+                                        val mimeType = context.contentResolver.getType(uri)
+                                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                                            if (mimeType?.startsWith("image") == true) {
+                                                val bitmap = BitmapFactory.decodeStream(stream)
+                                                if (bitmap != null) {
+                                                    val out = java.io.ByteArrayOutputStream()
+                                                    val ratio = kotlin.math.min(800f / bitmap.width, 800f / bitmap.height)
+                                                    val width = kotlin.math.round(ratio * bitmap.width).toInt()
+                                                    val height = kotlin.math.round(ratio * bitmap.height).toInt()
+                                                    val resized = android.graphics.Bitmap.createScaledBitmap(bitmap, width, height, true)
+                                                    resized.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, out)
+                                                    finalBytes = out.toByteArray()
+                                                }
+                                            } else {
+                                                finalBytes = stream.readBytes()
+                                            }
+                                        }
+                                    }
+
+                                    if (finalBytes == null) {
+                                        android.widget.Toast.makeText(context, "Error al procesar el archivo adjunto.", android.widget.Toast.LENGTH_LONG).show()
+                                        return@Button
+                                    }
+
+                                    viewModel.registrarCooperacion(
+                                        localCoop.idInvitacion,
+                                        amount,
+                                        comprobanteBytes = finalBytes,
+                                        onSuccess = {
+                                            android.widget.Toast.makeText(context, "Cooperación registrada con éxito.", android.widget.Toast.LENGTH_SHORT).show()
+                                            showCooperationDialog = null
+                                        },
+                                        onError = { err ->
+                                            android.widget.Toast.makeText(context, "Error: $err", android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                    )
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsPrimary)
+                            ) {
+                                Text("Guardar", color = Color.White)
+                            }
                         }
                     }
                 }
@@ -7752,9 +7987,11 @@ fun OutingItemRow(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(text = rName, color = ColorTextoPrincipal, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
+                val tipoRuta = outing["tipo_ruta"] as? String ?: "S"
+                val displayNivel = if (tipoRuta == "E") "Evento" else nivel
                 Badge(containerColor = ColorTekinsAccent.copy(alpha = 0.2f)) {
                     Text(
-                        text = nivel, 
+                        text = displayNivel, 
                         color = ColorTekinsAccent, 
                         fontSize = 10.sp, 
                         fontWeight = FontWeight.Bold, 
@@ -7802,7 +8039,7 @@ fun MyOutingItemRow(
                 val statusColor = if (outing.sincronizadoConNube) ColorTekinsSuccess else ColorTekinsAlert
                 Badge(containerColor = statusColor.copy(alpha = 0.2f)) {
                     Text(
-                        text = if (outing.sincronizadoConNube) "Sincronizado" else "Pendiente",
+                        text = if (outing.sincronizadoConNube) "Sincronizado (${outing.tipoRuta})" else "Pendiente (${outing.tipoRuta})",
                         color = statusColor,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,

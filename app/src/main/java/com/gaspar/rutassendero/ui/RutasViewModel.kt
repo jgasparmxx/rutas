@@ -145,10 +145,11 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
     val isPointsListReversed = MutableStateFlow(false)
 
     // --- STATE FOR OUTINGS (SALIDAS) ---
-    val invitacionesAceptadas: StateFlow<List<InvitacionAceptadaEntity>> = db.rutasDao().getInvitacionesAceptadasFlow().stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyList()
+    val invitacionesAceptadas: StateFlow<List<InvitacionAceptadaEntity>> = db.rutasDao().getInvitacionesAceptadasFlow()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
     )
 
     private val _availableOutings = MutableStateFlow<List<Map<String, Any>>>(emptyList())
@@ -169,19 +170,26 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _ownerEmailFlow = MutableStateFlow(prefs.ownerEmail)
 
-    val agrupacionesList = MutableStateFlow<List<AgrupacionEntity>>(emptyList())
+    val agrupacionesList: StateFlow<List<AgrupacionEntity>> = db.rutasDao().getAgrupacionesFlow()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = AgrupacionEntity.SEED_AGRUPACIONES
+        )
 
 
     fun fetchAgrupaciones() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val cloudData = com.gaspar.rutassendero.sync.CloudSyncManager.descargarAgrupaciones()
-                db.rutasDao().deleteAllAgrupaciones()
-                db.rutasDao().insertAgrupaciones(cloudData)
+                if (cloudData.isNotEmpty()) {
+                    db.rutasDao().deleteAllAgrupaciones()
+                    db.rutasDao().insertAgrupaciones(cloudData)
+                    Log.d("RutasViewModel", "Agrupaciones actualizadas desde la nube: ${cloudData.size}")
+                }
             } catch (e: Exception) {
                 Log.e("RutasViewModel", "Error sincronizando agrupaciones con la nube: ${e.message}")
             }
-            agrupacionesList.value = db.rutasDao().getAgrupaciones()
         }
     }
 
@@ -278,14 +286,20 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                             val local = db.rutasDao().getSenderistaByEmailFlow(resolvedEmail).first()
                             if (local != null) {
                                 val normalizedServerRol = if (cloudSenderista.rol.equals("G", ignoreCase = true)) "G" else cloudSenderista.rol.uppercase()
-                                if (local.rol != normalizedServerRol || local.bloqueado != cloudSenderista.bloqueado || local.minimoLongitud != cloudSenderista.minimoLongitud) {
+                                val cloudAgrupacion = cloudSenderista.idAgrupacion?.takeIf { it.isNotBlank() }
+                                val shouldUpdate = local.rol != normalizedServerRol || 
+                                    local.bloqueado != cloudSenderista.bloqueado || 
+                                    local.minimoLongitud != cloudSenderista.minimoLongitud ||
+                                    (cloudAgrupacion != null && local.idAgrupacion != cloudAgrupacion)
+                                if (shouldUpdate) {
                                     val updatedLocal = local.copy(
                                         rol = normalizedServerRol,
                                         bloqueado = cloudSenderista.bloqueado,
-                                        minimoLongitud = cloudSenderista.minimoLongitud
+                                        minimoLongitud = cloudSenderista.minimoLongitud,
+                                        idAgrupacion = cloudAgrupacion ?: local.idAgrupacion
                                     )
                                     db.rutasDao().insertSenderista(updatedLocal)
-                                    Log.d("RutasViewModel", "Updated local senderista with server rol=$normalizedServerRol, bloqueado=${cloudSenderista.bloqueado}, minimoLongitud=${cloudSenderista.minimoLongitud}")
+                                    Log.d("RutasViewModel", "Updated local senderista with server rol=$normalizedServerRol, agrupacion=${updatedLocal.idAgrupacion}, bloqueado=${cloudSenderista.bloqueado}, minimoLongitud=${cloudSenderista.minimoLongitud}")
                                 }
                             }
                             syncOwnRoutesFromCloud(cloudSenderista)
@@ -311,12 +325,28 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 _senderistaUiState.value = SenderistaUiState(isLoaded = true, senderista = senderista)
                 _senderistaLoaded.value = true
                 if (senderista != null) {
+                    com.gaspar.rutassendero.sync.CloudSyncManager.setAuthContext(
+                        senderista.email, 
+                        senderista.telefono, 
+                        senderista.rol, 
+                        senderista.idAgrupacion
+                    )
                     if (prefs.ownerEmail.isNullOrBlank()) {
                         prefs.ownerEmail = senderista.email
                         _ownerEmailFlow.value = senderista.email
                     }
                     cleanupPastOutings(senderista.telefono)
                     syncOwnRoutesFromCloud(senderista)
+                    
+                    // Sincronizar en background todas las tablas según su fupdate
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            com.gaspar.rutassendero.sync.CloudSyncManager.syncDeltaFromCloud(app, db)
+                        } catch (e: Exception) {
+                            Log.e("RutasViewModel", "Error al sincronizar datos delta desde la nube: \${e.message}", e)
+                        }
+                    }
+
                     if (senderista.idBeacon.isNullOrBlank()) {
                         viewModelScope.launch(Dispatchers.IO) {
                             try {
@@ -350,6 +380,18 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: Exception) {
                 Log.e("RutasViewModel", "Error al sembrar frases en SQLite: ${e.message}", e)
+            }
+        }
+
+        // Siembra de agrupaciones por omisión en SQLite local si está vacía
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (db.rutasDao().getAgrupaciones().isEmpty()) {
+                    db.rutasDao().insertAgrupaciones(AgrupacionEntity.SEED_AGRUPACIONES)
+                    Log.d("RutasViewModel", "Se sembraron las agrupaciones por omisión en SQLite local.")
+                }
+            } catch (e: Exception) {
+                Log.e("RutasViewModel", "Error al sembrar agrupaciones en SQLite: ${e.message}", e)
             }
         }
 
@@ -406,8 +448,10 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        if (!profile.idAgrupacion.isNullOrBlank()) {
-            val agrupacionValida = agrupacionesList.value.any { it.idAgrupacion == profile.idAgrupacion }
+        if (!profile.idAgrupacion.isNullOrBlank() && profile.idAgrupacion != "@&") {
+            val agrupacionValida = profile.idAgrupacion.equals("MH", ignoreCase = true) ||
+                AgrupacionEntity.SEED_AGRUPACIONES.any { it.idAgrupacion.equals(profile.idAgrupacion, ignoreCase = true) } ||
+                agrupacionesList.value.any { it.idAgrupacion.equals(profile.idAgrupacion, ignoreCase = true) }
             if (!agrupacionValida) {
                 networkErrorMessage.value = "El ID de Agrupación ingresado no es válido."
                 return
@@ -1765,7 +1809,8 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                                 emailSenderista = senderista.email,
                                 telefonoSenderista = senderista.telefono,
                                 cooperacion = outing.cooperacionRealizada,
-                                fechaCooperacionStr = outing.fechaCooperacionRealizada
+                                fechaCooperacionStr = outing.fechaCooperacionRealizada,
+                                tipoRuta = outing.tipoRuta
                             )
                             db.rutasDao().insertInvitacionAceptada(outing.copy(sincronizadoConNube = true))
                             Log.d("RutasViewModel", "AutoSync: Sincronizada participación de salida ${outing.idInvitacion} con éxito.")
@@ -1853,7 +1898,8 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                                 emailSenderista = senderista.email,
                                 telefonoSenderista = senderista.telefono,
                                 cooperacion = outing.cooperacionRealizada,
-                                fechaCooperacionStr = outing.fechaCooperacionRealizada
+                                fechaCooperacionStr = outing.fechaCooperacionRealizada,
+                                tipoRuta = outing.tipoRuta
                             )
                             db.rutasDao().insertInvitacionAceptada(outing.copy(sincronizadoConNube = true))
                         } catch (ex: Exception) {
@@ -2388,13 +2434,23 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                     email
                 )
                 
+                val acceptedInvitations = db.rutasDao().getInvitacionesAceptadas().map { it.idInvitacion }.toSet()
+                
                 val currentLoc = uiLocation.value ?: currentLocation.value
                 val maxKm = prefs.rangoKmBusquedaSalidas.toDouble()
                 
                 val filtered = rawList.map { it.toMutableMap() }.filter { map ->
-                    val lat = map["latitud"] as? Double ?: 0.0
-                    val lng = map["longitud"] as? Double ?: 0.0
-                    if (lat == 0.0 && lng == 0.0) {
+                    val tipoRuta = map["tipo_ruta"] as? String ?: "S"
+                    val idInvRaw = map["id_invitacion"] as? Int ?: 0
+                    
+                    if (acceptedInvitations.contains(idInvRaw)) return@filter false
+                    
+                    val rawLat = map["latitud"] as? Double ?: 0.0
+                    val rawLng = map["longitud"] as? Double ?: 0.0
+                    val lat = if (rawLat.isNaN()) 0.0 else rawLat
+                    val lng = if (rawLng.isNaN()) 0.0 else rawLng
+                    
+                    if (tipoRuta == "E" || (lat == 0.0 && lng == 0.0)) {
                         map["distancia_gps_val"] = -1.0
                         true
                     } else if (currentLoc != null) {
@@ -2412,6 +2468,17 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 _availableOutings.value = filtered
+                
+                // Buscar cuántos eventos llegaron crudos y cuántos pasaron los filtros
+                val rawEventosEncontrados = rawList.count { it["tipo_ruta"] == "E" }
+                val eventosEncontrados = filtered.count { it["tipo_ruta"] == "E" }
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        getApplication<Application>(),
+                        "Nube: $rawEventosEncontrados eventos. Mostrando: $eventosEncontrados tras filtros",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             } catch (e: Exception) {
                 Log.e("RutasViewModel", "Error al buscar salidas en PostgreSQL", e)
             } finally {
@@ -2451,6 +2518,9 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 val contadorBajadas = (outing["contador_bajadas"] as? Number)?.toInt()
                 val duracionSegundos = (outing["duracion_segundos"] as? Number)?.toLong()
 
+                val tipoRuta = outing["tipo_ruta"] as? String ?: "S"
+                val comentario = outing["comentario"] as? String
+
                 val senderista = senderistaState.value ?: db.rutasDao().getSenderistaFlow().first()
                     ?: throw Exception("Registra tu perfil antes de participar.")
 
@@ -2478,7 +2548,9 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                     desnivelNegativo = desnivelNegativo,
                     contadorSubidas = contadorSubidas,
                     contadorBajadas = contadorBajadas,
-                    duracionSegundos = duracionSegundos
+                    duracionSegundos = duracionSegundos,
+                    tipoRuta = tipoRuta,
+                    comentario = comentario
                 )
                 db.rutasDao().insertInvitacionAceptada(localEntity)
 
@@ -2489,30 +2561,33 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                         emailSenderista = senderista.email,
                         telefonoSenderista = senderista.telefono,
                         cooperacion = null,
-                        fechaCooperacionStr = null
+                        fechaCooperacionStr = null,
+                        tipoRuta = tipoRuta
                     )
                     db.rutasDao().insertInvitacionAceptada(localEntity.copy(sincronizadoConNube = true))
                 } catch (e: Exception) {
                     Log.w("RutasViewModel", "No se pudo sincronizar participación en la nube inmediatamente: ${e.message}")
                 }
 
-                // 3. Descargar la ruta si no existe localmente
-                _outingsProgress.value = "Verificando ruta local..."
-                val existingRoute = db.rutasDao().getRutaById(idRuta)
-                if (existingRoute == null) {
-                    _outingsProgress.value = "Descargando ruta desde la nube..."
-                    com.gaspar.rutassendero.sync.CloudSyncManager.downloadRoute(
-                        context,
-                        db,
-                        idRuta,
-                        onProgress = { _outingsProgress.value = it }
-                    )
-                    
-                    // Modificar el teléfono de la ruta descargada para que pertenezca al creador
-                    // y así el usuario actual no pueda borrarla en la nube (solo localmente)
-                    val downloadedRoute = db.rutasDao().getRutaById(idRuta)
-                    if (downloadedRoute != null && downloadedRoute.telefono.isEmpty()) {
-                        db.rutasDao().insertRuta(downloadedRoute.copy(telefono = telefonoCreador))
+                // 3. Descargar la ruta si no existe localmente (solo para tipo_ruta = 'S')
+                if (tipoRuta == "S") {
+                    _outingsProgress.value = "Verificando ruta local..."
+                    val existingRoute = db.rutasDao().getRutaById(idRuta)
+                    if (existingRoute == null) {
+                        _outingsProgress.value = "Descargando ruta desde la nube..."
+                        com.gaspar.rutassendero.sync.CloudSyncManager.downloadRoute(
+                            context,
+                            db,
+                            idRuta,
+                            onProgress = { _outingsProgress.value = it }
+                        )
+                        
+                        // Modificar el teléfono de la ruta descargada para que pertenezca al creador
+                        // y así el usuario actual no pueda borrarla en la nube (solo localmente)
+                        val downloadedRoute = db.rutasDao().getRutaById(idRuta)
+                        if (downloadedRoute != null && downloadedRoute.telefono.isEmpty()) {
+                            db.rutasDao().insertRuta(downloadedRoute.copy(telefono = telefonoCreador))
+                        }
                     }
                 }
 
@@ -2569,6 +2644,7 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
     fun registrarCooperacion(
         idInvitacion: Int,
         monto: Double,
+        comprobanteBytes: ByteArray? = null,
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
@@ -2586,18 +2662,25 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 val updated = inv.copy(
                     cooperacionRealizada = monto,
                     fechaCooperacionRealizada = fechaCoop,
+                    comprobantePago = comprobanteBytes,
+                    fechaSubidaComprobante = if (comprobanteBytes != null) fechaCoop else null,
                     sincronizadoConNube = false
                 )
                 db.rutasDao().insertInvitacionAceptada(updated)
 
                 // 2. Intentar registrar en Postgres
                 try {
+                    val base64Comprobante = comprobanteBytes?.let {
+                        android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP)
+                    }
                     com.gaspar.rutassendero.sync.CloudSyncManager.registerParticipationInCloud(
                         idInvitacion = idInvitacion,
                         emailSenderista = senderista.email,
                         telefonoSenderista = senderista.telefono,
                         cooperacion = monto,
-                        fechaCooperacionStr = fechaCoop
+                        fechaCooperacionStr = fechaCoop,
+                        comprobanteBase64 = base64Comprobante,
+                        tipoRuta = inv.tipoRuta
                     )
                     db.rutasDao().insertInvitacionAceptada(updated.copy(sincronizadoConNube = true))
                 } catch (e: Exception) {
@@ -2610,6 +2693,49 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 onError(e.message ?: "Error desconocido")
             } finally {
                 _outingsProgress.value = null
+            }
+        }
+    }
+
+    fun reintentarSincronizarCooperacion(
+        idInvitacion: Int,
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            try {
+                val inv = db.rutasDao().getInvitacionAceptadaById(idInvitacion)
+                if (inv == null) return@launch
+                
+                val senderista = senderistaState.value ?: db.rutasDao().getSenderistaFlow().first()
+                if (senderista == null) return@launch
+
+                val base64Comprobante = inv.comprobantePago?.let {
+                    android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP)
+                }
+
+                com.gaspar.rutassendero.sync.CloudSyncManager.registerParticipationInCloud(
+                    idInvitacion = inv.idInvitacion,
+                    emailSenderista = senderista.email,
+                    telefonoSenderista = senderista.telefono,
+                    cooperacion = inv.cooperacionRealizada,
+                    fechaCooperacionStr = inv.fechaCooperacionRealizada,
+                    comprobanteBase64 = base64Comprobante,
+                    tipoRuta = inv.tipoRuta
+                )
+                db.rutasDao().insertInvitacionAceptada(inv.copy(sincronizadoConNube = true))
+                Log.d("RutasViewModel", "Sincronización reintentada con éxito")
+                onSuccess()
+            } catch (e: Exception) {
+                Log.e("RutasViewModel", "Error al reintentar sincronizar", e)
+                try {
+                    val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    val logFile = java.io.File(downloadsDir, "error_sync_cooperacion.txt")
+                    logFile.appendText("Error: ${e.message}\nStacktrace:\n${android.util.Log.getStackTraceString(e)}\n\n")
+                } catch (ioe: Exception) {
+                    Log.e("RutasViewModel", "No se pudo escribir log en Download", ioe)
+                }
+                onError(e.message ?: "Error desconocido")
             }
         }
     }
@@ -2681,9 +2807,13 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
         try {
             val acceptedList = db.rutasDao().getInvitacionesAceptadas()
             for (inv in acceptedList) {
+                // No eliminar salidas que aún no se han subido a la nube
+                if (!inv.sincronizadoConNube) continue
+                
                 val isRegistered = com.gaspar.rutassendero.sync.CloudSyncManager.isParticipantRegisteredInCloud(
-                    inv.idInvitacion,
-                    senderista.email
+                    idInvitacion = inv.idInvitacion,
+                    emailSenderista = senderista.email,
+                    tipoRuta = inv.tipoRuta
                 )
                 if (!isRegistered) {
                     Log.d("RutasViewModel", "Outing ${inv.idInvitacion} is no longer active for user in PostgreSQL. Cleaning up locally.")

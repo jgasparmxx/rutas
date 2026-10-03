@@ -1,29 +1,7 @@
-$files = @(
-    'c:\GASPAR\baches\rutas\app\src\main\java\com\gaspar\rutassendero\ui\RutasViewModel.kt',
-    'c:\GASPAR\baches\rutas\app\src\main\java\com\gaspar\rutassendero\ui\components\Components.kt',
-    'c:\GASPAR\baches\rutas\app\src\main\java\com\gaspar\rutassendero\sync\CloudSyncManager.kt',
-    'c:\GASPAR\baches\rutas\app\src\main\java\com\gaspar\rutassendero\service\GpsTrackingService.kt',
-    'c:\GASPAR\baches\rutas\MainActivity.kt',
-    'c:\GASPAR\baches\rutas\app\src\main\res\values\strings.xml'
-)
-
-foreach ($f in $files) {
-    if (Test-Path $f) {
-        $content = Get-Content -Raw -Encoding UTF8 $f
-        $content = $content.Replace('Ã¡', 'á')
-        $content = $content.Replace('Ã©', 'é')
-        $content = $content.Replace('Ã­', 'í')
-        $content = $content.Replace('Ã³', 'ó')
-        $content = $content.Replace('Ãº', 'ú')
-        $content = $content.Replace('Ã±', 'ñ')
-        $content = $content.Replace('Ã‰', 'É')
-        $content = $content.Replace('Ã“', 'Ó')
-        $content = $content.Replace('Ãš', 'Ú')
-        $content = $content.Replace('Ã‘', 'Ñ')
-        $content = $content.Replace('Ã¼', 'ü')
-        $content = $content.Replace('Â¡', '¡')
-        $content = $content.Replace('Â¿', '¿')
-        [System.IO.File]::WriteAllText($f, $content, [System.Text.Encoding]::UTF8)
-    }
-}
-Write-Output "Done"
+$path = "C:\GASPAR\baches\rutas_admon\composeApp\src\commonMain\kotlin\com\gaspar\rutas\admon\data\RutasAdmonDao.kt"
+$content = Get-Content $path -Raw
+$pattern = "(?s)@androidx\.room\.Transaction\s*@Query\(`"`"`"[\s\S]*?UNION ALL[\s\S]*?ORDER BY CAST\(fecha_hora_salida AS REAL\) DESC\s*`"`"`"\)\s*fun getConvocatoriasConRutaFlow\(\):\s*Flow<List<ConvocatoriaConRuta>>"
+$replacement = "@androidx.room.Transaction`r`n    @Query(`"SELECT * FROM invitaciones_ruta ORDER BY fecha_hora_salida DESC`")`r`n    fun getInvitacionesConRutaFlow(): Flow<List<ConvocatoriaConRuta>>`r`n`r`n    @androidx.room.Transaction`r`n    @Query(`"SELECT * FROM eventos ORDER BY fecha_hora_salida DESC`")`r`n    fun getEventosConRutaFlow(): Flow<List<EventoConRuta>>"
+$content = $content -replace $pattern, $replacement
+Set-Content -Path $path -Value $content -Encoding UTF8
+Write-Host "Replaced!"

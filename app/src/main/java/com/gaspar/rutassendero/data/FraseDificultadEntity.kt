@@ -1,5 +1,6 @@
 package com.gaspar.rutassendero.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -8,7 +9,9 @@ data class FraseDificultadEntity(
     @PrimaryKey
     val id: String,
     val categoria: String,
-    val frase: String
+    val frase: String,
+    @ColumnInfo(name = "fupdate", defaultValue = "0")
+    val fupdate: Long = System.currentTimeMillis()
 ) {
     companion object {
         val SEED_FRASES = listOf(

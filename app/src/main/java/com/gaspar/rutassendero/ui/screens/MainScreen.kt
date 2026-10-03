@@ -249,6 +249,12 @@ fun MainScreen(
         }
     }
 
+    LaunchedEffect(showSenderistaDialog) {
+        if (showSenderistaDialog) {
+            viewModel.fetchAgrupaciones()
+        }
+    }
+
     if (showWaypointDialog && targetWaypoint != null) {
         Dialog(onDismissRequest = { showWaypointDialog = false }) {
             Surface(
@@ -360,6 +366,23 @@ fun MainScreen(
     }
 
 
+    // --- Controladores de Modo Bolsillo / Bloqueo Táctil ---
+    var isPocketLockActive by remember { mutableStateOf(false) }
+    var pocketLockCountdown by remember { mutableStateOf<Int?>(null) }
+
+    LaunchedEffect(pocketLockCountdown) {
+        val cd = pocketLockCountdown
+        if (cd != null) {
+            if (cd > 0) {
+                kotlinx.coroutines.delay(1000)
+                pocketLockCountdown = cd - 1
+            } else {
+                pocketLockCountdown = null
+                isPocketLockActive = true
+            }
+        }
+    }
+
     LaunchedEffect(capturedPhotoPath) {
         val path = capturedPhotoPath
         if (path != null) {
@@ -383,6 +406,8 @@ fun MainScreen(
                 pendingEstado = 1
                 viewModel.clearCapturedPhoto()
                 viewModel.clearDictatedText()
+                // Iniciar cuenta regresiva de 5s para Modo Bolsillo (Pantalla negra OLED + bloqueo táctil)
+                pocketLockCountdown = 5
             }
         }
     }
@@ -655,6 +680,14 @@ fun MainScreen(
                                         tint = if (isVoiceGuidanceEnabled) ColorTekinsPrimary else Color.Black
                                     )
                                 }
+
+                                IconButton(onClick = { isPocketLockActive = true }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = "Modo Bolsillo",
+                                        tint = Color.Black
+                                    )
+                                }
                             } else {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
@@ -676,6 +709,14 @@ fun MainScreen(
                                     Icon(
                                         imageVector = Icons.Default.Refresh,
                                         contentDescription = "Recargar Mapa",
+                                        tint = Color.Black
+                                    )
+                                }
+
+                                IconButton(onClick = { isPocketLockActive = true }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = "Modo Bolsillo",
                                         tint = Color.Black
                                     )
                                 }
@@ -795,6 +836,7 @@ fun MainScreen(
                             viewModel.isPointsListReversed.value = reversed
                         },
                         onSettingsClick = { showSettings = true },
+                        onLockClick = { isPocketLockActive = true },
                         is911Active = is911Active,
                         on911Click = {
                             val senderistaObj = senderista
@@ -2130,7 +2172,7 @@ fun MainScreen(
                             viewModel.stopGuiding()
                             showSelectRutaDialog = false
                             Toast.makeText(context, "Se abrió la ruta activa '${activeRoute.nombre}' para que la finalices o borres.", Toast.LENGTH_LONG).show()
-                        } else if (senderista?.rol?.equals("G", ignoreCase = true) == true) {
+                        } else if (com.gaspar.rutassendero.data.RoleHierarchy.canCreateRoutes(senderista?.rol)) {
                             showSelectRutaDialog = false
                             showAddRutaDialog = true
                         } else {
@@ -2583,6 +2625,93 @@ fun MainScreen(
                 }
             )
         }
+
+        // --- BANNER FLOTANTE DE CONTEO REGRESIVO (5 segundos tras registrar punto) ---
+        if (pocketLockCountdown != null && !isPocketLockActive) {
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                border = BorderStroke(1.5.dp, Color(0xFFFACC15)),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 90.dp, start = 16.dp, end = 16.dp)
+                    .fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = Color(0xFFFACC15),
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Punto registrado con éxito",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Modo Bolsillo en ${pocketLockCountdown}s...",
+                            fontSize = 11.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                    TextButton(
+                        onClick = { pocketLockCountdown = null },
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Text("Cancelar", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Button(
+                        onClick = {
+                            pocketLockCountdown = null
+                            isPocketLockActive = true
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFFACC15),
+                            contentColor = Color(0xFF0F172A)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Bloquear", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                    }
+                }
+            }
+        }
+
+        // --- OVERLAY DE MODO BOLSILLO (Pantalla negra OLED + bloqueo táctil total) ---
+        if (isPocketLockActive) {
+            val totalDist = remember(selectedRoutePoints, selectedRouteTrace) {
+                val traceDist = if (selectedRouteTrace.isNotEmpty()) RouteStatsCalculator.calculateTraceDistance(selectedRouteTrace) else 0f
+                val beaconDist = if (selectedRoutePoints.isNotEmpty()) RouteStatsCalculator.calculateBeaconDistance(selectedRoutePoints) else 0f
+                maxOf(traceDist, beaconDist)
+            }
+            val distStr = if (totalDist >= 1000f) String.format(java.util.Locale.US, "%.2f km", totalDist / 1000f) else "${totalDist.toInt()} m"
+
+            val durationText = remember(selectedRoute?.duracionSegundos) {
+                val secs = selectedRoute?.duracionSegundos ?: 0L
+                if (secs > 0L) {
+                    val hours = secs / 3600
+                    val minutes = (secs % 3600) / 60
+                    if (hours > 0) "${hours}h ${minutes}m" else "${minutes} min"
+                } else null
+            }
+
+            PocketLockOverlay(
+                routeName = selectedRoute?.nombre,
+                distanceText = distStr,
+                durationText = durationText,
+                pointsCount = selectedRoutePoints.size,
+                onUnlock = { isPocketLockActive = false }
+            )
+        }
     }
 }
 
@@ -2617,6 +2746,7 @@ fun HeaderBar(
     isPointsListReversed: Boolean = false,
     onPointsOrderChange: (Boolean) -> Unit = {},
     onSettingsClick: () -> Unit = {},
+    onLockClick: () -> Unit = {},
     is911Active: Boolean = false,
     on911Click: () -> Unit = {}
 ) {
@@ -2778,7 +2908,7 @@ fun HeaderBar(
                             },
                             leadingIcon = { Icon(Icons.Default.CalendarToday, contentDescription = null, tint = ColorTekinsPrimary) }
                         )
-                        if (senderistaRol.equals("G", ignoreCase = true)) {
+                        if (com.gaspar.rutassendero.data.RoleHierarchy.canCreateRoutes(senderistaRol)) {
                             DropdownMenuItem(
                                 text = { Text("Agregar nueva ruta", color = ColorTekinsDarkBg, fontWeight = FontWeight.Bold) },
                                 onClick = {
@@ -2956,6 +3086,26 @@ fun HeaderBar(
                 
                 var isRightMenuExpanded by remember { mutableStateOf(false) }
 
+                if (selectedRoute != null) {
+                    IconButton(
+                        onClick = onLockClick,
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = ColorTekinsCardMuted,
+                            contentColor = activeColor
+                        ),
+                        modifier = Modifier
+                            .size(44.dp)
+                            .padding(end = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Activar Modo Bolsillo",
+                            tint = activeColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+
                 Box {
                     val context = androidx.compose.ui.platform.LocalContext.current
                 IconButton(
@@ -2990,6 +3140,24 @@ fun HeaderBar(
                         thickness = 1.dp,
                         modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp)
                     )
+
+                    if (selectedRoute != null) {
+                        DropdownMenuItem(
+                            text = { Text("Modo Bolsillo (Bloqueo)", color = ColorTekinsDarkBg) },
+                            onClick = {
+                                isRightMenuExpanded = false
+                                onLockClick()
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = ColorTekinsPrimary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        )
+                    }
 
 
 

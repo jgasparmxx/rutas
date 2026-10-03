@@ -36,6 +36,13 @@ object SecureCredentialsManager {
         105, 46, 119, 54, 44, 107, 54, 104, 57, 43, 111, 23, 10, 27
     )
 
+    // Clave secreta para firma de tokens JWT (PGRST_JWT_SECRET en PostgREST / Render)
+    private val OBFUSCATED_JWT_SECRET = byteArrayOf(
+        55, 51, 5, 57, 54, 59, 44, 63, 5, 41, 63, 57, 40, 63, 46, 59, 
+        5, 41, 47, 42, 63, 40, 5, 41, 63, 61, 47, 40, 59, 5, 40, 47, 
+        46, 59, 41, 5, 41, 63, 52, 62, 63, 40, 53, 5, 104, 106, 104, 108
+    )
+
     /**
      * De-ofusca un arreglo de bytes utilizando la clave XOR.
      */
@@ -51,6 +58,8 @@ object SecureCredentialsManager {
      * URL base de la API REST de PostgREST desplegada en Render (o servidor propio).
      */
     fun getPostgrestBaseUrl(): String = "https://postgrest-latest-09dh.onrender.com"
+
+    fun getJwtSecret(): String = deobfuscate(OBFUSCATED_JWT_SECRET)
 
     fun getPostgresUri(): String = deobfuscate(OBFUSCATED_PG_URI)
     fun getPostgresUser(): String = deobfuscate(OBFUSCATED_PG_USER)

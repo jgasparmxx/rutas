@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [RutaEntity::class, PuntoRutaEntity::class, SenderistaEntity::class, TrazaRutaEntity::class, InvitacionAceptadaEntity::class, FraseDificultadEntity::class, ParticipanteEntity::class, AgrupacionEntity::class], version = 30, exportSchema = false)
+@Database(entities = [RutaEntity::class, PuntoRutaEntity::class, SenderistaEntity::class, TrazaRutaEntity::class, InvitacionAceptadaEntity::class, EventoEntity::class, FraseDificultadEntity::class, ParticipanteEntity::class, AgrupacionEntity::class], version = 34, exportSchema = false)
 abstract class RutasDatabase : RoomDatabase() {
 
     abstract fun rutasDao(): RutasDao
@@ -267,6 +267,59 @@ abstract class RutasDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_30_31 = object : Migration(30, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE rutas ADD COLUMN fupdate INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE puntos_ruta ADD COLUMN fupdate INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE traza_ruta ADD COLUMN fupdate INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE invitaciones_aceptadas ADD COLUMN fupdate INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE frases_dificultad ADD COLUMN fupdate INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE participantes ADD COLUMN fupdate INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE agrupaciones ADD COLUMN fupdate INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_31_32 = object : Migration(31, 32) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE invitaciones_aceptadas ADD COLUMN comprobante_pago BLOB")
+                db.execSQL("ALTER TABLE invitaciones_aceptadas ADD COLUMN fecha_subida_comprobante TEXT")
+            }
+        }
+
+        val MIGRATION_32_33 = object : Migration(32, 33) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE invitaciones_aceptadas ADD COLUMN tipo_ruta TEXT NOT NULL DEFAULT 'S'")
+                db.execSQL("ALTER TABLE invitaciones_aceptadas ADD COLUMN comentario TEXT")
+            }
+        }
+
+        val MIGRATION_33_34 = object : Migration(33, 34) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `eventos` (" +
+                    "`id_evento` INTEGER NOT NULL, " +
+                    "`nombre_evento` TEXT NOT NULL, " +
+                    "`telefono_creador` TEXT NOT NULL, " +
+                    "`fecha_hora_salida` TEXT NOT NULL, " +
+                    "`punto_reunion` TEXT NOT NULL, " +
+                    "`link_google_maps` TEXT, " +
+                    "`cooperacion_minima` REAL NOT NULL, " +
+                    "`fecha_limite_registro` TEXT, " +
+                    "`instrucciones` TEXT, " +
+                    "`latitud` REAL, " +
+                    "`longitud` REAL, " +
+                    "`cooperacion_realizada` REAL, " +
+                    "`fecha_cooperacion_realizada` TEXT, " +
+                    "`sincronizado_con_nube` INTEGER NOT NULL, " +
+                    "`comprobante_pago` BLOB, " +
+                    "`fecha_subida_comprobante` TEXT, " +
+                    "`fupdate` INTEGER NOT NULL DEFAULT 0, " +
+                    "`comentario` TEXT, " +
+                    "PRIMARY KEY(`id_evento`))"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): RutasDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -281,7 +334,7 @@ abstract class RutasDatabase : RoomDatabase() {
                     MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21,
                     MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25,
                     MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29,
-                    MIGRATION_29_30
+                    MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32, MIGRATION_32_33, MIGRATION_33_34
                 )
                 .fallbackToDestructiveMigration()
                 .build()

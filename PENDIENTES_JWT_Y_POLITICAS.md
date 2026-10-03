@@ -27,13 +27,27 @@ Este documento sirve como registro y memoria técnica para el equipo y el asiste
 
 ---
 
-## 3. Guía de Implementación de Políticas RLS (Row-Level Security) en PostgreSQL
+## 3. Matriz de Roles y Políticas RLS en PostgreSQL
 
-Para garantizar que nadie pueda manipular rutas ajenas directamente en la base de datos, se deben aplicar las siguientes políticas en PostgreSQL:
+### A. Definición de Jerarquía de Roles del Ecosistema
+El atributo de rol en la tabla `senderistas` y en el token JWT se llama **`rol`** y sigue un orden estricto de herencia descendente:
 
-### A. Crear Roles en PostgreSQL
+```
+['O' (Dueño)] ──hereda──> ['A' (Admin Agrupación)] ──hereda──> ['G' (Guía)] ──hereda──> ['S' (Senderista)]
+```
+
+| Nivel | Código `rol` | Nombre de Rol | Aplicación / Plataforma | Permisos, Herencia y Capacidades |
+| :---: | :---: | :--- | :--- | :--- |
+| **4** | **`'O'`** | **Dueño (Owner)** | App Gestión Central (C# Windows/Linux) y Móvil | **El más alto. Puede hacer TODO (O, A, G, S):** Superadministrador, cambia roles de usuarios, modera fotos/rutas, gestiona agrupaciones, publica salidas, crea/sube rutas y las consume. |
+| **3** | **`'A'`** | **Admin Agrupación** | App Administración (Android / Windows) | **Hereda A, G y S:** Publica y gestiona invitaciones a salir de su agrupación. Puede mapear, crear y subir rutas a la nube (como Guía) y consumir rutas (como Senderista). |
+| **2** | **`'G'`** | **Guía** | Móvil Android (Rutas Sendero) | **Hereda G y S:** Mapea senderos, **crea rutas y las sube a la nube**. Modifica/elimina sus propias rutas. Consume rutas (como Senderista). |
+| **1** | **`'S'`** | **Senderista** | Móvil Android (Rutas Sendero) | **Nivel base (solo S):** **Consume rutas** (las descarga, visualiza y navega). Participa en salidas/invitaciones. **NO puede crear rutas en la nube ni gestionar salidas.** |
+
+---
+
+### B. Rol de Base de Datos para PostgREST
+PostgREST se conecta con el rol `senderista`. Los permisos granulares se controlan leyendo los claims del JWT (`rol`, `email`, `id_agrupacion`):
 ```sql
--- Rol para usuarios autenticados mediante JWT
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'senderista') THEN
@@ -42,44 +56,91 @@ BEGIN
 END
 $$;
 
--- Permisos básicos para el rol senderista
 GRANT USAGE ON SCHEMA public TO senderista;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO senderista;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO senderista;
 ```
 
-### B. Políticas para la tabla `rutas`
+---
+
+### C. Políticas RLS para la tabla `rutas`
 ```sql
--- 1. Habilitar RLS
 ALTER TABLE rutas ENABLE ROW LEVEL SECURITY;
 
--- 2. SELECT: Todos pueden ver rutas públicas; las privadas solo su creador autenticado
-CREATE POLICY rutas_select_policy ON rutas
-FOR SELECT
+-- 1. SELECT: Públicas (todos), privadas (creador, admin 'A' de su agrupación, o dueño 'O')
+DROP POLICY IF EXISTS rutas_select_policy ON rutas;
+CREATE POLICY rutas_select_policy ON rutas FOR SELECT
 USING (
     publico = true 
     OR email_creador = (current_setting('request.jwt.claims', true)::jsonb ->> 'email')
+    OR (
+        (current_setting('request.jwt.claims', true)::jsonb ->> 'rol') = 'A'
+        AND agrupacion = (current_setting('request.jwt.claims', true)::jsonb ->> 'id_agrupacion')
+    )
+    OR (current_setting('request.jwt.claims', true)::jsonb ->> 'rol') = 'O'
 );
 
--- 3. INSERT: El senderista solo puede registrar rutas con su propio email
-CREATE POLICY rutas_insert_policy ON rutas
-FOR INSERT
+-- 2. INSERT: Guías ('G'), Administradores ('A') o Dueño ('O') pueden subir rutas a la nube
+DROP POLICY IF EXISTS rutas_insert_policy ON rutas;
+CREATE POLICY rutas_insert_policy ON rutas FOR INSERT
 WITH CHECK (
-    email_creador = (current_setting('request.jwt.claims', true)::jsonb ->> 'email')
+    (current_setting('request.jwt.claims', true)::jsonb ->> 'rol') IN ('G', 'A', 'O')
+    AND email_creador = (current_setting('request.jwt.claims', true)::jsonb ->> 'email')
 );
 
--- 4. UPDATE: Solo el creador puede modificar su ruta
-CREATE POLICY rutas_update_policy ON rutas
-FOR UPDATE
+-- 3. UPDATE: Creador de la ruta o Dueño ('O')
+DROP POLICY IF EXISTS rutas_update_policy ON rutas;
+CREATE POLICY rutas_update_policy ON rutas FOR UPDATE
 USING (
     email_creador = (current_setting('request.jwt.claims', true)::jsonb ->> 'email')
+    OR (current_setting('request.jwt.claims', true)::jsonb ->> 'rol') = 'O'
 );
 
--- 5. DELETE: Solo el creador puede eliminar su ruta
-CREATE POLICY rutas_delete_policy ON rutas
-FOR DELETE
+-- 4. DELETE: Creador de la ruta o Dueño ('O')
+DROP POLICY IF EXISTS rutas_delete_policy ON rutas;
+CREATE POLICY rutas_delete_policy ON rutas FOR DELETE
 USING (
     email_creador = (current_setting('request.jwt.claims', true)::jsonb ->> 'email')
+    OR (current_setting('request.jwt.claims', true)::jsonb ->> 'rol') = 'O'
+);
+```
+
+---
+
+### D. Políticas RLS para la tabla `invitaciones_ruta`
+```sql
+ALTER TABLE invitaciones_ruta ENABLE ROW LEVEL SECURITY;
+
+-- 1. SELECT: Todos los senderistas autenticados pueden ver invitaciones
+DROP POLICY IF EXISTS inv_select_policy ON invitaciones_ruta;
+CREATE POLICY inv_select_policy ON invitaciones_ruta FOR SELECT
+USING (true);
+
+-- 2. INSERT/UPDATE/DELETE: Solo Administradores ('A') o Dueño ('O')
+DROP POLICY IF EXISTS inv_modify_policy ON invitaciones_ruta;
+CREATE POLICY inv_modify_policy ON invitaciones_ruta FOR ALL
+USING (
+    (current_setting('request.jwt.claims', true)::jsonb ->> 'rol') IN ('A', 'O')
+);
+```
+
+---
+
+### E. Políticas RLS para la tabla `senderistas`
+```sql
+ALTER TABLE senderistas ENABLE ROW LEVEL SECURITY;
+
+-- 1. SELECT: Lectura permitida para autenticados (ver nombres en invitaciones, etc.)
+DROP POLICY IF EXISTS senderistas_select_policy ON senderistas;
+CREATE POLICY senderistas_select_policy ON senderistas FOR SELECT
+USING (true);
+
+-- 2. INSERT / UPDATE: Cada senderista gestiona su perfil; Dueño ('O') puede editar cualquiera y cambiar roles
+DROP POLICY IF EXISTS senderistas_modify_policy ON senderistas;
+CREATE POLICY senderistas_modify_policy ON senderistas FOR ALL
+USING (
+    email = (current_setting('request.jwt.claims', true)::jsonb ->> 'email')
+    OR (current_setting('request.jwt.claims', true)::jsonb ->> 'rol') = 'O'
 );
 ```
 
@@ -101,18 +162,24 @@ Configurar la variable:
 }
 ```
 
-### C. Ajuste pendiente en la App Android (cuando se active el JWT)
-En `CloudSyncManager.kt`, incluir el token en el encabezado de las peticiones HTTP de OkHttp:
-```kotlin
-val request = Request.Builder()
-    .url(url)
-    .header("Authorization", "Bearer $jwtToken")
-    ...
-```
+### C. Ajuste en la App Android (¡COMPLETADO el 23 de Septiembre de 2026!)
+* Se creó [`JwtManager.kt`](file:///c:/GASPAR/baches/rutas/app/src/main/java/com/gaspar/rutassendero/sync/JwtManager.kt):
+  * Genera tokens **HS256** válidos y compatibles con el RFC 7519 y PostgREST.
+  * Incluye `role: "senderista"`, `email`, `telefono`, `iat` y `exp` (1 año de vigencia renovable).
+  * Firmado con la clave secreta compartida en [`SecureCredentialsManager.kt`](file:///c:/GASPAR/baches/rutas/app/src/main/java/com/gaspar/rutassendero/sync/SecureCredentialsManager.kt).
+* Se integró en [`CloudSyncManager.kt`](file:///c:/GASPAR/baches/rutas/app/src/main/java/com/gaspar/rutassendero/sync/CloudSyncManager.kt):
+  * Inyecta automáticamente el encabezado `Authorization: Bearer <token>` en todas las peticiones `GET`, `POST` (Upsert) y `DELETE`.
+  * **Degradación Transparente Automática (Fallback Seguro):** Si el servidor PostgREST aún no tiene configurada la variable `PGRST_JWT_SECRET` (responde con error `PGRST300: Server lacks JWT secret` o 401), la app automáticamente y de forma instantánea reintenta la petición en modo anónimo (sin el encabezado Bearer). De esta forma, la app NUNCA se bloquea, las agrupaciones se descargan, las rutas de otros senderistas se consultan normalmente y las búsquedas funcionan al 100%.
+  * Tan pronto como se configure `PGRST_JWT_SECRET` en Render, la app detectará automáticamente el soporte y activará el uso de JWT sin requerir actualización adicional.
+* Se blindó [`RutasViewModel.kt`](file:///c:/GASPAR/baches/rutas/app/src/main/java/com/gaspar/rutassendero/ui/RutasViewModel.kt):
+  * `fetchAgrupaciones()` solo borra la tabla local si la respuesta de la nube trae registros válidos (`cloudData.isNotEmpty()`), evitando vaciar el caché offline.
+  * Sincroniza y restaura `idAgrupacion` del senderista desde la nube al iniciar si estaba en blanco o difería localmente.
+* Se verificó con prueba unitaria automatizada exitosa ([`JwtManagerTest.kt`](file:///c:/GASPAR/baches/rutas/app/src/test/java/com/gaspar/rutassendero/JwtManagerTest.kt)).
 
 ---
 
-## 5. Instrucción para el Asistente de IA
-Cuando el usuario pida continuar o recordar este trabajo, lee este archivo para:
-1. Conocer la autoría real de las rutas y respetar la regla de teléfonos.
-2. Ayudar al usuario a desplegar las políticas RLS en PostgreSQL o integrar la generación/envío de JWT en `CloudSyncManager.kt`.
+## 5. Instrucción para el Asistente de IA y Pasos Finales
+1. **Paso 1 (App Android - Ya Resuelto):** La app incluye degradación transparente automática. Funciona tanto si Render tiene o no tiene `PGRST_JWT_SECRET`. La nueva versión compilada es `tksenderismo.apk`.
+2. **Paso 2 (Render):** Cuando el administrador desee activar la seguridad RLS en el servidor, solo debe agregar la variable de entorno `PGRST_JWT_SECRET` en Render con el valor:
+   `mi_clave_secreta_super_segura_rutas_sendero_2026`.
+3. **Paso 3 (PostgreSQL):** Ejecutar el script SQL de la Sección 3 para activar las políticas RLS definitivas.

@@ -75,5 +75,20 @@ data class InvitacionAceptadaEntity(
     val contadorBajadas: Int? = null,
 
     @ColumnInfo(name = "duracion_segundos")
-    val duracionSegundos: Long? = null
+    val duracionSegundos: Long? = null,
+
+    @ColumnInfo(name = "comprobante_pago", typeAffinity = ColumnInfo.BLOB)
+    val comprobantePago: ByteArray? = null,
+
+    @ColumnInfo(name = "fecha_subida_comprobante")
+    val fechaSubidaComprobante: String? = null,
+
+    @ColumnInfo(name = "fupdate", defaultValue = "0")
+    val fupdate: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "tipo_ruta")
+    val tipoRuta: String = "S",
+
+    @ColumnInfo(name = "comentario")
+    val comentario: String? = null
 )

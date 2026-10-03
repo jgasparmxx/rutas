@@ -35,5 +35,8 @@ data class TrazaRutaEntity(
     val longitud: Double,
 
     @ColumnInfo(name = "altitud")
-    val altitud: Double
+    val altitud: Double,
+
+    @ColumnInfo(name = "fupdate", defaultValue = "0")
+    val fupdate: Long = System.currentTimeMillis()
 )

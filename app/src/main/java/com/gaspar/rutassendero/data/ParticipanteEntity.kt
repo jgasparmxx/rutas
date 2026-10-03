@@ -59,7 +59,10 @@ data class ParticipanteEntity(
     val codigoConfianza: String? = null,
 
     @ColumnInfo(name = "sexo")
-    val sexo: String? = null
+    val sexo: String? = null,
+
+    @ColumnInfo(name = "fupdate", defaultValue = "0")
+    val fupdate: Long = System.currentTimeMillis()
 ) {
     val edad: Int?
         get() {

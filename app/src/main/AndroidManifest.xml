@@ -23,9 +23,16 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
-    <!-- Permisos de localización requeridos para detectar baches -->
+    <!-- Permisos de localización requeridos para senderismo y detección de baches -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Permiso de localización en segundo plano para Android 10+ (API 29+) -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- Permiso para mantener la CPU activa con pantalla apagada en el bolsillo (Evita Doze Mode) -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Permiso para solicitar exclusión de ahorro de batería -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     
     <!-- Permiso para ejecutar el servicio en segundo plano (Foreground Service) -->

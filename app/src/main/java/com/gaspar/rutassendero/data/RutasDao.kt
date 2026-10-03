@@ -50,8 +50,14 @@ interface RutasDao {
     @Query("SELECT * FROM senderista LIMIT 1")
     fun getSenderistaFlow(): Flow<SenderistaEntity?>
 
+    @Query("SELECT * FROM senderista LIMIT 1")
+    suspend fun getFirstSenderista(): SenderistaEntity?
+
     @Query("SELECT * FROM senderista WHERE email = :email LIMIT 1")
     fun getSenderistaByEmailFlow(email: String): Flow<SenderistaEntity?>
+
+    @Query("SELECT * FROM senderista WHERE email = :email LIMIT 1")
+    suspend fun getSenderistaByEmail(email: String): SenderistaEntity?
 
     @Query("SELECT * FROM senderista")
     suspend fun getAllSenderistas(): List<SenderistaEntity>
@@ -102,6 +108,22 @@ interface RutasDao {
 
     @Delete
     suspend fun deleteInvitacionAceptada(invitacion: InvitacionAceptadaEntity): Int
+
+    // --- EVENTOS ---
+    @Query("SELECT * FROM eventos ORDER BY fecha_hora_salida ASC")
+    fun getEventosFlow(): Flow<List<EventoEntity>>
+
+    @Query("SELECT * FROM eventos ORDER BY fecha_hora_salida ASC")
+    suspend fun getEventos(): List<EventoEntity>
+
+    @Query("SELECT * FROM eventos WHERE id_evento = :id LIMIT 1")
+    suspend fun getEventoById(id: Int): EventoEntity?
+
+    @Upsert
+    suspend fun insertEvento(evento: EventoEntity): Long
+
+    @Delete
+    suspend fun deleteEvento(evento: EventoEntity): Int
 
     // --- FRASES DE DIFICULTAD ---
     @Query("SELECT * FROM frases_dificultad")
@@ -154,7 +176,10 @@ interface RutasDao {
     suspend fun getSenderistaByBeaconId(idBeacon: String): SenderistaEntity?
 
     // --- AGRUPACIONES ---
-    @Query("SELECT * FROM agrupaciones")
+    @Query("SELECT * FROM agrupaciones ORDER BY nombre ASC")
+    fun getAgrupacionesFlow(): kotlinx.coroutines.flow.Flow<List<AgrupacionEntity>>
+
+    @Query("SELECT * FROM agrupaciones ORDER BY nombre ASC")
     suspend fun getAgrupaciones(): List<AgrupacionEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

@@ -1328,7 +1328,7 @@ object CloudSyncManager {
         try {
             val encodedEmail = URLEncoder.encode(emailSenderista, "UTF-8")
             val realId = if (idInvitacion < 0) -idInvitacion else idInvitacion
-            val jsonStr = executeGet("participantes_invitacion?id_invitacion=eq.$realId&email_senderista=eq.$encodedEmail&tipo_ruta=eq.$tipoRuta&select=id_invitacion")
+            val jsonStr = executeGet("participantes_invitacion?id_invitacion=eq.$realId&email_senderista=eq.$encodedEmail&select=id_invitacion")
             val array = JSONArray(jsonStr)
             return@withContext array.length() > 0
         } catch (e: Exception) {
@@ -1361,14 +1361,34 @@ object CloudSyncManager {
     }
 
     /**
-     * Verifica si una invitación existe en la base de datos vía PostgREST.
+     * Verifica si una invitación o evento existe en la base de datos vía PostgREST.
      */
-    suspend fun doesInvitationExistInCloud(idInvitacion: Int): Boolean = withContext(Dispatchers.IO) {
+    suspend fun doesInvitationExistInCloud(idInvitacion: Int, tipoRuta: String = "S"): Boolean = withContext(Dispatchers.IO) {
+        val realId = if (idInvitacion < 0) -idInvitacion else idInvitacion
         try {
-            val jsonStr = executeGet("invitaciones_ruta?id_invitacion=eq.$idInvitacion&select=id_invitacion")
+            val jsonStr = if (tipoRuta == "E") {
+                executeGet("eventos?id_evento=eq.$realId&select=id_evento")
+            } else {
+                executeGet("invitaciones_ruta?id_invitacion=eq.$realId&select=id_invitacion")
+            }
             val array = JSONArray(jsonStr)
             return@withContext array.length() > 0
         } catch (e: Exception) {
+            // Si la columna id_evento no existe y arroja error, intentamos con id o id_invitacion
+            if (tipoRuta == "E") {
+                try {
+                    val fallbackStr = executeGet("eventos?id=eq.$realId&select=id")
+                    return@withContext JSONArray(fallbackStr).length() > 0
+                } catch (e2: Exception) {
+                    try {
+                        val fallbackStr2 = executeGet("eventos?id_invitacion=eq.$realId&select=id_invitacion")
+                        return@withContext JSONArray(fallbackStr2).length() > 0
+                    } catch (e3: Exception) {
+                        Log.e(TAG, "Error checking event existence in cloud: ${e3.message}", e3)
+                        return@withContext true
+                    }
+                }
+            }
             Log.e(TAG, "Error checking invitation existence in cloud: ${e.message}", e)
             return@withContext true
         }

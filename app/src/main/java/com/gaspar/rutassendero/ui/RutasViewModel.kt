@@ -1133,7 +1133,8 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                         withContext(Dispatchers.IO) {
                             com.gaspar.rutassendero.sync.CloudSyncManager.deleteParticipationFromCloud(
                                 idInvitacion = matchingInv.idInvitacion,
-                                emailSenderista = currentSenderista.email
+                                emailSenderista = currentSenderista.email,
+                                tipoRuta = matchingInv.tipoRuta
                             )
                         }
                     }
@@ -2758,7 +2759,8 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                     if (senderista != null) {
                         com.gaspar.rutassendero.sync.CloudSyncManager.deleteParticipationFromCloud(
                             idInvitacion = idInvitacion,
-                            emailSenderista = senderista.email
+                            emailSenderista = senderista.email,
+                            tipoRuta = inv.tipoRuta
                         )
                     }
                     com.gaspar.rutassendero.sync.CloudSyncManager.deleteInvitationFromCloud(idInvitacion)
@@ -2851,7 +2853,7 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val inv = db.rutasDao().getInvitacionAceptadaById(idInvitacion)
                 if (inv != null) {
-                    val exists = com.gaspar.rutassendero.sync.CloudSyncManager.doesInvitationExistInCloud(idInvitacion)
+                    val exists = com.gaspar.rutassendero.sync.CloudSyncManager.doesInvitationExistInCloud(idInvitacion, inv.tipoRuta)
                     if (!exists) {
                         Log.d("RutasViewModel", "Invitación $idInvitacion no existe en el servidor PostgreSQL. Borrando localmente...")
                         

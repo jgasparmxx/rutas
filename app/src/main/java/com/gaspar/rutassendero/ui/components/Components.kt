@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -7257,12 +7258,16 @@ fun SalidasDialog(
         val nivel = o["nivel"] as? String ?: "No especificado"
         val instrucciones = o["instrucciones"] as? String ?: ""
         val distVal = o["distancia_gps_val"] as? Double ?: -1.0
-        val valueText = "Ninguna"
+        val profile by viewModel.senderistaState.collectAsState()
+        val agrupaciones by viewModel.agrupacionesList.collectAsState()
+        val idAgrup = profile?.idAgrupacion ?: ""
+        val valueText = agrupaciones.find { it.idAgrupacion == idAgrup }?.nombre ?: "Ninguna"
+        val tipoRuta = o["tipo_ruta"] as? String ?: "S"
 
         Dialog(onDismissRequest = { selectedOutingForDetail = null }) {
             Surface(
                 shape = RoundedCornerShape(20.dp),
-                color = ColorTekinsCardBg,
+                color = if (tipoRuta == "E") Color(0xFF17CECE) else ColorTekinsCardBg,
                 border = BorderStroke(1.dp, ColorTekinsAccent.copy(alpha = 0.4f)),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -7277,13 +7282,12 @@ fun SalidasDialog(
                         text = "Detalle de la Salida",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = ColorTekinsAccent,
+                        color = if (tipoRuta == "E") Color(0xFF000080) else ColorTekinsAccent,
                         modifier = Modifier.padding(bottom = 12.dp)
                     )
 
                     val lat = o["latitud"] as? Double ?: 0.0
                     val lng = o["longitud"] as? Double ?: 0.0
-                    val tipoRuta = o["tipo_ruta"] as? String ?: "S"
                     val comentario = o["comentario"] as? String
 
                     // Link to Google Maps below Punto de Reunión
@@ -7305,8 +7309,8 @@ fun SalidasDialog(
                             mapsUrl = mapsUrl,
                             comentario = comentario ?: "",
                             coopMinima = coopMin,
-                            colorAcento = ColorTekinsAccent,
-                            colorTextoPrincipal = ColorTextoPrincipal
+                            colorAcento = Color(0xFF000080),
+                            colorTextoPrincipal = Color(0xFF000080)
                         )
                     } else {
                         DetailField(label = "Agrupación", value = valueText)
@@ -7397,11 +7401,15 @@ fun SalidasDialog(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        val isEvento = tipoRuta == "E"
                         TextButton(
                             onClick = { selectedOutingForDetail = null },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.textButtonColors(
+                                containerColor = if (isEvento) Color.Black else Color.Transparent
+                            )
                         ) {
-                            Text("VOLVER", color = ColorTextoSecundario)
+                            Text("VOLVER", color = if (isEvento) Color.Yellow else ColorTextoSecundario)
                         }
                         
                         Button(
@@ -7441,12 +7449,15 @@ fun SalidasDialog(
     if (selectedMyOutingForDetail != null) {
         val o = selectedMyOutingForDetail!!
         
-        val valueText = "Ninguna"
+        val profile by viewModel.senderistaState.collectAsState()
+        val agrupaciones by viewModel.agrupacionesList.collectAsState()
+        val idAgrup = profile?.idAgrupacion ?: ""
+        val valueText = agrupaciones.find { it.idAgrupacion == idAgrup }?.nombre ?: "Ninguna"
         
         Dialog(onDismissRequest = { selectedMyOutingForDetail = null }) {
             Surface(
                 shape = RoundedCornerShape(20.dp),
-                color = ColorTekinsCardBg,
+                color = if (o.tipoRuta == "E") Color(0xFF17CECE) else ColorTekinsCardBg,
                 border = BorderStroke(1.dp, ColorTekinsAccent.copy(alpha = 0.4f)),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -7461,7 +7472,7 @@ fun SalidasDialog(
                         text = "Mi Salida Aceptada",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = ColorTekinsAccent,
+                        color = if (o.tipoRuta == "E") Color(0xFF000080) else ColorTekinsAccent,
                         modifier = Modifier.padding(bottom = 12.dp)
                     )
 
@@ -7486,8 +7497,8 @@ fun SalidasDialog(
                             mapsUrl = mapsUrl,
                             comentario = o.comentario ?: "",
                             coopMinima = o.cooperacionMinima,
-                            colorAcento = ColorTekinsAccent,
-                            colorTextoPrincipal = ColorTextoPrincipal
+                            colorAcento = Color(0xFF000080),
+                            colorTextoPrincipal = Color(0xFF000080)
                         )
                         if (o.cooperacionMinima > 0.0) {
                             val real = o.cooperacionRealizada
@@ -7666,11 +7677,15 @@ fun SalidasDialog(
                                 }
                             }
                             
+                            val isEvento = o.tipoRuta == "E"
                             TextButton(
                                 onClick = { selectedMyOutingForDetail = null },
-                                modifier = Modifier.weight(0.6f)
+                                modifier = Modifier.weight(0.6f),
+                                colors = ButtonDefaults.textButtonColors(
+                                    containerColor = if (isEvento) Color.Black else Color.Transparent
+                                )
                             ) {
-                                Text("CERRAR", color = ColorTextoSecundario)
+                                Text("CERRAR", color = if (isEvento) Color.Yellow else ColorTextoSecundario)
                             }
                         }
                     }
@@ -8197,7 +8212,7 @@ fun EventoDetailContent(
                 .padding(vertical = 8.dp),
             factory = { ctx ->
                 TextView(ctx).apply {
-                    setTextColor(android.graphics.Color.WHITE) 
+                    setTextColor(colorTextoPrincipal.toArgb()) 
                     textSize = 14f
                 }
             },

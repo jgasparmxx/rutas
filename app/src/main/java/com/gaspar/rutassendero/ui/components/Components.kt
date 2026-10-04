@@ -56,6 +56,9 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import kotlinx.coroutines.flow.first
+import androidx.core.text.HtmlCompat
+import androidx.compose.ui.text.font.FontStyle
+import android.widget.TextView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -7283,19 +7286,6 @@ fun SalidasDialog(
                     val tipoRuta = o["tipo_ruta"] as? String ?: "S"
                     val comentario = o["comentario"] as? String
 
-                    DetailField(label = "Agrupación", value = valueText)
-                    val displayTipoRuta = if (tipoRuta == "E") "Evento" else "Ruta"
-                    DetailField(label = "Tipo", value = displayTipoRuta)
-                    DetailField(label = "Nombre", value = rutaNombre)
-                    if (!comentario.isNullOrBlank()) {
-                        DetailField(label = "Comentario", value = comentario)
-                    }
-                    DetailField(label = "Fecha y Hora", value = fechaSalida)
-                    if (tipoRuta != "E") {
-                        DetailField(label = "Dificultad (Nivel)", value = nivel)
-                    }
-                    DetailField(label = "Punto de Reunión", value = puntoReunion)
-                    
                     // Link to Google Maps below Punto de Reunión
                     val mapsUrl = if (!linkMaps.isNullOrBlank()) {
                         linkMaps
@@ -7304,34 +7294,60 @@ fun SalidasDialog(
                     } else {
                         "https://www.google.com/maps/search/?api=1&query=${Uri.encode(puntoReunion)}"
                     }
-                    
-                    Text(
-                        text = "ve mapa punto de reunion",
-                        color = ColorTekinsAccent,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        textDecoration = TextDecoration.Underline,
-                        modifier = Modifier
-                            .clickable {
-                                try {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(mapsUrl))
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "No se pudo abrir el mapa.", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                            .padding(vertical = 4.dp)
-                    )
 
-                    if (distVal >= 0.0) {
-                        DetailField(label = "Distancia al punto", value = String.format(Locale.getDefault(), "%.1f Kms", distVal))
-                    }
-                    
-                    if (coopMin > 0.0) {
-                        DetailField(
-                            label = "Cooperación Mínima", 
-                            value = "$$coopMin"
+                    if (tipoRuta == "E") {
+                        EventoDetailContent(
+                            agrupacion = valueText,
+                            idRuta = rutaNombre,
+                            fechaHoraSalida = fechaSalida,
+                            instruccionesHtml = instrucciones,
+                            puntoReunion = puntoReunion,
+                            mapsUrl = mapsUrl,
+                            comentario = comentario ?: "",
+                            coopMinima = coopMin,
+                            colorAcento = ColorTekinsAccent,
+                            colorTextoPrincipal = ColorTextoPrincipal
                         )
+                    } else {
+                        DetailField(label = "Agrupación", value = valueText)
+                        val displayTipoRuta = "Ruta"
+                        DetailField(label = "Tipo", value = displayTipoRuta)
+                        DetailField(label = "Nombre", value = rutaNombre)
+                        if (!comentario.isNullOrBlank()) {
+                            DetailField(label = "Comentario", value = comentario)
+                        }
+                        DetailField(label = "Fecha y Hora", value = fechaSalida)
+                        DetailField(label = "Dificultad (Nivel)", value = nivel)
+                        DetailField(label = "Punto de Reunión", value = puntoReunion)
+                        
+                        Text(
+                            text = "ve mapa punto de reunion",
+                            color = ColorTekinsAccent,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            textDecoration = TextDecoration.Underline,
+                            modifier = Modifier
+                                .clickable {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(mapsUrl))
+                                        context.startActivity(intent)
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "No se pudo abrir el mapa.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                .padding(vertical = 4.dp)
+                        )
+
+                        if (distVal >= 0.0) {
+                            DetailField(label = "Distancia al punto", value = String.format(Locale.getDefault(), "%.1f Kms", distVal))
+                        }
+                        
+                        if (coopMin > 0.0) {
+                            DetailField(
+                                label = "Cooperación Mínima", 
+                                value = "$$coopMin"
+                            )
+                        }
                     }
                     
                     // Características de la Ruta
@@ -7351,26 +7367,28 @@ fun SalidasDialog(
                         "N/A"
                     }
 
-                    Text(
-                        text = "Características de la Ruta",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = ColorTekinsAccent,
-                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
-                    )
-                    DetailField(label = "Porcentaje de Cobertura", value = String.format(Locale.getDefault(), "%.2f %%", conectividadPct))
-                    DetailField(label = "Distancia", value = String.format(Locale.getDefault(), "%.2f km", distGps / 1000.0))
-                    DetailField(label = "Duración *Hh:MM'", value = durStr)
-                    DetailField(label = "Desniveles (+ / -)", value = String.format(Locale.getDefault(), "+%.1f m / -%.1f m", desnPositivo, desnNegativo))
-                    DetailField(label = "Veces que fue + / -", value = String.format(Locale.getDefault(), "+%d / -%d", contSubidas, contBajadas))
-
-                    if (instrucciones.isNotEmpty()) {
-                        DetailField(
-                            label = "Requerimientos", 
-                            value = instrucciones,
-                            valueFontSize = 12.sp,
-                            valueFontWeight = FontWeight.Bold
+                    if (tipoRuta != "E") {
+                        Text(
+                            text = "Características de la Ruta",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = ColorTekinsAccent,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
                         )
+                        DetailField(label = "Porcentaje de Cobertura", value = String.format(Locale.getDefault(), "%.2f %%", conectividadPct))
+                        DetailField(label = "Distancia", value = String.format(Locale.getDefault(), "%.2f km", distGps / 1000.0))
+                        DetailField(label = "Duración *Hh:MM'", value = durStr)
+                        DetailField(label = "Desniveles (+ / -)", value = String.format(Locale.getDefault(), "+%.1f m / -%.1f m", desnPositivo, desnNegativo))
+                        DetailField(label = "Veces que fue + / -", value = String.format(Locale.getDefault(), "+%d / -%d", contSubidas, contBajadas))
+
+                        if (instrucciones.isNotEmpty()) {
+                            DetailField(
+                                label = "Requerimientos", 
+                                value = instrucciones,
+                                valueFontSize = 12.sp,
+                                valueFontWeight = FontWeight.Bold
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -7447,19 +7465,6 @@ fun SalidasDialog(
                         modifier = Modifier.padding(bottom = 12.dp)
                     )
 
-                    DetailField(label = "Agrupación", value = valueText)
-                    val displayTipoRuta = if (o.tipoRuta == "E") "Evento" else "Ruta"
-                    DetailField(label = "Tipo", value = displayTipoRuta)
-                    DetailField(label = "Nombre", value = o.nombreRuta)
-                    if (!o.comentario.isNullOrBlank()) {
-                        DetailField(label = "Comentario", value = o.comentario)
-                    }
-                    DetailField(label = "Fecha y Hora", value = o.fechaHoraSalida)
-                    if (o.tipoRuta != "E") {
-                        DetailField(label = "Dificultad (Nivel)", value = o.nivel ?: "No especificado")
-                    }
-                    DetailField(label = "Punto de Reunión", value = o.puntoReunion)
-
                     // Link to Google Maps below Punto de Reunión
                     val lat = o.latitud ?: 0.0
                     val lng = o.longitud ?: 0.0
@@ -7471,37 +7476,72 @@ fun SalidasDialog(
                         "https://www.google.com/maps/search/?api=1&query=${Uri.encode(o.puntoReunion)}"
                     }
 
-                    Text(
-                        text = "ve mapa punto de reunion",
-                        color = ColorTekinsAccent,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        textDecoration = TextDecoration.Underline,
-                        modifier = Modifier
-                            .clickable {
-                                try {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(mapsUrl))
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "No se pudo abrir el mapa.", Toast.LENGTH_SHORT).show()
-                                }
+                    if (o.tipoRuta == "E") {
+                        EventoDetailContent(
+                            agrupacion = valueText,
+                            idRuta = o.nombreRuta,
+                            fechaHoraSalida = o.fechaHoraSalida,
+                            instruccionesHtml = o.instrucciones ?: "",
+                            puntoReunion = o.puntoReunion,
+                            mapsUrl = mapsUrl,
+                            comentario = o.comentario ?: "",
+                            coopMinima = o.cooperacionMinima,
+                            colorAcento = ColorTekinsAccent,
+                            colorTextoPrincipal = ColorTextoPrincipal
+                        )
+                        if (o.cooperacionMinima > 0.0) {
+                            val real = o.cooperacionRealizada
+                            val estado = if (real != null && real >= o.cooperacionMinima) {
+                                "Realizada: $$real (Sincronizado: ${if (o.sincronizadoConNube) "Sí" else "Pendiente"})"
+                            } else {
+                                "Pendiente"
                             }
-                            .padding(vertical = 4.dp)
-                    )
-                    
-                    if (o.cooperacionMinima > 0.0) {
-                        DetailField(
-                            label = "Cooperación Mínima", 
-                            value = "$${o.cooperacionMinima}"
+                            DetailField(label = "Estado de Cooperación", value = estado)
+                        }
+                    } else {
+                        DetailField(label = "Agrupación", value = valueText)
+                        val displayTipoRuta = "Ruta"
+                        DetailField(label = "Tipo", value = displayTipoRuta)
+                        DetailField(label = "Nombre", value = o.nombreRuta)
+                        if (!o.comentario.isNullOrBlank()) {
+                            DetailField(label = "Comentario", value = o.comentario)
+                        }
+                        DetailField(label = "Fecha y Hora", value = o.fechaHoraSalida)
+                        DetailField(label = "Dificultad (Nivel)", value = o.nivel ?: "No especificado")
+                        DetailField(label = "Punto de Reunión", value = o.puntoReunion)
+
+                        Text(
+                            text = "ve mapa punto de reunion",
+                            color = ColorTekinsAccent,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            textDecoration = TextDecoration.Underline,
+                            modifier = Modifier
+                                .clickable {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(mapsUrl))
+                                        context.startActivity(intent)
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "No se pudo abrir el mapa.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                .padding(vertical = 4.dp)
                         )
                         
-                        val real = o.cooperacionRealizada
-                        val estado = if (real != null && real >= o.cooperacionMinima) {
-                            "Realizada: $$real (Sincronizado: ${if (o.sincronizadoConNube) "Sí" else "Pendiente"})"
-                        } else {
-                            "Pendiente"
+                        if (o.cooperacionMinima > 0.0) {
+                            DetailField(
+                                label = "Cooperación Mínima", 
+                                value = "$${o.cooperacionMinima}"
+                            )
+                            
+                            val real = o.cooperacionRealizada
+                            val estado = if (real != null && real >= o.cooperacionMinima) {
+                                "Realizada: $$real (Sincronizado: ${if (o.sincronizadoConNube) "Sí" else "Pendiente"})"
+                            } else {
+                                "Pendiente"
+                            }
+                            DetailField(label = "Estado de Cooperación", value = estado)
                         }
-                        DetailField(label = "Estado de Cooperación", value = estado)
                     }
 
                     // Características de la Ruta
@@ -7521,26 +7561,28 @@ fun SalidasDialog(
                         "N/A"
                     }
 
-                    Text(
-                        text = "Características de la Ruta",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = ColorTekinsAccent,
-                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
-                    )
-                    DetailField(label = "Porcentaje de Cobertura", value = String.format(Locale.getDefault(), "%.2f %%", conectividadPct))
-                    DetailField(label = "Distancia", value = String.format(Locale.getDefault(), "%.2f km", distGps / 1000.0))
-                    DetailField(label = "Duración *Hh:MM'", value = durStr)
-                    DetailField(label = "Desniveles (+ / -)", value = String.format(Locale.getDefault(), "+%.1f m / -%.1f m", desnPositivo, desnNegativo))
-                    DetailField(label = "Veces que fue + / -", value = String.format(Locale.getDefault(), "+%d / -%d", contSubidas, contBajadas))
-
-                    if (!o.instrucciones.isNullOrEmpty()) {
-                        DetailField(
-                            label = "Requerimientos",
-                            value = o.instrucciones,
-                            valueFontSize = 12.sp,
-                            valueFontWeight = FontWeight.Bold
+                    if (o.tipoRuta != "E") {
+                        Text(
+                            text = "Características de la Ruta",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = ColorTekinsAccent,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
                         )
+                        DetailField(label = "Porcentaje de Cobertura", value = String.format(Locale.getDefault(), "%.2f %%", conectividadPct))
+                        DetailField(label = "Distancia", value = String.format(Locale.getDefault(), "%.2f km", distGps / 1000.0))
+                        DetailField(label = "Duración *Hh:MM'", value = durStr)
+                        DetailField(label = "Desniveles (+ / -)", value = String.format(Locale.getDefault(), "+%.1f m / -%.1f m", desnPositivo, desnNegativo))
+                        DetailField(label = "Veces que fue + / -", value = String.format(Locale.getDefault(), "+%d / -%d", contSubidas, contBajadas))
+
+                        if (!o.instrucciones.isNullOrEmpty()) {
+                            DetailField(
+                                label = "Requerimientos",
+                                value = o.instrucciones,
+                                valueFontSize = 12.sp,
+                                valueFontWeight = FontWeight.Bold
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -7549,41 +7591,43 @@ fun SalidasDialog(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Button(
-                            onClick = {
-                                val idRuta = o.idRuta
-                                coroutineScope.launch {
-                                    localLoadingMessage = "Cargando ruta..."
-                                    try {
-                                        var routeEntity = viewModel.db.rutasDao().getRutaById(idRuta)
-                                        if (routeEntity == null) {
-                                            localLoadingMessage = "Descargando datos de ruta..."
-                                            com.gaspar.rutassendero.sync.CloudSyncManager.downloadRoute(context, viewModel.db, idRuta) { progress ->
-                                                localLoadingMessage = progress
+                        if (o.idInvitacion > 0 && !o.tipoRuta.equals("E", ignoreCase = true)) {
+                            Button(
+                                onClick = {
+                                    val idRuta = o.idRuta
+                                    coroutineScope.launch {
+                                        localLoadingMessage = "Cargando ruta..."
+                                        try {
+                                            var routeEntity = viewModel.db.rutasDao().getRutaById(idRuta)
+                                            if (routeEntity == null) {
+                                                localLoadingMessage = "Descargando datos de ruta..."
+                                                com.gaspar.rutassendero.sync.CloudSyncManager.downloadRoute(context, viewModel.db, idRuta) { progress ->
+                                                    localLoadingMessage = progress
+                                                }
+                                                routeEntity = viewModel.db.rutasDao().getRutaById(idRuta)
                                             }
-                                            routeEntity = viewModel.db.rutasDao().getRutaById(idRuta)
+                                            if (routeEntity != null) {
+                                                onSelectRoute(routeEntity)
+                                                selectedMyOutingForDetail = null
+                                                onDismiss() // Cierra SalidasDialog
+                                            } else {
+                                                Toast.makeText(context, "No se pudo encontrar la ruta.", Toast.LENGTH_SHORT).show()
+                                            }
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                                        } finally {
+                                            localLoadingMessage = null
                                         }
-                                        if (routeEntity != null) {
-                                            onSelectRoute(routeEntity)
-                                            selectedMyOutingForDetail = null
-                                            onDismiss() // Cierra SalidasDialog
-                                        } else {
-                                            Toast.makeText(context, "No se pudo encontrar la ruta.", Toast.LENGTH_SHORT).show()
-                                        }
-                                    } catch (e: Exception) {
-                                        Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
-                                    } finally {
-                                        localLoadingMessage = null
                                     }
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsPrimary),
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Icon(Icons.Default.Visibility, contentDescription = null, tint = Color.White)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("CONSULTA RUTA", color = Color.White, fontWeight = FontWeight.Bold)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsPrimary),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(Icons.Default.Visibility, contentDescription = null, tint = Color.White)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("CONSULTA RUTA", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
                         }
 
                         val yaPago = o.comprobantePago != null || (o.cooperacionRealizada != null && o.cooperacionRealizada > 0.0)
@@ -8097,6 +8141,135 @@ fun DetailField(
             )
         } else {
             Text(text = value, color = ColorTextoPrincipal, fontSize = valueFontSize, fontWeight = valueFontWeight)
+        }
+    }
+}
+
+@Composable
+fun EventoDetailContent(
+    agrupacion: String,
+    idRuta: String,
+    fechaHoraSalida: String,
+    instruccionesHtml: String,
+    puntoReunion: String,
+    mapsUrl: String,
+    comentario: String,
+    coopMinima: Double,
+    colorTextoPrincipal: Color = Color.White, 
+    colorAcento: Color = Color(0xFF00FF00)
+) {
+    val context = LocalContext.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+    ) {
+        Text(
+            text = "agrupacion : $agrupacion",
+            color = colorTextoPrincipal,
+            fontSize = 14.sp
+        )
+        
+        Text(
+            text = idRuta,
+            color = colorTextoPrincipal,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center
+        )
+        
+        Divider(color = colorAcento, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+        
+        Row {
+            Text("salida: ", color = colorTextoPrincipal, fontSize = 14.sp)
+            Text(fechaHoraSalida, color = colorTextoPrincipal, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        }
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        Text("detalle", color = colorTextoPrincipal, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        
+        AndroidView(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            factory = { ctx ->
+                TextView(ctx).apply {
+                    setTextColor(android.graphics.Color.WHITE) 
+                    textSize = 14f
+                }
+            },
+            update = { textView ->
+                textView.text = HtmlCompat.fromHtml(
+                    instruccionesHtml.ifBlank { "Sin instrucciones adicionales." }, 
+                    HtmlCompat.FROM_HTML_MODE_COMPACT
+                )
+            }
+        )
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        Text(
+            text = "Punto de reunion",
+            color = colorTextoPrincipal,
+            fontSize = 14.sp,
+            textDecoration = TextDecoration.Underline
+        )
+        Text(
+            text = puntoReunion.ifBlank { "Por definir" },
+            color = colorTextoPrincipal,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(top = 2.dp)
+        )
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("ubicacion: ", color = colorTextoPrincipal, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text(
+                text = "Ver en Google Maps",
+                color = colorAcento,
+                fontSize = 14.sp,
+                textDecoration = TextDecoration.Underline,
+                modifier = Modifier
+                    .clickable {
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(mapsUrl))
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "No se pudo abrir el mapa.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .padding(4.dp)
+            )
+        }
+        
+        Divider(color = colorAcento, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+        
+        Text(
+            text = "Costos e Informacion adicional",
+            color = colorTextoPrincipal,
+            fontSize = 14.sp,
+            fontStyle = FontStyle.Italic
+        )
+        
+        Text(
+            text = comentario.ifBlank { "Sin comentarios adicionales" },
+            color = colorTextoPrincipal,
+            fontSize = 18.sp,
+            modifier = Modifier.padding(vertical = 8.dp)
+        )
+        
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Cooperacion ", color = colorTextoPrincipal, fontSize = 14.sp, fontStyle = FontStyle.Italic)
+            Text("$$coopMinima", color = colorTextoPrincipal, fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
     }
 }

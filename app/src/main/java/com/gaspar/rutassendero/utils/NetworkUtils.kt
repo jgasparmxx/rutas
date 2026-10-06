@@ -5,6 +5,16 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 
+/**
+ * Utility object for network-related checks.
+ * 
+ * BEST PRACTICE NOTE:
+ * Using an `object` (Singleton) for utility functions is acceptable in Kotlin, 
+ * but it makes testing harder since objects cannot be easily mocked.
+ * For larger architectures (like Clean Architecture or MVVM), it's recommended 
+ * to create an Interface (e.g., `NetworkConnectivityProvider`) and inject it 
+ * using Hilt/Dagger so it can be mocked in Unit Tests.
+ */
 object NetworkUtils {
     fun isNetworkAvailable(context: Context): Boolean {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager

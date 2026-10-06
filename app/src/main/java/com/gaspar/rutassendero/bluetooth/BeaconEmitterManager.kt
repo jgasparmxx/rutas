@@ -20,6 +20,14 @@ enum class BleSupportStatus {
     ADVERTISING_NOT_SUPPORTED
 }
 
+/**
+ * Manager responsible for BLE (Bluetooth Low Energy) advertising.
+ * It encodes application-specific data (like GPS coordinates) into an iBeacon standard format.
+ * 
+ * TODO (Best Practice): Consider migrating `startEmitting` from using callbacks (`onSuccess`/`onFailure`) 
+ * to Kotlin Coroutines using `suspendCancellableCoroutine` for a more idiomatic and readable flow,
+ * avoiding potential "callback hell".
+ */
 class BeaconEmitterManager(private val context: Context) {
 
     private var advertiser: BluetoothLeAdvertiser? = null
@@ -58,6 +66,12 @@ class BeaconEmitterManager(private val context: Context) {
     /**
      * Starts emitting as an iBeacon encoding the idBeacon + GPS latitude & longitude
      * into the 16-byte Proximity UUID.
+     * 
+     * @param idBeacon The unique identifier for the beacon.
+     * @param latitude Current latitude (optional).
+     * @param longitude Current longitude (optional).
+     * @param onSuccess Callback triggered when advertising successfully starts.
+     * @param onFailure Callback triggered on failure, passing an error code.
      */
     fun startEmitting(
         idBeacon: String,

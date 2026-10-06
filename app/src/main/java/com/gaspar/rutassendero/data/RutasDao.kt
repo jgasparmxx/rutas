@@ -3,6 +3,19 @@ package com.gaspar.rutassendero.data
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
+/**
+ * Data Access Object for the local database.
+ * 
+ * TODO / BEST PRACTICE (Single Responsibility Principle - SRP):
+ * Este DAO está manejando demasiadas responsabilidades (Rutas, Senderistas, Puntos, Trazas, Eventos, Beacons, etc.).
+ * A medida que la app crezca, este archivo será un "God Object" (Objeto Dios) muy difícil de mantener.
+ * La buena práctica en Android/Room es tener un DAO por cada Entidad principal o dominio.
+ * Ejemplo:
+ * - `RutasDao` (Solo para Rutas, Puntos y Trazas)
+ * - `SenderistaDao` (Solo para Senderistas, Participantes y Agrupaciones)
+ * - `EventosDao` (Para Eventos e Invitaciones)
+ * Esto te ayudará a tener un código mucho más limpio y fácil de leer.
+ */
 @Dao
 interface RutasDao {
     // --- RUTAS ---

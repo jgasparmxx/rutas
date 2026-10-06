@@ -1,4 +1,4 @@
-package com.gaspar.rutassendero.sync
+﻿package com.gaspar.rutassendero.sync
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -86,9 +86,9 @@ object CloudSyncManager {
             val ownerEmail = app.preferencesHelper.ownerEmail
             val senderista = kotlinx.coroutines.runBlocking(Dispatchers.IO) {
                 if (!ownerEmail.isNullOrBlank()) {
-                    db.rutasDao().getSenderistaByEmail(ownerEmail)
+                    db.senderistaDao().getSenderistaByEmail(ownerEmail)
                 } else {
-                    db.rutasDao().getFirstSenderista()
+                    db.senderistaDao().getFirstSenderista()
                 }
             }
             if (senderista != null && senderista.email.isNotBlank()) {
@@ -624,7 +624,7 @@ object CloudSyncManager {
 
         // 1. Obtener perfil de senderista local
         onProgress("Verificando perfil del senderista...")
-        val senderista = db.rutasDao().getSenderistaFlow().first() 
+        val senderista = db.senderistaDao().getSenderistaFlow().first() 
             ?: throw Exception("Por favor, registra el perfil del senderista primero.")
 
         // Asegurar que el senderista creador esté en la nube
@@ -1464,7 +1464,7 @@ object CloudSyncManager {
                         fupdate = fupdateMillis
                     ))
                 }
-                if (frasesList.isNotEmpty()) db.rutasDao().insertFrases(frasesList)
+                if (frasesList.isNotEmpty()) db.frasesDao().insertFrases(frasesList)
                 Log.d(TAG, "Sincronizadas ${frasesList.size} frases de dificultad.")
             }
         } catch (e: Exception) {
@@ -1493,7 +1493,7 @@ object CloudSyncManager {
                         fupdate = fupdateMillis
                     ))
                 }
-                if (agrupacionesList.isNotEmpty()) db.rutasDao().insertAgrupaciones(agrupacionesList)
+                if (agrupacionesList.isNotEmpty()) db.participantesDao().insertAgrupaciones(agrupacionesList)
                 Log.d(TAG, "Sincronizadas ${agrupacionesList.size} agrupaciones.")
             }
         } catch (e: Exception) {
@@ -1533,7 +1533,7 @@ object CloudSyncManager {
                         fupdate = fupdateMillis,
                         comentario = obj.optString("comentario").takeIf { it.isNotBlank() }
                     )
-                    db.rutasDao().insertEvento(evento)
+                    db.eventosDao().insertEvento(evento)
                 }
                 Log.d(TAG, "Sincronizados eventos delta.")
             }
@@ -1579,7 +1579,7 @@ object CloudSyncManager {
         
         // 4. Sincronizar Senderista actual
         try {
-            val senderistaLocal = db.rutasDao().getFirstSenderista()
+            val senderistaLocal = db.senderistaDao().getFirstSenderista()
             if (senderistaLocal != null) {
                 val encodedEmail = URLEncoder.encode(senderistaLocal.email, "UTF-8")
                 val filter = "?email=eq.$encodedEmail&fupdate=gt.${sdfIso.format(java.util.Date(senderistaLocal.fupdate))}"
@@ -1600,7 +1600,7 @@ object CloudSyncManager {
                             maxPrivadas = obj.optInt("max_privadas", senderistaLocal.maxPrivadas),
                             fupdate = fupdateMillis
                         )
-                        db.rutasDao().insertSenderista(updatedSenderista)
+                        db.senderistaDao().insertSenderista(updatedSenderista)
                         Log.d(TAG, "Senderista local actualizado desde delta sync.")
                     }
                 }

@@ -11,6 +11,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 abstract class RutasDatabase : RoomDatabase() {
 
     abstract fun rutasDao(): RutasDao
+    abstract fun senderistaDao(): SenderistaDao
+    abstract fun eventosDao(): EventosDao
+    abstract fun participantesDao(): ParticipantesDao
+    abstract fun frasesDao(): FrasesDao
 
     companion object {
         @Volatile

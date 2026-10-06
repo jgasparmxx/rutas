@@ -6,15 +6,8 @@ import kotlinx.coroutines.flow.Flow
 /**
  * Data Access Object for the local database.
  * 
- * TODO / BEST PRACTICE (Single Responsibility Principle - SRP):
- * Este DAO está manejando demasiadas responsabilidades (Rutas, Senderistas, Puntos, Trazas, Eventos, Beacons, etc.).
- * A medida que la app crezca, este archivo será un "God Object" (Objeto Dios) muy difícil de mantener.
- * La buena práctica en Android/Room es tener un DAO por cada Entidad principal o dominio.
- * Ejemplo:
- * - `RutasDao` (Solo para Rutas, Puntos y Trazas)
- * - `SenderistaDao` (Solo para Senderistas, Participantes y Agrupaciones)
- * - `EventosDao` (Para Eventos e Invitaciones)
- * Esto te ayudará a tener un código mucho más limpio y fácil de leer.
+ * Este DAO ahora maneja exclusivamente la responsabilidad de Rutas (Rutas, Puntos y Trazas),
+ * cumpliendo con el principio SRP.
  */
 @Dao
 interface RutasDao {
@@ -59,31 +52,6 @@ interface RutasDao {
     @Query("SELECT EXISTS(SELECT 1 FROM puntos_ruta WHERE id_ruta = :idRuta AND es_fin_ruta = 1 LIMIT 1)")
     suspend fun isRutaFinalized(idRuta: String): Boolean
 
-    // --- SENDERISTA ---
-    @Query("SELECT * FROM senderista LIMIT 1")
-    fun getSenderistaFlow(): Flow<SenderistaEntity?>
-
-    @Query("SELECT * FROM senderista LIMIT 1")
-    suspend fun getFirstSenderista(): SenderistaEntity?
-
-    @Query("SELECT * FROM senderista WHERE email = :email LIMIT 1")
-    fun getSenderistaByEmailFlow(email: String): Flow<SenderistaEntity?>
-
-    @Query("SELECT * FROM senderista WHERE email = :email LIMIT 1")
-    suspend fun getSenderistaByEmail(email: String): SenderistaEntity?
-
-    @Query("SELECT * FROM senderista")
-    suspend fun getAllSenderistas(): List<SenderistaEntity>
-
-    @Query("DELETE FROM senderista")
-    suspend fun deleteAllSenderistas(): Int
-
-    @Query("DELETE FROM senderista WHERE email != :ownerEmail")
-    suspend fun clearCachedSenderistas(ownerEmail: String): Int
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertSenderista(senderista: SenderistaEntity): Long
-
     // --- TRAZA DE RUTA ---
     @Query("SELECT * FROM traza_ruta WHERE id_ruta = :idRuta ORDER BY orden ASC")
     fun getTrazaForRutaFlow(idRuta: String): Flow<List<TrazaRutaEntity>>
@@ -105,100 +73,4 @@ interface RutasDao {
         )
     """)
     suspend fun getUnfinalizedRoutesCount(): Int
-
-    // --- INVITACIONES ACEPTADAS (SALIDAS) ---
-    @Query("SELECT * FROM invitaciones_aceptadas ORDER BY fecha_hora_salida ASC")
-    fun getInvitacionesAceptadasFlow(): Flow<List<InvitacionAceptadaEntity>>
-
-    @Query("SELECT * FROM invitaciones_aceptadas ORDER BY fecha_hora_salida ASC")
-    suspend fun getInvitacionesAceptadas(): List<InvitacionAceptadaEntity>
-
-    @Query("SELECT * FROM invitaciones_aceptadas WHERE id_invitacion = :id LIMIT 1")
-    suspend fun getInvitacionAceptadaById(id: Int): InvitacionAceptadaEntity?
-
-    @Upsert
-    suspend fun insertInvitacionAceptada(invitacion: InvitacionAceptadaEntity): Long
-
-    @Delete
-    suspend fun deleteInvitacionAceptada(invitacion: InvitacionAceptadaEntity): Int
-
-    // --- EVENTOS ---
-    @Query("SELECT * FROM eventos ORDER BY fecha_hora_salida ASC")
-    fun getEventosFlow(): Flow<List<EventoEntity>>
-
-    @Query("SELECT * FROM eventos ORDER BY fecha_hora_salida ASC")
-    suspend fun getEventos(): List<EventoEntity>
-
-    @Query("SELECT * FROM eventos WHERE id_evento = :id LIMIT 1")
-    suspend fun getEventoById(id: Int): EventoEntity?
-
-    @Upsert
-    suspend fun insertEvento(evento: EventoEntity): Long
-
-    @Delete
-    suspend fun deleteEvento(evento: EventoEntity): Int
-
-    // --- FRASES DE DIFICULTAD ---
-    @Query("SELECT * FROM frases_dificultad")
-    suspend fun getAllFrases(): List<FraseDificultadEntity>
-
-    @Query("SELECT * FROM frases_dificultad WHERE categoria = :categoria")
-    suspend fun getFrasesForCategory(categoria: String): List<FraseDificultadEntity>
-
-    @Query("SELECT * FROM frases_dificultad WHERE categoria = :categoria ORDER BY RANDOM() LIMIT 1")
-    suspend fun getRandomFraseForCategory(categoria: String): FraseDificultadEntity?
-
-    @Query("SELECT COUNT(*) FROM frases_dificultad")
-    suspend fun getFraseCount(): Int
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertFrases(frases: List<FraseDificultadEntity>): List<Long>
-
-    // --- PARTICIPANTES (BEACONS SCANNING) ---
-    @Query("SELECT * FROM participantes")
-    fun getAllParticipantesFlow(): Flow<List<ParticipanteEntity>>
-
-    @Query("SELECT * FROM participantes")
-    suspend fun getAllParticipantes(): List<ParticipanteEntity>
-
-    @Query("SELECT * FROM participantes WHERE id_beacon = :idBeacon LIMIT 1")
-    suspend fun getParticipanteByBeaconId(idBeacon: String): ParticipanteEntity?
-
-    @Query("SELECT * FROM participantes WHERE telefono_senderista = :telefono LIMIT 1")
-    suspend fun getParticipanteByTelefono(telefono: String): ParticipanteEntity?
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertParticipante(participante: ParticipanteEntity): Long
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertParticipantes(participantes: List<ParticipanteEntity>): List<Long>
-
-    @Query("DELETE FROM participantes WHERE telefono_senderista = :telefono")
-    suspend fun deleteParticipante(telefono: String): Int
-
-    @Query("DELETE FROM participantes WHERE fecha_ingreso < :limitTime")
-    suspend fun pruneExpiredParticipantes(limitTime: Long): Int
-
-    @Query("DELETE FROM participantes")
-    suspend fun clearParticipantes(): Int
-
-    @Query("SELECT * FROM senderista WHERE telefono = :telefono LIMIT 1")
-    suspend fun getSenderistaByTelefono(telefono: String): SenderistaEntity?
-
-    @Query("SELECT * FROM senderista WHERE id_beacon = :idBeacon LIMIT 1")
-    suspend fun getSenderistaByBeaconId(idBeacon: String): SenderistaEntity?
-
-    // --- AGRUPACIONES ---
-    @Query("SELECT * FROM agrupaciones ORDER BY nombre ASC")
-    fun getAgrupacionesFlow(): kotlinx.coroutines.flow.Flow<List<AgrupacionEntity>>
-
-    @Query("SELECT * FROM agrupaciones ORDER BY nombre ASC")
-    suspend fun getAgrupaciones(): List<AgrupacionEntity>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertAgrupaciones(agrupaciones: List<AgrupacionEntity>): List<Long>
-
-    @Query("DELETE FROM agrupaciones")
-    suspend fun deleteAllAgrupaciones(): Int
 }
-

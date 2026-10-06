@@ -1,4 +1,4 @@
-package com.gaspar.rutassendero.service
+﻿package com.gaspar.rutassendero.service
 
 import android.Manifest
 import android.app.Notification
@@ -1089,7 +1089,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             
             // A. Check local cache (Room SQLite) first
             val cachedSenderista = withContext(Dispatchers.IO) {
-                db.rutasDao().getSenderistaByBeaconId(idBeacon)
+                db.senderistaDao().getSenderistaByBeaconId(idBeacon)
             }
             
             if (cachedSenderista != null) {
@@ -1156,7 +1156,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                         }
                         
                         // Find the updated participant entity to pass back to the UI
-                        val updatedEntity = db.rutasDao().getParticipanteByTelefono(senderistaObj.telefono)
+                        val updatedEntity = db.participantesDao().getParticipanteByTelefono(senderistaObj.telefono)
                         withContext(Dispatchers.Main) {
                             onResult(updatedEntity)
                             android.widget.Toast.makeText(applicationContext, "Datos actualizados desde la nube", android.widget.Toast.LENGTH_SHORT).show()
@@ -1183,7 +1183,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
     }
     private suspend fun removeParticipant(state: ParticipantState) {
         withContext(Dispatchers.IO) {
-            db.rutasDao().deleteParticipante(state.telefonoSenderista)
+            db.participantesDao().deleteParticipante(state.telefonoSenderista)
         }
         synchronized(participantStates) {
             participantStates.remove(state.telefonoSenderista)
@@ -1200,7 +1200,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
     ) {
         // Delete temporary entry
         withContext(Dispatchers.IO) {
-            db.rutasDao().deleteParticipante(state.telefonoSenderista)
+            db.participantesDao().deleteParticipante(state.telefonoSenderista)
         }
 
             val displayDistance = if (dist == Double.MAX_VALUE) "Fuera de alcance" else String.format(Locale.US, "%.1f m", dist)
@@ -1229,7 +1229,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             sexo = senderistaObj.sexo
         )
         withContext(Dispatchers.IO) {
-            db.rutasDao().insertParticipante(newParticipant)
+            db.participantesDao().insertParticipante(newParticipant)
         }
 
         synchronized(participantStates) {
@@ -1264,10 +1264,10 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             try {
                 // 1. Purge expired participants (5 hours limit = 18,000,000 ms)
                 val fiveHoursAgo = System.currentTimeMillis() - 18000000L
-                db.rutasDao().pruneExpiredParticipantes(fiveHoursAgo)
+                db.participantesDao().pruneExpiredParticipantes(fiveHoursAgo)
 
                 // 2. Load remaining active participants from Room
-                val currentList = db.rutasDao().getAllParticipantes()
+                val currentList = db.participantesDao().getAllParticipantes()
                 participantStates.clear()
                 currentList.forEach { p ->
                     participantStates[p.telefonoSenderista] = ParticipantState(
@@ -1379,7 +1379,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                                 sexo = null
                             )
                             withContext(Dispatchers.IO) {
-                                db.rutasDao().insertParticipante(newParticipant)
+                                db.participantesDao().insertParticipante(newParticipant)
                             }
                             
                             val newState = ParticipantState(
@@ -1479,7 +1479,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                                 }
                                 if (entities.isNotEmpty()) {
                                     withContext(Dispatchers.IO) {
-                                        db.rutasDao().insertParticipantes(entities)
+                                        db.participantesDao().insertParticipantes(entities)
                                     }
                                 }
                             }
@@ -1529,7 +1529,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                 }
                 if (entities.isNotEmpty()) {
                     withContext(Dispatchers.IO) {
-                        db.rutasDao().insertParticipantes(entities)
+                        db.participantesDao().insertParticipantes(entities)
                     }
                 }
             }

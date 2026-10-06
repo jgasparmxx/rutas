@@ -1,4 +1,4 @@
-package com.gaspar.rutassendero.ui.components
+﻿package com.gaspar.rutassendero.ui.components
 
 // REGULA LIMITACIÓN DE RUTAS PRIVADAS: Por regla el usuario sólo puede tener un máximo de 3 rutas no públicas (privadas). Esta regla cambiará cuando coloquemos la app en la tienda (Play Store).
 
@@ -832,11 +832,11 @@ fun AddRutaDialog(
                                 scope.launch {
                                     if (!publico) {
                                         val count = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                            val phone = db.rutasDao().getAllSenderistas().firstOrNull()?.telefono ?: ""
+                                            val phone = db.senderistaDao().getAllSenderistas().firstOrNull()?.telefono ?: ""
                                             db.rutasDao().getPrivateRutasCount(phone)
                                         }
                                         val limit = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                            db.rutasDao().getAllSenderistas().firstOrNull()?.maxPrivadas ?: 3
+                                            db.senderistaDao().getAllSenderistas().firstOrNull()?.maxPrivadas ?: 3
                                         }
                                         if (count >= limit) {
                                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -5931,7 +5931,7 @@ fun RutaDetailDialog(
     var effectiveDuracionSegundos by remember(ruta) { mutableStateOf(ruta.duracionSegundos) }
     LaunchedEffect(ruta) {
         val s = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            db.rutasDao().getSenderistaFlow().first()
+            db.senderistaDao().getSenderistaFlow().first()
         }
         senderistaPhone = s?.telefono ?: ""
         senderistaPeso = s?.peso
@@ -5985,7 +5985,7 @@ fun RutaDetailDialog(
             else -> "Nivel Dios"
         }
         val randomPhrase = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            db.rutasDao().getRandomFraseForCategory(categoria)?.frase
+            db.frasesDao().getRandomFraseForCategory(categoria)?.frase
         } ?: when (categoria) {
             "Principiante" -> "Es fácil, hasta mi abuelita en pantuflas lo haría."
             "Intermedio" -> "Tienes que entrenar, mi chavo, para poder terminarla."
@@ -6047,11 +6047,11 @@ fun RutaDetailDialog(
                                 coroutineScope.launch {
                                     if (!isChecked) { // Quiere cambiar a privado
                                         val count = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                            val phone = db.rutasDao().getAllSenderistas().firstOrNull()?.telefono ?: ""
+                                            val phone = db.senderistaDao().getAllSenderistas().firstOrNull()?.telefono ?: ""
                                             db.rutasDao().getPrivateRutasCount(phone)
                                         }
                                         val limit = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                            db.rutasDao().getAllSenderistas().firstOrNull()?.maxPrivadas ?: 3
+                                            db.senderistaDao().getAllSenderistas().firstOrNull()?.maxPrivadas ?: 3
                                         }
                                         if (count >= limit) {
                                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {

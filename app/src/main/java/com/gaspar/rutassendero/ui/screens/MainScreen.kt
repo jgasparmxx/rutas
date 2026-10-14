@@ -173,6 +173,8 @@ fun MainScreen(
     var showWaypointDialog by remember { mutableStateOf(false) }
 
     // --- ESTADOS Y CONTROL DEL RECORRIDO VIRTUAL (MODO VISOR) ---
+    val colorAzulCeleste = Color(0xFF38BDF8) // Azul celeste brillante
+    val colorAzulCelesteDark = Color(0xFF0284C7)
     var showVisorOrderDialog by remember { mutableStateOf(false) }
     var isVirtualTourActive by remember { mutableStateOf(false) }
     var isVirtualTourPaused by remember { mutableStateOf(false) }
@@ -656,7 +658,7 @@ fun MainScreen(
                                     Icon(
                                         imageVector = if (!isVirtualTourPaused) Icons.Default.Pause else Icons.Default.PlayArrow,
                                         contentDescription = if (!isVirtualTourPaused) "Pausar" else "Reanudar",
-                                        tint = Color.Black
+                                        tint = colorAzulCeleste
                                     )
                                 }
 
@@ -880,7 +882,7 @@ fun MainScreen(
                                         Icon(
                                             imageVector = Icons.Default.PlayArrow,
                                             contentDescription = "Iniciar Simulación",
-                                            tint = Color(0xFF0F766E)
+                                            tint = colorAzulCeleste
                                         )
                                     }
                                 }
@@ -1120,7 +1122,7 @@ fun MainScreen(
                                                 if (isVirtualTourPaused) viewModel.stopSpeaking()
                                             },
                                             colors = ButtonDefaults.buttonColors(
-                                                containerColor = if (isVirtualTourPaused) Color(0xFF10B981) else ColorTekinsCardMuted
+                                                containerColor = if (isVirtualTourPaused) colorAzulCelesteDark else ColorTekinsCardMuted
                                             ),
                                             shape = RoundedCornerShape(8.dp),
                                             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
@@ -1128,7 +1130,7 @@ fun MainScreen(
                                             Icon(
                                                 imageVector = if (isVirtualTourPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
                                                 contentDescription = if (isVirtualTourPaused) "Reanudar" else "Pausar",
-                                                tint = if (isVirtualTourPaused) Color.White else ColorTekinsAccent,
+                                                tint = if (isVirtualTourPaused) Color.White else colorAzulCeleste,
                                                 modifier = Modifier.size(20.dp)
                                             )
                                             Spacer(modifier = Modifier.width(4.dp))
@@ -3672,11 +3674,13 @@ fun HeaderBar(
 
                 // Botón Play de Recorrido Virtual estilo grabadora (en modo Visor cuando hay ruta con puntos)
                 if (currentAppRole == "visor" && selectedRoute != null && points.isNotEmpty()) {
+                    val colorAzulCeleste = Color(0xFF38BDF8)
+                    val colorAzulCelesteDark = Color(0xFF0284C7)
                     IconButton(
                         onClick = onVirtualTourClick,
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = if (isVirtualTourActive) Color(0xFF10B981) else ColorTekinsCardMuted,
-                            contentColor = if (isVirtualTourActive) Color.White else activeColor
+                            containerColor = if (isVirtualTourActive) colorAzulCelesteDark else ColorTekinsCardMuted,
+                            contentColor = if (isVirtualTourActive) Color.White else colorAzulCeleste
                         ),
                         modifier = Modifier
                             .size(44.dp)
@@ -3685,7 +3689,7 @@ fun HeaderBar(
                         Icon(
                             imageVector = if (isVirtualTourActive) Icons.Default.Pause else Icons.Default.PlayArrow,
                             contentDescription = if (isVirtualTourActive) "Pausar Simulación" else "Iniciar Simulación",
-                            tint = if (isVirtualTourActive) Color.White else activeColor,
+                            tint = if (isVirtualTourActive) Color.White else colorAzulCeleste,
                             modifier = Modifier.size(26.dp)
                         )
                     }
@@ -3766,6 +3770,8 @@ fun HeaderBar(
                     }
 
                     if (currentAppRole == "visor" && selectedRoute != null && points.isNotEmpty()) {
+                        val colorAzulCeleste = Color(0xFF38BDF8)
+                        val colorAzulCelesteDark = Color(0xFF0284C7)
                         DropdownMenuItem(
                             text = { Text(if (isVirtualTourActive) "Pausar Recorrido Virtual" else "Iniciar Recorrido Virtual", color = ColorTekinsDarkBg) },
                             onClick = {
@@ -3776,7 +3782,7 @@ fun HeaderBar(
                                 Icon(
                                     imageVector = if (isVirtualTourActive) Icons.Default.Pause else Icons.Default.PlayArrow,
                                     contentDescription = null,
-                                    tint = Color(0xFF10B981),
+                                    tint = if (isVirtualTourActive) colorAzulCelesteDark else colorAzulCeleste,
                                     modifier = Modifier.size(24.dp)
                                 )
                             }

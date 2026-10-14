@@ -1,4 +1,4 @@
-﻿package com.gaspar.rutassendero.ui
+package com.gaspar.rutassendero.ui
 
 // REGULA LIMITACIÃ“N DE RUTAS PRIVADAS: Por regla el usuario sólo puede tener un máximo de 3 rutas no públicas (privadas). Esta regla cambiará cuando coloquemos la app en la tienda (Play Store).
 
@@ -135,6 +135,14 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
     val isVoiceGuidanceEnabled: StateFlow<Boolean> = GpsTrackingService.isVoiceGuidanceEnabled
     fun toggleVoiceGuidance() {
         GpsTrackingService.setVoiceGuidanceEnabled(!isVoiceGuidanceEnabled.value)
+    }
+
+    fun speakSimulationText(msg: String, onDone: (() -> Unit)? = null) {
+        GpsTrackingService.speakSimulationText(msg, onDone)
+    }
+
+    fun stopSpeaking() {
+        GpsTrackingService.stopSpeaking()
     }
 
     // Foto temporal capturada por la cámara

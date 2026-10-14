@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.Context
 import android.net.Uri
 import com.gaspar.rutassendero.R
+import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -57,6 +58,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -217,6 +219,13 @@ fun MainScreen(
                             viewModel.selectRuta(ruta)
                             showGuideTargetDialog = true
                         }
+                    } else if (currentAppRole == "visor") {
+                        val points = viewModel.getPuntosForRuta(ruta.id)
+                        viewModel.selectRuta(ruta)
+                        viewModel.stopGuiding()
+                        if (points.isNotEmpty()) {
+                            showVisorOrderDialog = true
+                        }
                     } else {
                         if (currentAppRole == "registrar" && isFinalized) {
                             currentAppRole = "visor"
@@ -228,6 +237,87 @@ fun MainScreen(
                 }
             }
             Unit
+        }
+    }
+
+    // --- ESTADOS Y CONTROL DEL RECORRIDO VIRTUAL (MODO VISOR) ---
+    var showVisorOrderDialog by remember { mutableStateOf(false) }
+    var isVirtualTourActive by remember { mutableStateOf(false) }
+    var isVirtualTourPaused by remember { mutableStateOf(false) }
+    var virtualTourIndex by remember { mutableIntStateOf(0) }
+    var isVirtualTourAutoAdvance by remember { mutableStateOf(true) }
+    var showVirtualTourPhotoCard by remember { mutableStateOf(true) }
+    var virtualTourFocusTrigger by remember { mutableStateOf<Pair<PuntoRutaEntity, Int>?>(null) }
+
+    val tourPoints = remember(selectedRoutePoints, isPointsListReversed) {
+        if (isPointsListReversed) selectedRoutePoints.reversed() else selectedRoutePoints
+    }
+
+    LaunchedEffect(currentAppRole) {
+        if (currentAppRole != "visor" && isVirtualTourActive) {
+            viewModel.stopSpeaking()
+            isVirtualTourActive = false
+            isVirtualTourPaused = false
+            virtualTourFocusTrigger = null
+        }
+    }
+
+    LaunchedEffect(isVirtualTourActive, virtualTourIndex, isVirtualTourPaused) {
+        if (!isVirtualTourActive || isVirtualTourPaused || tourPoints.isEmpty()) return@LaunchedEffect
+        if (virtualTourIndex !in tourPoints.indices) {
+            viewModel.speakSimulationText("Recorrido virtual completado. Has llegado al final de la ruta.")
+            delay(3500)
+            isVirtualTourActive = false
+            virtualTourFocusTrigger = null
+            return@LaunchedEffect
+        }
+
+        val currentPoint = tourPoints[virtualTourIndex]
+        activeMapPoint = currentPoint
+
+        val markerOriginalIndex = selectedRoutePoints.indexOfFirst { it.id == currentPoint.id }
+        virtualTourFocusTrigger = Pair(currentPoint, if (markerOriginalIndex != -1) markerOriginalIndex else virtualTourIndex)
+
+        val nextPoint = if (virtualTourIndex < tourPoints.size - 1) tourPoints[virtualTourIndex + 1] else null
+        val nextDistStr = if (nextPoint != null) {
+            val loc1 = Location("").apply { latitude = currentPoint.latitud; longitude = currentPoint.longitud }
+            val loc2 = Location("").apply { latitude = nextPoint.latitud; longitude = nextPoint.longitud }
+            val d = loc1.distanceTo(loc2)
+            if (d >= 1000f) String.format(java.util.Locale.US, "%.1f kilómetros", d / 1000f) else "${d.toInt()} metros"
+        } else null
+
+        val estadoInfo = getEstadoPuntoInfo(currentPoint.estado, currentPoint.esFinRuta)
+        val speech = buildString {
+            append("Punto ${virtualTourIndex + 1} de ${tourPoints.size}. ")
+            append("Tipo: ${estadoInfo.first}. ")
+            if (currentPoint.altitud > 0) {
+                append("Altitud: ${currentPoint.altitud.toInt()} metros. ")
+            }
+            if (currentPoint.descripcion.isNotBlank()) {
+                append("Descripción: ${currentPoint.descripcion}. ")
+            }
+            if (nextDistStr != null) {
+                append("Distancia a caminar al siguiente punto: $nextDistStr.")
+            } else {
+                append("Este es el último punto del recorrido.")
+            }
+        }
+
+        var speechFinished = false
+        viewModel.speakSimulationText(speech) {
+            speechFinished = true
+        }
+
+        if (isVirtualTourAutoAdvance) {
+            val startWait = System.currentTimeMillis()
+            while (!speechFinished && (System.currentTimeMillis() - startWait) < 15000L) {
+                delay(200)
+            }
+            // Tiempo de cortesía en el mapa para visualizar la foto y el sendero
+            delay(3000)
+            if (isVirtualTourActive && !isVirtualTourPaused) {
+                virtualTourIndex++
+            }
         }
     }
 
@@ -499,6 +589,12 @@ fun MainScreen(
                         ) {
                             IconButton(
                                 onClick = { 
+                                    if (isVirtualTourActive) {
+                                        viewModel.stopSpeaking()
+                                        isVirtualTourActive = false
+                                        isVirtualTourPaused = false
+                                        virtualTourFocusTrigger = null
+                                    }
                                     showMapScreen = false 
                                     activeMapPoint = null
                                 },
@@ -512,7 +608,73 @@ fun MainScreen(
                             
                             Spacer(modifier = Modifier.width(8.dp))
                             
-                            if (activeMapPoint != null) {
+                            if (isVirtualTourActive) {
+                                val currentTourPoint = tourPoints.getOrNull(virtualTourIndex)
+                                val estadoInfo = currentTourPoint?.let { getEstadoPuntoInfo(it.estado, it.esFinRuta) }
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            if (currentTourPoint != null) {
+                                                showVirtualTourPhotoCard = !showVirtualTourPhotoCard
+                                            }
+                                        }
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = "SIMULACIÓN · #${virtualTourIndex + 1} de ${tourPoints.size}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF0F766E)
+                                        )
+                                        if (isVirtualTourPaused) {
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "[PAUSADO]",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFFD97706)
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = currentTourPoint?.descripcion?.ifBlank { estadoInfo?.first } ?: selectedRoute?.nombre ?: "Ruta",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.Black,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        isVirtualTourPaused = !isVirtualTourPaused
+                                        if (isVirtualTourPaused) viewModel.stopSpeaking()
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = if (!isVirtualTourPaused) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = if (!isVirtualTourPaused) "Pausar" else "Reanudar",
+                                        tint = Color.Black
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        viewModel.stopSpeaking()
+                                        isVirtualTourActive = false
+                                        isVirtualTourPaused = false
+                                        virtualTourFocusTrigger = null
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Stop,
+                                        contentDescription = "Detener Simulación",
+                                        tint = Color(0xFFDC2626)
+                                    )
+                                }
+                            } else if (activeMapPoint != null) {
                                 val punto = activeMapPoint!!
                                 val ptIndex = selectedRoutePoints.indexOfFirst { it.id == punto.id }
                                 val estadoInfo = getEstadoPuntoInfo(punto.estado, punto.esFinRuta)
@@ -681,12 +843,14 @@ fun MainScreen(
                                     )
                                 }
 
-                                IconButton(onClick = { isPocketLockActive = true }) {
-                                    Icon(
-                                        imageVector = Icons.Default.Lock,
-                                        contentDescription = "Modo Bolsillo",
-                                        tint = Color.Black
-                                    )
+                                if (currentAppRole != "visor") {
+                                    IconButton(onClick = { isPocketLockActive = true }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = "Modo Bolsillo",
+                                            tint = Color.Black
+                                        )
+                                    }
                                 }
                             } else {
                                 Column(modifier = Modifier.weight(1f)) {
@@ -705,6 +869,22 @@ fun MainScreen(
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                     )
                                 }
+
+                                if (currentAppRole == "visor" && selectedRoute != null && selectedRoutePoints.isNotEmpty() && !isVirtualTourActive) {
+                                    IconButton(onClick = {
+                                        isVirtualTourActive = true
+                                        isVirtualTourPaused = false
+                                        virtualTourIndex = 0
+                                        showVirtualTourPhotoCard = true
+                                    }) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Iniciar Simulación",
+                                            tint = Color(0xFF0F766E)
+                                        )
+                                    }
+                                }
+
                                 IconButton(onClick = { mapForceRecomposeKey++ }) {
                                     Icon(
                                         imageVector = Icons.Default.Refresh,
@@ -713,12 +893,14 @@ fun MainScreen(
                                     )
                                 }
 
-                                IconButton(onClick = { isPocketLockActive = true }) {
-                                    Icon(
-                                        imageVector = Icons.Default.Lock,
-                                        contentDescription = "Modo Bolsillo",
-                                        tint = Color.Black
-                                    )
+                                if (currentAppRole != "visor") {
+                                    IconButton(onClick = { isPocketLockActive = true }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = "Modo Bolsillo",
+                                            tint = Color.Black
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -737,6 +919,14 @@ fun MainScreen(
                             currentLocation = location,
                             onPointClick = { punto ->
                                 activeMapPoint = punto
+                                if (isVirtualTourActive) {
+                                    val tIdx = tourPoints.indexOfFirst { it.id == punto.id }
+                                    if (tIdx != -1) {
+                                        viewModel.stopSpeaking()
+                                        virtualTourIndex = tIdx
+                                        showVirtualTourPhotoCard = true
+                                    }
+                                }
                                 if (isGuiding && targetWaypoint?.id == punto.id) {
                                     val currentLoc = location
                                     if (currentLoc != null) {
@@ -764,10 +954,275 @@ fun MainScreen(
                                 activeMapPoint = punto
                             },
                             activePointId = activeMapPoint?.id,
+                            focusPointTrigger = virtualTourFocusTrigger,
                             modifier = Modifier.fillMaxSize(),
                             routeStartLat = selectedRoute?.latitudOrig,
                             routeStartLng = selectedRoute?.longitudOrig
                         )
+                    }
+
+                    // --- TARJETA FLOTANTE Y CONTROLES DEL RECORRIDO VIRTUAL ---
+                    if (isVirtualTourActive && virtualTourIndex in tourPoints.indices) {
+                        val currentTourPoint = tourPoints[virtualTourIndex]
+                        val estadoInfo = getEstadoPuntoInfo(currentTourPoint.estado, currentTourPoint.esFinRuta)
+
+                        val nextPoint = if (virtualTourIndex < tourPoints.size - 1) tourPoints[virtualTourIndex + 1] else null
+                        val nextDistText = if (nextPoint != null) {
+                            val loc1 = Location("").apply { latitude = currentTourPoint.latitud; longitude = currentTourPoint.longitud }
+                            val loc2 = Location("").apply { latitude = nextPoint.latitud; longitude = nextPoint.longitud }
+                            val d = loc1.distanceTo(loc2)
+                            if (d >= 1000f) String.format(java.util.Locale.US, "%.1f km", d / 1000f) else "${d.toInt()} m"
+                        } else null
+
+                        AnimatedVisibility(
+                            visible = showVirtualTourPhotoCard,
+                            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(horizontal = 14.dp, vertical = 10.dp)
+                        ) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .wrapContentHeight(),
+                                shape = RoundedCornerShape(18.dp),
+                                colors = CardDefaults.cardColors(containerColor = ColorTekinsCardBg.copy(alpha = 0.96f)),
+                                border = BorderStroke(1.5.dp, ColorTekinsAccent.copy(alpha = 0.6f)),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(14.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(ColorTekinsAccent)
+                                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                                        ) {
+                                            Text(
+                                                text = "PUNTO ${virtualTourIndex + 1}/${tourPoints.size}",
+                                                color = ColorTekinsDarkBg,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.ExtraBold
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(estadoInfo.third.copy(alpha = 0.2f))
+                                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                                        ) {
+                                            Text(
+                                                text = estadoInfo.first,
+                                                color = estadoInfo.third,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                        if (currentTourPoint.altitud > 0) {
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "${currentTourPoint.altitud.toInt()}m alt",
+                                                color = ColorTextoSecundario,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.weight(1f))
+                                        IconButton(
+                                            onClick = { showVirtualTourPhotoCard = false },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.KeyboardArrowDown,
+                                                contentDescription = "Minimizar",
+                                                tint = ColorTextoSecundario
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    val photoPath = currentTourPoint.fotoPath
+                                    if (!photoPath.isNullOrBlank()) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(180.dp)
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(ColorTekinsCardMuted)
+                                                .clickable { selectedPuntoForDetail = currentTourPoint }
+                                        ) {
+                                            LocalImage(
+                                                filePath = photoPath,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                    }
+
+                                    Text(
+                                        text = currentTourPoint.descripcion.ifBlank { "Sin descripción detallada." },
+                                        color = ColorTextoPrincipal,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 2,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+
+                                    if (nextDistText != null) {
+                                        Text(
+                                            text = "Avanzar a pie hacia el siguiente punto: $nextDistText",
+                                            color = ColorTekinsAccent,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.padding(top = 2.dp)
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "¡Último punto del recorrido!",
+                                            color = Color(0xFF10B981),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(top = 2.dp)
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                viewModel.stopSpeaking()
+                                                if (virtualTourIndex > 0) virtualTourIndex--
+                                            },
+                                            enabled = virtualTourIndex > 0,
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                        ) {
+                                            Icon(Icons.Default.SkipPrevious, contentDescription = "Anterior", modifier = Modifier.size(18.dp))
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                isVirtualTourPaused = !isVirtualTourPaused
+                                                if (isVirtualTourPaused) viewModel.stopSpeaking()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (isVirtualTourPaused) Color(0xFF10B981) else ColorTekinsCardMuted
+                                            ),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isVirtualTourPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                                contentDescription = if (isVirtualTourPaused) "Reanudar" else "Pausar",
+                                                tint = if (isVirtualTourPaused) Color.White else ColorTekinsAccent,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = if (isVirtualTourPaused) "Reanudar" else "Pausar",
+                                                color = if (isVirtualTourPaused) Color.White else ColorTextoPrincipal,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                viewModel.stopSpeaking()
+                                                if (virtualTourIndex < tourPoints.size - 1) {
+                                                    virtualTourIndex++
+                                                } else {
+                                                    viewModel.stopSpeaking()
+                                                    isVirtualTourActive = false
+                                                    Toast.makeText(context, "Has completado el recorrido virtual.", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAccent),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                        ) {
+                                            Text(
+                                                text = if (virtualTourIndex < tourPoints.size - 1) "Siguiente" else "Finalizar",
+                                                color = ColorTekinsDarkBg,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.ExtraBold
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Icon(
+                                                imageVector = if (virtualTourIndex < tourPoints.size - 1) Icons.Default.SkipNext else Icons.Default.Check,
+                                                contentDescription = "Siguiente",
+                                                tint = ColorTekinsDarkBg,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!showVirtualTourPhotoCard) {
+                            Card(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(bottom = 12.dp)
+                                    .clickable { showVirtualTourPhotoCard = true },
+                                shape = RoundedCornerShape(24.dp),
+                                colors = CardDefaults.cardColors(containerColor = ColorTekinsCardBg.copy(alpha = 0.95f)),
+                                border = BorderStroke(1.dp, ColorTekinsAccent),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Explore,
+                                        contentDescription = null,
+                                        tint = ColorTekinsAccent,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "#${virtualTourIndex + 1}: ${currentTourPoint.descripcion.ifBlank { estadoInfo.first }}",
+                                        color = ColorTextoPrincipal,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        modifier = Modifier.widthIn(max = 160.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    IconButton(
+                                        onClick = {
+                                            viewModel.stopSpeaking()
+                                            if (virtualTourIndex < tourPoints.size - 1) virtualTourIndex++ else isVirtualTourActive = false
+                                        },
+                                        modifier = Modifier.size(30.dp)
+                                    ) {
+                                        Icon(Icons.Default.SkipNext, contentDescription = "Siguiente", tint = ColorTekinsAccent)
+                                    }
+                                    IconButton(
+                                        onClick = { showVirtualTourPhotoCard = true },
+                                        modifier = Modifier.size(30.dp)
+                                    ) {
+                                        Icon(Icons.Default.Photo, contentDescription = "Ver foto", tint = ColorTextoPrincipal)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -837,6 +1292,23 @@ fun MainScreen(
                         },
                         onSettingsClick = { showSettings = true },
                         onLockClick = { isPocketLockActive = true },
+                        isVirtualTourActive = isVirtualTourActive,
+                        onVirtualTourClick = {
+                            if (isVirtualTourActive) {
+                                isVirtualTourPaused = !isVirtualTourPaused
+                                if (isVirtualTourPaused) viewModel.stopSpeaking()
+                            } else {
+                                if (selectedRoutePoints.isEmpty()) {
+                                    Toast.makeText(context, "La ruta no tiene puntos para simular.", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    isVirtualTourActive = true
+                                    isVirtualTourPaused = false
+                                    virtualTourIndex = 0
+                                    showVirtualTourPhotoCard = true
+                                    showMapScreen = true
+                                }
+                            }
+                        },
                         is911Active = is911Active,
                         on911Click = {
                             val senderistaObj = senderista
@@ -2128,6 +2600,116 @@ fun MainScreen(
             )
         }
 
+        if (showVisorOrderDialog && selectedRoutePoints.isNotEmpty()) {
+            var selectedToStart by remember { mutableStateOf(false) } // false = al final (ida), true = al inicio (retorno)
+
+            AlertDialog(
+                onDismissRequest = { showVisorOrderDialog = false },
+                containerColor = ColorTekinsCardBg,
+                titleContentColor = ColorTextoPrincipal,
+                textContentColor = ColorTextoSecundario,
+                title = { Text("¿Cómo deseas ver la ruta?", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = "Selecciona el orden para visualizar y simular los puntos:",
+                            color = ColorTextoSecundario,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+                        HorizontalDivider(
+                            color = ColorTekinsCardMuted,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+
+                        // Opción: Del Inicio al Final (Ida)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { selectedToStart = false }
+                                .padding(vertical = 8.dp, horizontal = 4.dp)
+                        ) {
+                            RadioButton(
+                                selected = !selectedToStart,
+                                onClick = { selectedToStart = false },
+                                colors = RadioButtonDefaults.colors(
+                                    selectedColor = ColorTekinsAccent,
+                                    unselectedColor = ColorTextoSecundario
+                                )
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "Del Inicio al Final (Ida)",
+                                    fontWeight = FontWeight.Bold,
+                                    color = ColorTextoPrincipal,
+                                    fontSize = 15.sp
+                                )
+                                Text(
+                                    text = "Ver los puntos desde el punto de partida inicial.",
+                                    color = ColorTextoSecundario,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Opción: Del Final al Inicio (Retorno)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { selectedToStart = true }
+                                .padding(vertical = 8.dp, horizontal = 4.dp)
+                        ) {
+                            RadioButton(
+                                selected = selectedToStart,
+                                onClick = { selectedToStart = true },
+                                colors = RadioButtonDefaults.colors(
+                                    selectedColor = ColorTekinsAccent,
+                                    unselectedColor = ColorTextoSecundario
+                                )
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "Del Final al Inicio (Retorno)",
+                                    fontWeight = FontWeight.Bold,
+                                    color = ColorTextoPrincipal,
+                                    fontSize = 15.sp
+                                )
+                                Text(
+                                    text = "Ver los puntos en sentido inverso (retorno al inicio).",
+                                    color = ColorTextoSecundario,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            viewModel.isPointsListReversed.value = selectedToStart
+                            showVisorOrderDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAccent)
+                    ) {
+                        Text("Ver Ruta", color = ColorTekinsDarkBg, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showVisorOrderDialog = false }) {
+                        Text("Cancelar", color = ColorTextoSecundario)
+                    }
+                }
+            )
+        }
+
         if (showSelectRutaDialog) {
             LaunchedEffect(Unit) {
                 viewModel.checkAndCleanOtherRoutes()
@@ -2748,7 +3330,9 @@ fun HeaderBar(
     onSettingsClick: () -> Unit = {},
     onLockClick: () -> Unit = {},
     is911Active: Boolean = false,
-    on911Click: () -> Unit = {}
+    on911Click: () -> Unit = {},
+    isVirtualTourActive: Boolean = false,
+    onVirtualTourClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -3086,7 +3670,29 @@ fun HeaderBar(
                 
                 var isRightMenuExpanded by remember { mutableStateOf(false) }
 
-                if (selectedRoute != null) {
+                // Botón Play de Recorrido Virtual estilo grabadora (en modo Visor cuando hay ruta con puntos)
+                if (currentAppRole == "visor" && selectedRoute != null && points.isNotEmpty()) {
+                    IconButton(
+                        onClick = onVirtualTourClick,
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = if (isVirtualTourActive) Color(0xFF10B981) else ColorTekinsCardMuted,
+                            contentColor = if (isVirtualTourActive) Color.White else activeColor
+                        ),
+                        modifier = Modifier
+                            .size(44.dp)
+                            .padding(end = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isVirtualTourActive) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isVirtualTourActive) "Pausar Simulación" else "Iniciar Simulación",
+                            tint = if (isVirtualTourActive) Color.White else activeColor,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                }
+
+                // Ocultar botón de bolsillo cuando estés en la opción de visor
+                if (selectedRoute != null && currentAppRole != "visor") {
                     IconButton(
                         onClick = onLockClick,
                         colors = IconButtonDefaults.iconButtonColors(
@@ -3141,7 +3747,7 @@ fun HeaderBar(
                         modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp)
                     )
 
-                    if (selectedRoute != null) {
+                    if (selectedRoute != null && currentAppRole != "visor") {
                         DropdownMenuItem(
                             text = { Text("Modo Bolsillo (Bloqueo)", color = ColorTekinsDarkBg) },
                             onClick = {
@@ -3153,6 +3759,24 @@ fun HeaderBar(
                                     imageVector = Icons.Default.Lock,
                                     contentDescription = null,
                                     tint = ColorTekinsPrimary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        )
+                    }
+
+                    if (currentAppRole == "visor" && selectedRoute != null && points.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text(if (isVirtualTourActive) "Pausar Recorrido Virtual" else "Iniciar Recorrido Virtual", color = ColorTekinsDarkBg) },
+                            onClick = {
+                                isRightMenuExpanded = false
+                                onVirtualTourClick()
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (isVirtualTourActive) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = null,
+                                    tint = Color(0xFF10B981),
                                     modifier = Modifier.size(24.dp)
                                 )
                             }

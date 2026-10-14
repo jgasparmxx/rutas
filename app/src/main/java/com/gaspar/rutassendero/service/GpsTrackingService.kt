@@ -1,4 +1,4 @@
-﻿package com.gaspar.rutassendero.service
+package com.gaspar.rutassendero.service
 
 import android.Manifest
 import android.app.Notification
@@ -16,7 +16,9 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
+import android.os.Bundle
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.ActivityCompat
@@ -952,10 +954,33 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
 
     // --- TTS MOTOR ---
 
+    private var currentUtteranceCallback: (() -> Unit)? = null
+
     private fun speakTts(msg: String, force: Boolean = false) {
         if (!_isVoiceGuidanceEnabled.value && !force) return
         if (isTtsReady) {
             ttsEngine?.speak(msg, TextToSpeech.QUEUE_FLUSH, null, "SenderoAlert")
+        }
+    }
+
+    fun speakSimulationTextInternal(msg: String, onDone: (() -> Unit)? = null) {
+        if (isTtsReady && ttsEngine != null) {
+            currentUtteranceCallback = onDone
+            val params = Bundle().apply {
+                putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "VirtualTour_${System.currentTimeMillis()}")
+            }
+            ttsEngine?.speak(msg, TextToSpeech.QUEUE_FLUSH, params, "VirtualTour_${System.currentTimeMillis()}")
+        } else {
+            onDone?.invoke()
+        }
+    }
+
+    fun stopSpeakingInternal() {
+        currentUtteranceCallback = null
+        try {
+            ttsEngine?.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping TTS: ${e.message}")
         }
     }
 
@@ -965,6 +990,22 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                 ttsEngine?.setLanguage(Locale("es", "ES"))
             }
+            ttsEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(utteranceId: String?) {
+                    serviceScope.launch(Dispatchers.Main) {
+                        currentUtteranceCallback?.invoke()
+                        currentUtteranceCallback = null
+                    }
+                }
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    serviceScope.launch(Dispatchers.Main) {
+                        currentUtteranceCallback?.invoke()
+                        currentUtteranceCallback = null
+                    }
+                }
+            })
             isTtsReady = true
         }
     }
@@ -1699,6 +1740,19 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
 
         fun stopEmergencyPattern() {
             instance?.stopEmergencyPatternInternal()
+        }
+
+        fun speakSimulationText(msg: String, onDone: (() -> Unit)? = null) {
+            val s = instance
+            if (s != null) {
+                s.speakSimulationTextInternal(msg, onDone)
+            } else {
+                onDone?.invoke()
+            }
+        }
+
+        fun stopSpeaking() {
+            instance?.stopSpeakingInternal()
         }
 
         fun setSelectedRoute(ruta: RutaEntity?) {

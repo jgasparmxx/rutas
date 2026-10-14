@@ -1,4 +1,4 @@
-﻿package com.gaspar.rutassendero.ui.components
+package com.gaspar.rutassendero.ui.components
 
 // REGULA LIMITACIÓN DE RUTAS PRIVADAS: Por regla el usuario sólo puede tener un máximo de 3 rutas no públicas (privadas). Esta regla cambiará cuando coloquemos la app en la tienda (Play Store).
 
@@ -2739,7 +2739,8 @@ fun GoogleMapView(
     routeStartLat: Double? = null,
     routeStartLng: Double? = null,
     onPointHover: ((PuntoRutaEntity?) -> Unit)? = null,
-    activePointId: Int? = null
+    activePointId: Int? = null,
+    focusPointTrigger: Pair<PuntoRutaEntity, Int>? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -3043,6 +3044,22 @@ fun GoogleMapView(
                             if (pinnedMarker) {
                                 pinnedMarker.closeTooltip();
                                 pinnedMarker = null;
+                            }
+                        };
+
+                        window.focusPoint = function(lat, lng, idx) {
+                            if (!map) return;
+                            map.flyTo([lat, lng], 17, { animate: true, duration: 1.2 });
+                            if (markersGroup) {
+                                var layers = markersGroup.getLayers();
+                                if (idx >= 0 && idx < layers.length) {
+                                    var m = layers[idx];
+                                    if (pinnedMarker && pinnedMarker !== m) {
+                                        pinnedMarker.closeTooltip();
+                                    }
+                                    pinnedMarker = m;
+                                    m.openTooltip();
+                                }
                             }
                         };
 
@@ -3424,7 +3441,10 @@ fun GoogleMapView(
             
             // Si la página del mapa ya terminó de cargarse en el WebView, inyectamos los datos actualizados
             if (holder.isLoaded) {
-                if (activePointId == null) {
+                if (focusPointTrigger != null) {
+                    val (fPunto, fIdx) = focusPointTrigger
+                    webView.evaluateJavascript("if (typeof window.focusPoint === 'function') window.focusPoint(${fPunto.latitud}, ${fPunto.longitud}, $fIdx);", null)
+                } else if (activePointId == null) {
                     webView.evaluateJavascript("if (typeof window.clearPinnedMarker === 'function') window.clearPinnedMarker();", null)
                 }
                 if (pointsChanged || traceChanged || locationChanged || routeChanged) {

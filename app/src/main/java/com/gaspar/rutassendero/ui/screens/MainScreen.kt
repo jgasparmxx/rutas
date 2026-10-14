@@ -485,9 +485,12 @@ fun MainScreen(
         } else null
 
         val estadoInfo = getEstadoPuntoInfo(currentPoint.estado, currentPoint.esFinRuta)
+        val isNormalPoint = (currentPoint.estado == 1 || estadoInfo.first.equals("Punto normal", ignoreCase = true)) && !currentPoint.esFinRuta
         val speech = buildString {
             append("Punto ${virtualTourIndex + 1} de ${tourPoints.size}. ")
-            append("Tipo: ${estadoInfo.first}. ")
+            if (!isNormalPoint) {
+                append("Tipo: ${estadoInfo.first}. ")
+            }
             if (currentPoint.altitud > 0) {
                 append("Altitud: ${currentPoint.altitud.toInt()} metros. ")
             }

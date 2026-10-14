@@ -172,6 +172,15 @@ fun MainScreen(
     var showMapScreen by remember { mutableStateOf(false) }
     var showWaypointDialog by remember { mutableStateOf(false) }
 
+    // --- ESTADOS Y CONTROL DEL RECORRIDO VIRTUAL (MODO VISOR) ---
+    var showVisorOrderDialog by remember { mutableStateOf(false) }
+    var isVirtualTourActive by remember { mutableStateOf(false) }
+    var isVirtualTourPaused by remember { mutableStateOf(false) }
+    var virtualTourIndex by remember { mutableIntStateOf(0) }
+    var isVirtualTourAutoAdvance by remember { mutableStateOf(true) }
+    var showVirtualTourPhotoCard by remember { mutableStateOf(true) }
+    var virtualTourFocusTrigger by remember { mutableStateOf<Pair<PuntoRutaEntity, Int>?>(null) }
+
     LaunchedEffect(isGuiding) {
         if (isGuiding) {
             showMapScreen = true
@@ -237,87 +246,6 @@ fun MainScreen(
                 }
             }
             Unit
-        }
-    }
-
-    // --- ESTADOS Y CONTROL DEL RECORRIDO VIRTUAL (MODO VISOR) ---
-    var showVisorOrderDialog by remember { mutableStateOf(false) }
-    var isVirtualTourActive by remember { mutableStateOf(false) }
-    var isVirtualTourPaused by remember { mutableStateOf(false) }
-    var virtualTourIndex by remember { mutableIntStateOf(0) }
-    var isVirtualTourAutoAdvance by remember { mutableStateOf(true) }
-    var showVirtualTourPhotoCard by remember { mutableStateOf(true) }
-    var virtualTourFocusTrigger by remember { mutableStateOf<Pair<PuntoRutaEntity, Int>?>(null) }
-
-    val tourPoints = remember(selectedRoutePoints, isPointsListReversed) {
-        if (isPointsListReversed) selectedRoutePoints.reversed() else selectedRoutePoints
-    }
-
-    LaunchedEffect(currentAppRole) {
-        if (currentAppRole != "visor" && isVirtualTourActive) {
-            viewModel.stopSpeaking()
-            isVirtualTourActive = false
-            isVirtualTourPaused = false
-            virtualTourFocusTrigger = null
-        }
-    }
-
-    LaunchedEffect(isVirtualTourActive, virtualTourIndex, isVirtualTourPaused) {
-        if (!isVirtualTourActive || isVirtualTourPaused || tourPoints.isEmpty()) return@LaunchedEffect
-        if (virtualTourIndex !in tourPoints.indices) {
-            viewModel.speakSimulationText("Recorrido virtual completado. Has llegado al final de la ruta.")
-            delay(3500)
-            isVirtualTourActive = false
-            virtualTourFocusTrigger = null
-            return@LaunchedEffect
-        }
-
-        val currentPoint = tourPoints[virtualTourIndex]
-        activeMapPoint = currentPoint
-
-        val markerOriginalIndex = selectedRoutePoints.indexOfFirst { it.id == currentPoint.id }
-        virtualTourFocusTrigger = Pair(currentPoint, if (markerOriginalIndex != -1) markerOriginalIndex else virtualTourIndex)
-
-        val nextPoint = if (virtualTourIndex < tourPoints.size - 1) tourPoints[virtualTourIndex + 1] else null
-        val nextDistStr = if (nextPoint != null) {
-            val loc1 = Location("").apply { latitude = currentPoint.latitud; longitude = currentPoint.longitud }
-            val loc2 = Location("").apply { latitude = nextPoint.latitud; longitude = nextPoint.longitud }
-            val d = loc1.distanceTo(loc2)
-            if (d >= 1000f) String.format(java.util.Locale.US, "%.1f kilómetros", d / 1000f) else "${d.toInt()} metros"
-        } else null
-
-        val estadoInfo = getEstadoPuntoInfo(currentPoint.estado, currentPoint.esFinRuta)
-        val speech = buildString {
-            append("Punto ${virtualTourIndex + 1} de ${tourPoints.size}. ")
-            append("Tipo: ${estadoInfo.first}. ")
-            if (currentPoint.altitud > 0) {
-                append("Altitud: ${currentPoint.altitud.toInt()} metros. ")
-            }
-            if (currentPoint.descripcion.isNotBlank()) {
-                append("Descripción: ${currentPoint.descripcion}. ")
-            }
-            if (nextDistStr != null) {
-                append("Distancia a caminar al siguiente punto: $nextDistStr.")
-            } else {
-                append("Este es el último punto del recorrido.")
-            }
-        }
-
-        var speechFinished = false
-        viewModel.speakSimulationText(speech) {
-            speechFinished = true
-        }
-
-        if (isVirtualTourAutoAdvance) {
-            val startWait = System.currentTimeMillis()
-            while (!speechFinished && (System.currentTimeMillis() - startWait) < 15000L) {
-                delay(200)
-            }
-            // Tiempo de cortesía en el mapa para visualizar la foto y el sendero
-            delay(3000)
-            if (isVirtualTourActive && !isVirtualTourPaused) {
-                virtualTourIndex++
-            }
         }
     }
 
@@ -516,6 +444,78 @@ fun MainScreen(
     var showDistanceVerificationDialog by remember { mutableStateOf(false) }
     var mapForceRecomposeKey by remember { mutableStateOf(0) }
     var activeMapPoint by remember { mutableStateOf<PuntoRutaEntity?>(null) }
+
+    val tourPoints = remember(selectedRoutePoints, isPointsListReversed) {
+        if (isPointsListReversed) selectedRoutePoints.reversed() else selectedRoutePoints
+    }
+
+    LaunchedEffect(currentAppRole) {
+        if (currentAppRole != "visor" && isVirtualTourActive) {
+            viewModel.stopSpeaking()
+            isVirtualTourActive = false
+            isVirtualTourPaused = false
+            virtualTourFocusTrigger = null
+        }
+    }
+
+    LaunchedEffect(isVirtualTourActive, virtualTourIndex, isVirtualTourPaused) {
+        if (!isVirtualTourActive || isVirtualTourPaused || tourPoints.isEmpty()) return@LaunchedEffect
+        if (virtualTourIndex !in tourPoints.indices) {
+            viewModel.speakSimulationText("Recorrido virtual completado. Has llegado al final de la ruta.")
+            delay(3500)
+            isVirtualTourActive = false
+            virtualTourFocusTrigger = null
+            return@LaunchedEffect
+        }
+
+        val currentPoint = tourPoints[virtualTourIndex]
+        activeMapPoint = currentPoint
+
+        val markerOriginalIndex = selectedRoutePoints.indexOfFirst { it.id == currentPoint.id }
+        virtualTourFocusTrigger = Pair(currentPoint, if (markerOriginalIndex != -1) markerOriginalIndex else virtualTourIndex)
+
+        val nextPoint = if (virtualTourIndex < tourPoints.size - 1) tourPoints[virtualTourIndex + 1] else null
+        val nextDistStr = if (nextPoint != null) {
+            val loc1 = Location("").apply { latitude = currentPoint.latitud; longitude = currentPoint.longitud }
+            val loc2 = Location("").apply { latitude = nextPoint.latitud; longitude = nextPoint.longitud }
+            val d = loc1.distanceTo(loc2)
+            if (d >= 1000f) String.format(java.util.Locale.US, "%.1f kilómetros", d / 1000f) else "${d.toInt()} metros"
+        } else null
+
+        val estadoInfo = getEstadoPuntoInfo(currentPoint.estado, currentPoint.esFinRuta)
+        val speech = buildString {
+            append("Punto ${virtualTourIndex + 1} de ${tourPoints.size}. ")
+            append("Tipo: ${estadoInfo.first}. ")
+            if (currentPoint.altitud > 0) {
+                append("Altitud: ${currentPoint.altitud.toInt()} metros. ")
+            }
+            if (currentPoint.descripcion.isNotBlank()) {
+                append("Descripción: ${currentPoint.descripcion}. ")
+            }
+            if (nextDistStr != null) {
+                append("Distancia a caminar al siguiente punto: $nextDistStr.")
+            } else {
+                append("Este es el último punto del recorrido.")
+            }
+        }
+
+        var speechFinished = false
+        viewModel.speakSimulationText(speech) {
+            speechFinished = true
+        }
+
+        if (isVirtualTourAutoAdvance) {
+            val startWait = System.currentTimeMillis()
+            while (!speechFinished && (System.currentTimeMillis() - startWait) < 15000L) {
+                delay(200)
+            }
+            // Tiempo de cortesía en el mapa para visualizar la foto y el sendero
+            delay(3000)
+            if (isVirtualTourActive && !isVirtualTourPaused) {
+                virtualTourIndex++
+            }
+        }
+    }
 
     var selectedPuntoForDetail by remember { mutableStateOf<PuntoRutaEntity?>(null) }
     var puntoToDeleteConfirm by remember { mutableStateOf<PuntoRutaEntity?>(null) }

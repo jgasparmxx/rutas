@@ -12,6 +12,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 enum class BleSupportStatus {
     SUPPORTED,
@@ -70,40 +72,38 @@ class BeaconEmitterManager(private val context: Context) {
      * @param idBeacon The unique identifier for the beacon.
      * @param latitude Current latitude (optional).
      * @param longitude Current longitude (optional).
-     * @param onSuccess Callback triggered when advertising successfully starts.
-     * @param onFailure Callback triggered on failure, passing an error code.
+     * @return true if started successfully, false otherwise.
      */
-    fun startEmitting(
+    suspend fun startEmitting(
         idBeacon: String,
         latitude: Float? = null,
         longitude: Float? = null,
         major: Int = DEFAULT_MAJOR,
         minor: Int = DEFAULT_MINOR,
-        txPower: Int = DEFAULT_TX_POWER,
-        onSuccess: () -> Unit,
-        onFailure: (Int) -> Unit
-    ) {
+        txPower: Int = DEFAULT_TX_POWER
+    ): Boolean = suspendCancellableCoroutine { continuation ->
+        
         val support = checkBleHardwareSupport()
         if (support != BleSupportStatus.SUPPORTED) {
             Log.w(TAG, "Hardware does not support BLE advertising or Bluetooth is disabled: $support")
-            onFailure(-1)
-            return
+            if (continuation.isActive) continuation.resume(false)
+            return@suspendCancellableCoroutine
         }
 
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val adapter = bluetoothManager.adapter
         val leAdvertiser = adapter.bluetoothLeAdvertiser ?: run {
             Log.w(TAG, "BluetoothLeAdvertiser is null")
-            onFailure(-2)
-            return
+            if (continuation.isActive) continuation.resume(false)
+            return@suspendCancellableCoroutine
         }
 
         // Check runtime permission for Android 12+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
             Log.w(TAG, "Missing BLUETOOTH_ADVERTISE runtime permission")
-            onFailure(-3)
-            return
+            if (continuation.isActive) continuation.resume(false)
+            return@suspendCancellableCoroutine
         }
 
         // Stop any active emission first
@@ -169,26 +169,31 @@ class BeaconEmitterManager(private val context: Context) {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
                 super.onStartSuccess(settingsInEffect)
                 Log.i(TAG, "BLE iBeacon advertising started successfully")
-                onSuccess()
+                if (continuation.isActive) continuation.resume(true)
             }
 
             override fun onStartFailure(errorCode: Int) {
                 super.onStartFailure(errorCode)
                 Log.e(TAG, "BLE iBeacon advertising failed to start. Error code: $errorCode")
-                onFailure(errorCode)
+                if (continuation.isActive) continuation.resume(false)
             }
         }
         advertiseCallback = callback
+
+        // Handle cancellation of coroutine
+        continuation.invokeOnCancellation {
+            stopEmitting()
+        }
 
         // 4. Start advertising
         try {
             leAdvertiser.startAdvertising(settings, advertiseData, callback)
         } catch (e: SecurityException) {
             Log.e(TAG, "SecurityException starting advertising: ${e.message}", e)
-            onFailure(-3)
+            if (continuation.isActive) continuation.resume(false)
         } catch (e: Exception) {
             Log.e(TAG, "Error starting advertising: ${e.message}", e)
-            onFailure(-4)
+            if (continuation.isActive) continuation.resume(false)
         }
     }
 

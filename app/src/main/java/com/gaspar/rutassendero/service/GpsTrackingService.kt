@@ -989,12 +989,15 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
 
     fun startBeaconEmissionInternal(idBeacon: String, isEmergency: Boolean = false, onSuccess: () -> Unit, onFailure: (Int) -> Unit) {
         val lastLoc = currentLocation.value
-        beaconManager.startEmitting(
-            idBeacon = idBeacon,
-            latitude = lastLoc?.latitude?.toFloat(),
-            longitude = lastLoc?.longitude?.toFloat(),
-            minor = if (isEmergency) 911 else 1,
-            onSuccess = {
+        serviceScope.launch {
+            val success = beaconManager.startEmitting(
+                idBeacon = idBeacon,
+                latitude = lastLoc?.latitude?.toFloat(),
+                longitude = lastLoc?.longitude?.toFloat(),
+                minor = if (isEmergency) 911 else 1
+            )
+            
+            if (success) {
                 _isBeaconEmitting.value = true
                 _isBeaconEmergencyEmitting.value = isEmergency
                 
@@ -1016,9 +1019,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                                     idBeacon = idBeacon,
                                     latitude = newLoc.latitude.toFloat(),
                                     longitude = newLoc.longitude.toFloat(),
-                                    minor = if (isEmergency) 911 else 1,
-                                    onSuccess = {},
-                                    onFailure = {}
+                                    minor = if (isEmergency) 911 else 1
                                 )
                             }
                         }
@@ -1026,12 +1027,11 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                 }
                 
                 onSuccess()
-            },
-            onFailure = { errorCode ->
+            } else {
                 _isBeaconEmitting.value = false
-                onFailure(errorCode)
+                onFailure(-1)
             }
-        )
+        }
     }
 
     fun stopBeaconEmissionInternal() {

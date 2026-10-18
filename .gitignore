@@ -1,10 +1,31 @@
+# ==========================================
+# Android
+# ==========================================
+android/build/
+android/app/build/
+android/.gradle/
+android/local.properties
+android/.idea/
+android/.kotlin/
+.gradle/
 build/
 app/build/
-.idea/
-.gradle/
 local.properties
-
+.idea/
+.kotlin/
 .vscode/
 temp_rutas/
 *.zip
 *.7z
+
+# ==========================================
+# iOS / Xcode / macOS
+# ==========================================
+.DS_Store
+ios/build/
+ios/DerivedData/
+ios/*.xcodeproj/xcuserdata/
+ios/*.xcodeproj/project.xcworkspace/xcuserdata/
+ios/*.xcworkspace/xcuserdata/
+ios/.build/
+*.xcuserstate

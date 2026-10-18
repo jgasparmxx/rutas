@@ -31,6 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -261,6 +263,7 @@ fun MainScreen(
     // --- Controladores de Salidas ---
     var showSalidasDialog by remember { mutableStateOf(false) }
     var showUpcomingOutingWarningDialog by remember { mutableStateOf<com.gaspar.rutassendero.data.InvitacionAceptadaEntity?>(null) }
+    var showAboutDialog by remember { mutableStateOf(false) }
 
 
     LaunchedEffect(senderistaUiState) {
@@ -1296,6 +1299,7 @@ fun MainScreen(
                             viewModel.isPointsListReversed.value = reversed
                         },
                         onSettingsClick = { showSettings = true },
+                        onAboutClick = { showAboutDialog = true },
                         onLockClick = { isPocketLockActive = true },
                         isVirtualTourActive = isVirtualTourActive,
                         onVirtualTourClick = {
@@ -1747,35 +1751,70 @@ fun MainScreen(
 
                 // Lista de puntos o vista vacía
                 if (selectedRoute == null) {
+                    val agrupacionLogoBitmap by viewModel.agrupacionLogoBitmap.collectAsState()
+
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
+                            .weight(1f)
                     ) {
+                        // Renglón superior: Logo de la app pegado a la izquierda y frase 'RUTA CON AMIGOS' a su derecha
+                        if (agrupacionLogoBitmap != null) {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(top = 4.dp, start = 2.dp, end = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Image(
+                                    painter = painterResource(id = R.drawable.logo_senderismo),
+                                    contentDescription = "Logo Senderismo con Amigos",
+                                    modifier = Modifier
+                                        .width(145.dp)
+                                        .aspectRatio(16f / 9f)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "RUTA CON AMIGOS",
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF15803D),
+                                    letterSpacing = 0.5.sp
+                                )
+                            }
+                        }
+
+                        // Logo de la agrupación con la frase: desplazados más hacia abajo en la pantalla
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(24.dp)
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp)
+                                .padding(top = if (agrupacionLogoBitmap != null) 105.dp else 10.dp, bottom = 45.dp)
                         ) {
+                            if (agrupacionLogoBitmap != null) {
+                                Image(
+                                    bitmap = agrupacionLogoBitmap!!.asImageBitmap(),
+                                    contentDescription = "Logo de la Agrupación",
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.92f)
+                                        .heightIn(max = 260.dp)
+                                )
+                            } else {
+                                Image(
+                                    painter = painterResource(id = R.drawable.logo_senderismo),
+                                    contentDescription = "Logo Senderismo con Amigos",
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.9f)
+                                        .aspectRatio(16f / 9f)
+                                )
+                            }
 
-                            Image(
-                                painter = painterResource(id = R.drawable.logo_senderismo),
-                                contentDescription = "Logo Senderismo con Amigos",
-                                modifier = Modifier
-                                    .width(380.dp)
-                                    .aspectRatio(16f / 9f)
-                            )
-                        /*
-                            Image(
-                                painter = painterResource(id = R.drawable.logo_luna_k),
-                                contentDescription = "Logo LunaK Viajes y Senderismo Colima",
-                                modifier = Modifier
-                                    .size(160.dp)
-                                    .clip(CircleShape)
-                                    .border(3.dp, ColorTekinsAccent, CircleShape)
-                            )
-                         */
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(14.dp))
                             Text(
                                 text = "¿A dónde vamos hoy?",
                                 fontSize = 18.sp,
@@ -1791,6 +1830,7 @@ fun MainScreen(
                             )
                         }
 
+                        // Pie de pantalla: únicamente la frase de derechos reservados con la misma alineación y fuente
                         Column(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
@@ -1798,28 +1838,7 @@ fun MainScreen(
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                text = "Versión $versionName (Beta Externa - Pruebas de campo DB v$dbVersion)",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = ColorTekinsDarkBg.copy(alpha = 0.6f),
-                                textAlign = TextAlign.Center
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = com.gaspar.rutassendero.BuildConfig.UPDATE_DATE,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = ColorTekinsDarkBg.copy(alpha = 0.5f),
-                                textAlign = TextAlign.Center
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = buildAnnotatedString {
-                                    withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) {
-                                        append("(@Sirmartillo id en wattsap)")
-                                    }
-                                    append(", Desarrollado con geminis.\n© Todos los derechos reservados Tekins S.A.")
-                                },
+                                text = "© Todos los derechos reservados Tekins S.A.",
                                 fontSize = 11.sp,
                                 color = ColorTekinsDarkBg.copy(alpha = 0.5f),
                                 textAlign = TextAlign.Center
@@ -2999,6 +3018,14 @@ fun MainScreen(
             )
         }
 
+        if (showAboutDialog) {
+            AboutDialog(
+                versionName = versionName,
+                dbVersion = dbVersion,
+                onDismiss = { showAboutDialog = false }
+            )
+        }
+
         if (showSalidasDialog) {
             SalidasDialog(
                 viewModel = viewModel,
@@ -3333,6 +3360,7 @@ fun HeaderBar(
     isPointsListReversed: Boolean = false,
     onPointsOrderChange: (Boolean) -> Unit = {},
     onSettingsClick: () -> Unit = {},
+    onAboutClick: () -> Unit = {},
     onLockClick: () -> Unit = {},
     is911Active: Boolean = false,
     on911Click: () -> Unit = {},
@@ -3819,6 +3847,22 @@ fun HeaderBar(
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Default.Settings,
+                                contentDescription = null,
+                                tint = ColorTekinsPrimary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        text = { Text("Acerca de", color = ColorTekinsDarkBg) },
+                        onClick = {
+                            isRightMenuExpanded = false
+                            onAboutClick()
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Info,
                                 contentDescription = null,
                                 tint = ColorTekinsPrimary,
                                 modifier = Modifier.size(24.dp)

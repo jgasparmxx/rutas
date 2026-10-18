@@ -46,6 +46,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -8349,6 +8351,130 @@ fun UpcomingOutingWarningDialog(
         }
     )
 }
+
+/**
+ * Diálogo 'Acerca de' que muestra versión, fecha, datos del desarrollador y derechos reservados.
+ */
+@Composable
+fun AboutDialog(
+    versionName: String,
+    dbVersion: Int,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = Color(0xFFFAF9F6),
+            border = BorderStroke(1.5.dp, ColorTekinsAccent.copy(alpha = 0.6f)),
+            shadowElevation = 8.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Cabecera con Icono y Título
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = ColorTekinsPrimary,
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Acerca de la Aplicación",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ColorTekinsDarkBg
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Logo de Senderismo
+                Image(
+                    painter = painterResource(id = R.drawable.logo_senderismo),
+                    contentDescription = "Logo Senderismo con Amigos",
+                    modifier = Modifier
+                        .width(220.dp)
+                        .aspectRatio(16f / 9f)
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                HorizontalDivider(
+                    color = ColorTekinsCardMuted.copy(alpha = 0.4f),
+                    thickness = 1.dp
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Versión de la app y base de datos
+                Text(
+                    text = "Versión $versionName (Beta Externa - Pruebas de campo DB v$dbVersion)",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = ColorTekinsDarkBg.copy(alpha = 0.85f),
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Fecha de compilación
+                Text(
+                    text = com.gaspar.rutassendero.BuildConfig.UPDATE_DATE,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = ColorTekinsDarkBg.copy(alpha = 0.65f),
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Datos del Desarrollador y WhatsApp
+                Text(
+                    text = buildAnnotatedString {
+                        withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) {
+                            append("(@Sirmartillo id en wattsap)")
+                        }
+                        append("\nDesarrollado con geminis.")
+                    },
+                    fontSize = 12.sp,
+                    color = ColorTekinsDarkBg.copy(alpha = 0.75f),
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Derechos reservados
+                Text(
+                    text = "© Todos los derechos reservados Tekins S.A.",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = ColorTekinsDarkBg.copy(alpha = 0.55f),
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAccent),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(0.55f)
+                ) {
+                    Text("Cerrar", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
 
 
 

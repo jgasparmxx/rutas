@@ -21,6 +21,8 @@ import com.gaspar.rutassendero.sync.GoogleDriveSyncManager
 import com.gaspar.rutassendero.sync.CryptoUtils
 import android.accounts.Account
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.widget.Toast
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -186,6 +188,85 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
         )
 
 
+    private val _agrupacionLogoBitmap = MutableStateFlow<Bitmap?>(null)
+    val agrupacionLogoBitmap: StateFlow<Bitmap?> = _agrupacionLogoBitmap.asStateFlow()
+
+    fun loadAgrupacionLogoFromStorage() {
+        val path = prefs.agrupacionLogoPath
+        if (!path.isNullOrBlank()) {
+            val file = File(path)
+            if (file.exists()) {
+                try {
+                    val bitmap = BitmapFactory.decodeFile(file.absolutePath)
+                    if (bitmap != null) {
+                        _agrupacionLogoBitmap.value = bitmap
+                        return
+                    }
+                } catch (e: Exception) {
+                    Log.e("RutasViewModel", "Error cargando logo de agrupacion desde archivo: ${e.message}")
+                }
+            }
+        }
+        val b64 = prefs.agrupacionLogoBase64
+        if (!b64.isNullOrBlank()) {
+            try {
+                val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap != null) {
+                    _agrupacionLogoBitmap.value = bitmap
+                }
+            } catch (e: Exception) {
+                Log.e("RutasViewModel", "Error cargando logo de agrupacion desde base64: ${e.message}")
+            }
+        }
+    }
+
+    fun syncAgrupacionLogo(idAgrupacion: String?, force: Boolean = false) {
+        if (idAgrupacion.isNullOrBlank() || idAgrupacion == "@&") {
+            prefs.clearAgrupacionLogo()
+            _agrupacionLogoBitmap.value = null
+            return
+        }
+
+        val cleanId = idAgrupacion.trim()
+        val currentSavedId = prefs.agrupacionLogoId
+        val currentPath = prefs.agrupacionLogoPath
+        val fileExists = currentPath != null && File(currentPath).exists()
+
+        if (!force && cleanId.equals(currentSavedId, ignoreCase = true) && fileExists && _agrupacionLogoBitmap.value != null) {
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                Log.d("RutasViewModel", "Descargando logo de la agrupacion '$cleanId' (force=$force)")
+                val logoBytes = com.gaspar.rutassendero.sync.CloudSyncManager.descargarLogoAgrupacion(cleanId)
+                if (logoBytes != null && logoBytes.isNotEmpty()) {
+                    val bitmap = BitmapFactory.decodeByteArray(logoBytes, 0, logoBytes.size)
+                    if (bitmap != null) {
+                        val file = File(app.filesDir, "logo_agrupacion_${cleanId.lowercase()}.png")
+                        file.writeBytes(logoBytes)
+                        prefs.agrupacionLogoPath = file.absolutePath
+                        prefs.agrupacionLogoId = cleanId
+                        if (logoBytes.size <= 250 * 1024) {
+                            prefs.agrupacionLogoBase64 = android.util.Base64.encodeToString(logoBytes, android.util.Base64.NO_WRAP)
+                        } else {
+                            prefs.agrupacionLogoBase64 = null
+                        }
+                        _agrupacionLogoBitmap.value = bitmap
+                        Log.i("RutasViewModel", "Logo de agrupacion guardado para '$cleanId' en ${file.absolutePath} (${logoBytes.size} bytes)")
+                    } else {
+                        Log.w("RutasViewModel", "Los bytes descargados para la agrupacion '$cleanId' no son una imagen valida.")
+                    }
+                } else {
+                    Log.d("RutasViewModel", "La agrupacion '$cleanId' no tiene logo asignado en Neon PostgreSQL.")
+                }
+            } catch (e: Exception) {
+                Log.e("RutasViewModel", "Error al sincronizar logo de agrupacion: ${e.message}", e)
+            }
+        }
+    }
+
     fun fetchAgrupaciones() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -195,6 +276,8 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                     db.participantesDao().insertAgrupaciones(cloudData)
                     Log.d("RutasViewModel", "Agrupaciones actualizadas desde la nube: ${cloudData.size}")
                 }
+                val currentAgru = _senderistaUiState.value.senderista?.idAgrupacion?.takeIf { it.isNotBlank() && it != "@&" } ?: "MH"
+                syncAgrupacionLogo(currentAgru, force = false)
             } catch (e: Exception) {
                 Log.e("RutasViewModel", "Error sincronizando agrupaciones con la nube: ${e.message}")
             }
@@ -216,6 +299,7 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         deleteExpiredDownloadedRoutes()
+        loadAgrupacionLogoFromStorage()
 
         // 1. Auto-detect and initialize ownerEmail from database if null (upgrade transition / unswapping)
         viewModelScope.launch(Dispatchers.IO) {
@@ -308,6 +392,9 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                                     )
                                     db.senderistaDao().insertSenderista(updatedLocal)
                                     Log.d("RutasViewModel", "Updated local senderista with server rol=$normalizedServerRol, agrupacion=${updatedLocal.idAgrupacion}, bloqueado=${cloudSenderista.bloqueado}, minimoLongitud=${cloudSenderista.minimoLongitud}")
+                                    if (cloudAgrupacion != null && local.idAgrupacion != cloudAgrupacion) {
+                                        syncAgrupacionLogo(cloudAgrupacion, force = true)
+                                    }
                                 }
                             }
                             syncOwnRoutesFromCloud(cloudSenderista)
@@ -333,6 +420,9 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 _senderistaUiState.value = SenderistaUiState(isLoaded = true, senderista = senderista)
                 _senderistaLoaded.value = true
                 if (senderista != null) {
+                    val agru = senderista.idAgrupacion?.takeIf { it.isNotBlank() && it != "@&" } ?: "MH"
+                    syncAgrupacionLogo(agru, force = false)
+
                     com.gaspar.rutassendero.sync.CloudSyncManager.setAuthContext(
                         senderista.email, 
                         senderista.telefono, 
@@ -552,6 +642,10 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
             }
             // Sincronizar de forma transparente las rutas del senderista que están en la nube
             syncOwnRoutesFromCloud(updatedProfile)
+
+            // Sincronizar y actualizar el logo de la agrupación elegida
+            val agru = updatedProfile.idAgrupacion?.takeIf { it.isNotBlank() && it != "@&" }
+            syncAgrupacionLogo(agru, force = true)
         }
     }
 

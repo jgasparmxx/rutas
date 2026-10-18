@@ -245,6 +245,9 @@ class MainActivity : FragmentActivity() {
             }
             // Restablecer la advertencia de prueba para que se muestre en esta versión
             prefs.trialWarningShown = false
+
+            // Forzar descarga fresca del logo de agrupación tras nueva instalación / actualización
+            prefs.agrupacionLogoId = null
         }
 
         // Inicializar primer inicio si aún no está guardado

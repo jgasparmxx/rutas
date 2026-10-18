@@ -43,6 +43,9 @@ class PreferencesHelper(context: Context) {
         private const val KEY_EMERGENCY_TIMEOUT = "emergency_timeout_minutes"
         private const val KEY_ACTIVE_ROUTE_ID = "active_route_id"
         private const val KEY_ACTIVE_ROUTE_FORWARD = "active_route_forward"
+        private const val KEY_AGRUPACION_LOGO_PATH = "agrupacion_logo_path"
+        private const val KEY_AGRUPACION_LOGO_ID = "agrupacion_logo_id"
+        private const val KEY_AGRUPACION_LOGO_BASE64 = "agrupacion_logo_base64"
     }
 
     /**
@@ -217,6 +220,35 @@ class PreferencesHelper(context: Context) {
     var activeRouteForward: Boolean
         get() = prefs.getBoolean(KEY_ACTIVE_ROUTE_FORWARD, true)
         set(value) = prefs.edit().putBoolean(KEY_ACTIVE_ROUTE_FORWARD, value).apply()
+
+    /**
+     * Guarda y obtiene la ruta del archivo local con la imagen del logo de la agrupación.
+     */
+    var agrupacionLogoPath: String?
+        get() = prefs.getString(KEY_AGRUPACION_LOGO_PATH, null)
+        set(value) = prefs.edit().putString(KEY_AGRUPACION_LOGO_PATH, value).apply()
+
+    /**
+     * Guarda y obtiene el ID de la agrupación correspondiente al logo guardado.
+     */
+    var agrupacionLogoId: String?
+        get() = prefs.getString(KEY_AGRUPACION_LOGO_ID, null)
+        set(value) = prefs.edit().putString(KEY_AGRUPACION_LOGO_ID, value).apply()
+
+    /**
+     * Guarda y obtiene el logo de la agrupación codificado en Base64 como parámetro de la aplicación.
+     */
+    var agrupacionLogoBase64: String?
+        get() = prefs.getString(KEY_AGRUPACION_LOGO_BASE64, null)
+        set(value) = prefs.edit().putString(KEY_AGRUPACION_LOGO_BASE64, value).apply()
+
+    fun clearAgrupacionLogo() {
+        prefs.edit()
+            .remove(KEY_AGRUPACION_LOGO_PATH)
+            .remove(KEY_AGRUPACION_LOGO_ID)
+            .remove(KEY_AGRUPACION_LOGO_BASE64)
+            .apply()
+    }
 
 
 

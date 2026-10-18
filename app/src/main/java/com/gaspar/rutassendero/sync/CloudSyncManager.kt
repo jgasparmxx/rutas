@@ -1,4 +1,4 @@
-﻿package com.gaspar.rutassendero.sync
+package com.gaspar.rutassendero.sync
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -413,6 +413,86 @@ object CloudSyncManager {
             AgrupacionEntity.SEED_AGRUPACIONES
         } else {
             agrupaciones
+        }
+    }
+
+    /**
+     * Descarga el logo en formato binario (BYTEA) de una agrupación específica desde PostgREST.
+     */
+    suspend fun descargarLogoAgrupacion(idAgrupacion: String): ByteArray? = withContext(Dispatchers.IO) {
+        val cleanId = idAgrupacion.trim()
+        if (cleanId.isEmpty() || cleanId == "@&") return@withContext null
+        try {
+            val encodedId = java.net.URLEncoder.encode(cleanId, "UTF-8")
+            val jsonStr = executeGet("agrupaciones?select=id_agrupacion,logo&id_agrupacion=eq.$encodedId")
+            if (jsonStr.isBlank() || jsonStr == "[]") return@withContext null
+            val array = JSONArray(jsonStr)
+            if (array.length() == 0) return@withContext null
+            val obj = array.getJSONObject(0)
+            if (obj.isNull("logo")) return@withContext null
+            val rawLogo = obj.optString("logo", "")
+            if (rawLogo.isBlank()) return@withContext null
+            parseLogoBytes(rawLogo)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error descargando logo para agrupacion '$cleanId': ${e.message}", e)
+            null
+        }
+    }
+
+    private fun parseLogoBytes(raw: String): ByteArray? {
+        val clean = raw.trim()
+        if (clean.isEmpty() || clean.equals("null", ignoreCase = true)) return null
+
+        val unquoted = if (clean.startsWith("\"") && clean.endsWith("\"") && clean.length >= 2) {
+            clean.substring(1, clean.length - 1).trim()
+        } else {
+            clean
+        }
+
+        // Formato PostgreSQL / PostgREST: \x... o 0x...
+        val hex = when {
+            unquoted.startsWith("\\x", ignoreCase = true) -> unquoted.substring(2)
+            unquoted.startsWith("0x", ignoreCase = true) -> unquoted.substring(2)
+            else -> null
+        }
+
+        if (hex != null) {
+            return decodeHexToByteArray(hex)
+        }
+
+        // Fallback 1: Si es Base64 o Data URI
+        val base64Data = if (unquoted.startsWith("data:", ignoreCase = true)) {
+            val commaIndex = unquoted.indexOf(',')
+            if (commaIndex != -1) unquoted.substring(commaIndex + 1) else unquoted
+        } else {
+            unquoted
+        }
+
+        try {
+            val decoded = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+            if (decoded != null && decoded.isNotEmpty()) return decoded
+        } catch (_: Exception) {}
+
+        // Fallback 2: Hexadecimal sin prefijo
+        return decodeHexToByteArray(unquoted)
+    }
+
+    private fun decodeHexToByteArray(hex: String): ByteArray? {
+        if (hex.isEmpty() || hex.length % 2 != 0) return null
+        return try {
+            val len = hex.length
+            val data = ByteArray(len / 2)
+            var i = 0
+            while (i < len) {
+                val high = Character.digit(hex[i], 16)
+                val low = Character.digit(hex[i + 1], 16)
+                if (high == -1 || low == -1) return null
+                data[i / 2] = ((high shl 4) or low).toByte()
+                i += 2
+            }
+            data
+        } catch (e: Exception) {
+            null
         }
     }
 

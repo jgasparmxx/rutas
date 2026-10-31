@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>CFBundleAllowMixedLocalizations</key>
+	<false/>
+	<key>CFBundleGetInfoString</key>
+	<string></string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+	</array>
+	<key>NSBluetoothServices</key>
+	<array>
+		<string></string>
+	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>RutasSendero necesita tu ubicación para registrar la ruta y mostrar tu posición en el mapa durante la caminata.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>RutasSendero necesita tu ubicación en segundo plano para continuar registrando el trayecto y alertarte de peligros con la pantalla bloqueada.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>RutasSendero necesita acceso continuo a tu ubicación para el seguimiento de senderos en segundo plano.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>RutasSendero utiliza Bluetooth Low Energy para balizas de emergencia y detección de compañeros senderistas.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>RutasSendero transmite como baliza de seguridad por Bluetooth para que otros senderistas puedan ubicarte.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>RutasSendero necesita acceso a la cámara para tomar fotografías de los puntos de control e hitos del sendero.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>RutasSendero utiliza el micrófono para permitirte dictar descripciones y notas de voz para cada punto registrado.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>RutasSendero transcribe tus notas de voz a texto para la descripción de los hitos del sendero.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>comgooglemaps</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+	</array>
+</dict>
+</plist>

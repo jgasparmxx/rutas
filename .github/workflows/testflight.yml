@@ -8,7 +8,7 @@ on:
 jobs:
   testflight:
     name: Build & Upload to TestFlight
-    runs-on: macos-15
+    runs-on: macos-26
 
     steps:
       - name: Checkout Repository
@@ -33,6 +33,9 @@ jobs:
 
       - name: Build & Archive
         run: |
+          xcodebuild -version
+          echo "iOS SDK version: $(xcrun --sdk iphoneos --show-sdk-version)"
+
           BUILD_NUM=$(( GITHUB_RUN_NUMBER + 10 ))
           echo "Compiling build number: $BUILD_NUM"
 

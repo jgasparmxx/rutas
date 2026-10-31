@@ -14,7 +14,7 @@ Tu sistema de desarrollo ahora es completamente profesional y automático:
       │
       │  (Programas en Xcode y haces: git push origin master)
       ▼
-[GitHub Actions en la Nube (Apple Silicon - macOS 15)]
+[GitHub Actions en la Nube (Apple Silicon - macOS 26 / Xcode 26)]
       │
       │  1. Desbloquea tu certificado "Apple Distribution"
       │  2. Descarga tu perfil oficial de App Store

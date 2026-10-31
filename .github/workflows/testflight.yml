@@ -56,15 +56,9 @@ jobs:
             -exportOptionsPlist ios/RutasSendero/ExportOptions.plist
 
       - name: Upload to TestFlight
-        env:
-          APP_STORE_KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
-          APP_STORE_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
-          APP_STORE_PRIVATE_KEY: ${{ secrets.APP_STORE_PRIVATE_KEY }}
-        run: |
-          mkdir -p "$HOME/.appstoreconnect/private_keys"
-          printf "%s\n" "$APP_STORE_PRIVATE_KEY" > "$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_KEY_ID}.p8"
-
-          xcrun altool --upload-package "$RUNNER_TEMP/export/RutasSendero.ipa" \
-            --type ios \
-            --apiKey "$APP_STORE_KEY_ID" \
-            --apiIssuer "$APP_STORE_ISSUER_ID"
+        uses: Apple-Actions/upload-testflight-build@v5
+        with:
+          app-path: ${{ runner.temp }}/export/RutasSendero.ipa
+          issuer-id: ${{ secrets.APP_STORE_ISSUER_ID }}
+          api-key-id: ${{ secrets.APP_STORE_KEY_ID }}
+          api-private-key: ${{ secrets.APP_STORE_PRIVATE_KEY }}

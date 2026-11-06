@@ -3,6 +3,8 @@ name: Build & Deploy to TestFlight
 on:
   push:
     branches: [ master, main ]
+    paths:
+      - 'ios/**'
   workflow_dispatch:
 
 jobs:

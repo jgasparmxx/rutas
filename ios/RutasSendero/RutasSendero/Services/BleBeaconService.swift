@@ -166,6 +166,10 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
     public private(set) var isBroadcasting: Bool = false
     public var lastBroadcastError: String? = nil
     
+    /// Callback invocado si Bluetooth se apaga o pierde permisos mientras el Faro estaba encendido
+    @ObservationIgnored
+    public var onBroadcastInterrupted: (@Sendable (String) -> Void)?
+    
     @ObservationIgnored
     private var peripheralManager: CBPeripheralManager?
     
@@ -178,6 +182,16 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
     @ObservationIgnored
     private var pendingIsEmergency: Bool = false
     
+    @ObservationIgnored
+    private var lastAdvertisedLocation: CLLocation?
+    @ObservationIgnored
+    private var lastAdvertisedDate: Date?
+    
+    @ObservationIgnored
+    private var stateContinuation: CheckedContinuation<CBManagerState, Never>?
+    @ObservationIgnored
+    private var startAdvContinuation: CheckedContinuation<Int, Never>?
+    
     public override init() {
         super.init()
     }
@@ -187,7 +201,13 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
         latitude: Double,
         longitude: Double
     ) async -> Bool {
-        return await startBroadcasting(beaconId: beaconId, latitude: latitude, longitude: longitude, isEmergency: false)
+        let code = await startBroadcastingWithCode(
+            beaconId: beaconId,
+            latitude: latitude,
+            longitude: longitude,
+            isEmergency: false
+        )
+        return code == 0
     }
     
     public func startBroadcasting(
@@ -196,84 +216,272 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
         longitude: Double,
         isEmergency: Bool
     ) async -> Bool {
-        self.pendingBeaconId = beaconId
+        let code = await startBroadcastingWithCode(
+            beaconId: beaconId,
+            latitude: latitude,
+            longitude: longitude,
+            isEmergency: isEmergency
+        )
+        return code == 0
+    }
+    
+    /// Inicia la emisión BLE devolviendo código de estado 1:1 con Android (`BeaconEmitterManager.startEmitting`):
+    /// `0` = éxito, `-1` = Bluetooth apagado / hardware no soportado, `-2` = ID o trama inválida,
+    /// `-3` = permiso denegado, `-4` = fallo de CoreBluetooth al anunciar.
+    @MainActor
+    public func startBroadcastingWithCode(
+        beaconId: String,
+        latitude: Double,
+        longitude: Double,
+        isEmergency: Bool = false
+    ) async -> Int {
+        let cleanId = beaconId
+            .replacingOccurrences(of: ":", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        
+        let validHexChars = cleanId.filter { $0.isHexDigit }
+        guard validHexChars.count >= 2,
+              let uuid = BeaconPayload.buildProximityUUID(beaconId: validHexChars, latitude: latitude, longitude: longitude) else {
+            self.isBroadcasting = false
+            self.lastBroadcastError = "ID de baliza inválido."
+            return -2
+        }
+        
+        // Verificar autorización explícita de Bluetooth antes de iniciar
+        let auth = CBManager.authorization
+        if auth == .denied || auth == .restricted {
+            self.isBroadcasting = false
+            self.lastBroadcastError = "Permiso de Bluetooth denegado en Ajustes."
+            return -3
+        }
+        
+        self.pendingBeaconId = validHexChars
         self.pendingLat = latitude
         self.pendingLon = longitude
         self.pendingIsEmergency = isEmergency
         
         if peripheralManager == nil {
-            peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
-        } else if peripheralManager?.state == .poweredOn {
-            advertiseCurrentCoordinates()
+            peripheralManager = CBPeripheralManager(delegate: self, queue: .main)
         }
         
-        self.isBroadcasting = true
-        return true
+        guard let peripheral = peripheralManager else {
+            self.isBroadcasting = false
+            self.lastBroadcastError = "No se pudo inicializar el emisor BLE."
+            return -2
+        }
+        
+        // Si CoreBluetooth aún está conectando con el daemon (.unknown / .resetting), esperar estado real
+        var currentState = peripheral.state
+        if currentState == .unknown || currentState == .resetting {
+            currentState = await waitForPeripheralState(peripheral)
+        }
+        
+        switch currentState {
+        case .poweredOn:
+            break
+        case .unauthorized:
+            self.isBroadcasting = false
+            self.lastBroadcastError = "Permiso de Bluetooth denegado."
+            return -3
+        case .poweredOff:
+            self.isBroadcasting = false
+            self.lastBroadcastError = "Bluetooth está apagado."
+            return -1
+        case .unsupported:
+            self.isBroadcasting = false
+            self.lastBroadcastError = "Este dispositivo no soporta emisión BLE (Faro)."
+            return -1
+        default:
+            self.isBroadcasting = false
+            self.lastBroadcastError = "Bluetooth no disponible en este momento."
+            return -1
+        }
+        
+        // Construir trama iBeacon 1:1 con Android (major = 1, minor = 911 en emergencia o 1 normal)
+        if peripheral.isAdvertising {
+            peripheral.stopAdvertising()
+        }
+        
+        let adData = buildAdvertisementDictionary(uuid: uuid, id: validHexChars, isEmergency: isEmergency)
+        guard let advertisementData = adData else {
+            self.isBroadcasting = false
+            self.lastBroadcastError = "No se pudo generar el paquete iBeacon."
+            return -2
+        }
+        
+        let resultCode = await startAdvertisingAndWait(peripheral: peripheral, data: advertisementData)
+        if resultCode == 0 {
+            self.isBroadcasting = true
+            self.lastAdvertisedLocation = CLLocation(latitude: latitude, longitude: longitude)
+            self.lastAdvertisedDate = Date()
+        } else {
+            self.isBroadcasting = false
+        }
+        return resultCode
+    }
+    
+    @MainActor
+    private func waitForPeripheralState(_ peripheral: CBPeripheralManager) async -> CBManagerState {
+        if peripheral.state != .unknown && peripheral.state != .resetting {
+            return peripheral.state
+        }
+        // Cancelar cualquier espera previa
+        if let prev = stateContinuation {
+            stateContinuation = nil
+            prev.resume(returning: peripheral.state)
+        }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<CBManagerState, Never>) in
+            self.stateContinuation = continuation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 3_500_000_000)
+                guard let self = self, let pending = self.stateContinuation else { return }
+                self.stateContinuation = nil
+                pending.resume(returning: peripheral.state)
+            }
+        }
+    }
+    
+    @MainActor
+    private func startAdvertisingAndWait(peripheral: CBPeripheralManager, data: [String: Any]) async -> Int {
+        if let prev = startAdvContinuation {
+            startAdvContinuation = nil
+            prev.resume(returning: -4)
+        }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Int, Never>) in
+            self.startAdvContinuation = continuation
+            peripheral.startAdvertising(data)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard let self = self, let pending = self.startAdvContinuation else { return }
+                self.startAdvContinuation = nil
+                // Si CoreBluetooth ya marcó isAdvertising sin disparar error, considerarlo activo
+                if peripheral.isAdvertising {
+                    self.lastBroadcastError = nil
+                    pending.resume(returning: 0)
+                } else {
+                    self.lastBroadcastError = "Tiempo de espera agotado al encender el Faro BLE."
+                    pending.resume(returning: -4)
+                }
+            }
+        }
     }
     
     public func updateCoordinates(latitude: Double, longitude: Double) {
-        guard isBroadcasting, let id = pendingBeaconId else { return }
+        guard isBroadcasting,
+              let peripheral = peripheralManager,
+              peripheral.state == .poweredOn,
+              let id = pendingBeaconId else {
+            return
+        }
+        
+        // 1:1 Android (GpsTrackingService.kt:1056):
+        // Solo reiniciar anuncio BLE si el senderista se desplazó > 10m Y pasaron al menos 20s,
+        // evitando cortar la señal continuamente con cada pulso del GPS.
+        let newLoc = CLLocation(latitude: latitude, longitude: longitude)
+        let now = Date()
+        if let lastLoc = lastAdvertisedLocation, let lastDate = lastAdvertisedDate {
+            let movedMeters = lastLoc.distance(from: newLoc)
+            let elapsedSeconds = now.timeIntervalSince(lastDate)
+            if movedMeters <= 10.0 || elapsedSeconds < 20.0 {
+                return
+            }
+        }
+        
         self.pendingLat = latitude
         self.pendingLon = longitude
-        advertiseCurrentCoordinates()
+        self.lastAdvertisedLocation = newLoc
+        self.lastAdvertisedDate = now
+        
+        guard let uuid = BeaconPayload.buildProximityUUID(beaconId: id, latitude: latitude, longitude: longitude),
+              let data = buildAdvertisementDictionary(uuid: uuid, id: id, isEmergency: pendingIsEmergency) else {
+            return
+        }
+        
+        if peripheral.isAdvertising {
+            peripheral.stopAdvertising()
+        }
+        peripheral.startAdvertising(data)
     }
     
     public func stopBroadcasting() {
+        if let prev = startAdvContinuation {
+            startAdvContinuation = nil
+            prev.resume(returning: -4)
+        }
         peripheralManager?.stopAdvertising()
         self.isBroadcasting = false
+        self.lastAdvertisedLocation = nil
+        self.lastAdvertisedDate = nil
     }
     
-    private func advertiseCurrentCoordinates() {
-        guard let peripheral = peripheralManager, peripheral.state == .poweredOn else {
-            return
-        }
-        guard let id = pendingBeaconId,
-              let uuid = BeaconPayload.buildProximityUUID(beaconId: id, latitude: pendingLat, longitude: pendingLon) else {
-            return
-        }
-        
-        peripheral.stopAdvertising()
-        
-        let majorValue: CLBeaconMajorValue = pendingIsEmergency ? 911 : 1
-        let minorValue: CLBeaconMinorValue = pendingIsEmergency ? 911 : 1
+    private func buildAdvertisementDictionary(uuid: UUID, id: String, isEmergency: Bool) -> [String: Any]? {
+        let majorValue: CLBeaconMajorValue = 1
+        let minorValue: CLBeaconMinorValue = isEmergency ? 911 : 1
         
         #if os(iOS)
+        let constraint = CLBeaconIdentityConstraint(uuid: uuid, major: majorValue, minor: minorValue)
         let region = CLBeaconRegion(
-            uuid: uuid,
-            major: majorValue,
-            minor: minorValue,
+            beaconIdentityConstraint: constraint,
             identifier: "com.gaspar.rutassendero.beacon"
         )
-        let peripheralData = region.peripheralData(withMeasuredPower: -59) as? [String: Any]
-        if let data = peripheralData {
-            peripheralManager?.startAdvertising(data)
+        let dict = region.peripheralData(withMeasuredPower: NSNumber(value: -59))
+        var result: [String: Any] = [:]
+        for (key, value) in dict {
+            if let k = key as? String {
+                result[k] = value
+            }
         }
+        return result.isEmpty ? nil : result
         #else
-        // macOS fallback para pruebas locales
-        let advertisementData: [String: Any] = [
+        return [
             CBAdvertisementDataLocalNameKey: "RutasBeacon-\(id.prefix(6))"
         ]
-        peripheralManager?.startAdvertising(advertisementData)
         #endif
     }
     
     // MARK: - CBPeripheralManagerDelegate
     
     public func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
-        if peripheral.state == .poweredOn && isBroadcasting {
-            advertiseCurrentCoordinates()
-        } else if peripheral.state != .poweredOn {
-            lastBroadcastError = "Bluetooth no disponible (Estado: \(peripheral.state.rawValue))"
+        if let pendingState = stateContinuation, peripheral.state != .unknown && peripheral.state != .resetting {
+            stateContinuation = nil
+            pendingState.resume(returning: peripheral.state)
+            return
+        }
+        
+        if peripheral.state != .poweredOn && isBroadcasting {
+            self.isBroadcasting = false
+            let msg: String
+            switch peripheral.state {
+            case .poweredOff:
+                msg = "Faro apagado: se desactivó el Bluetooth del iPhone."
+            case .unauthorized:
+                msg = "Faro apagado: permiso de Bluetooth revocado."
+            default:
+                msg = "Bluetooth no disponible (Estado: \(peripheral.state.rawValue))."
+            }
+            self.lastBroadcastError = msg
+            self.onBroadcastInterrupted?(msg)
         }
     }
     
     public func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
         if let error = error {
             lastBroadcastError = error.localizedDescription
+            isBroadcasting = false
             print("⚠️ [BleBroadcaster] Error al emitir baliza: \(error.localizedDescription)")
+            if let cont = startAdvContinuation {
+                startAdvContinuation = nil
+                cont.resume(returning: -4)
+            }
         } else {
             lastBroadcastError = nil
+            isBroadcasting = true
             print("📡 [BleBroadcaster] Baliza iBeacon emitiendo con éxito")
+            if let cont = startAdvContinuation {
+                startAdvContinuation = nil
+                cont.resume(returning: 0)
+            }
         }
     }
 }

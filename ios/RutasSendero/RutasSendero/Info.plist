@@ -14,10 +14,6 @@
 	<array>
 		<string>en</string>
 	</array>
-	<key>NSBluetoothServices</key>
-	<array>
-		<string></string>
-	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>RutasSendero necesita tu ubicación para registrar la ruta y mostrar tu posición en el mapa durante la caminata.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

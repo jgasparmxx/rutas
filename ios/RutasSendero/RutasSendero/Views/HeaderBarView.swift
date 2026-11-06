@@ -296,9 +296,9 @@ public struct HeaderBarView: View {
                         .fill(viewModel.showMapScreen ? AppTheme.cardMuted.opacity(0.8) : Color.white.opacity(0.65))
                         .frame(width: 38, height: 38)
                     
-                    Image(systemName: "ellipsis")
+                    Image(systemName: "rectangle.portrait.and.arrow.right")
                         .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(viewModel.showMapScreen ? AppTheme.textPrimary : AppTheme.darkBackground)
+                        .foregroundStyle(viewModel.showMapScreen ? AppTheme.accent : AppTheme.primary)
                 }
             }
             .buttonStyle(.plain)

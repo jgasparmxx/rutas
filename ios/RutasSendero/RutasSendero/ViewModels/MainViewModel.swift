@@ -107,6 +107,7 @@ public final class MainViewModel: @unchecked Sendable {
     // MARK: - Modos y Balizas
     public var activeRole: AppRole = .visor
     public var isBeaconEmitting: Bool = false
+    public var isStartingBeacon: Bool = false
     public var isEmergency911Active: Bool = false
     public var mapStyle: MapStyleMode = .standard
     public var isFollowingUser: Bool = true
@@ -242,6 +243,16 @@ public final class MainViewModel: @unchecked Sendable {
         self.bleBroadcaster = bleBroadcaster
         self.bleScanner = bleScanner
         self.rutasRepository = rutasRepository
+        
+        // Si Bluetooth se apaga mientras el Faro está activo, reflejar estado real
+        self.bleBroadcaster.onBroadcastInterrupted = { [weak self] reason in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.isBeaconEmitting = false
+                self.isEmergency911Active = false
+                self.saveStatusMessage = reason
+            }
+        }
         
         // Iniciar rastreo básico para visualización en mapa
         self.startLocationUpdates()
@@ -598,59 +609,152 @@ public final class MainViewModel: @unchecked Sendable {
     // MARK: - Baliza y Emergencia
     
     @MainActor
+    private func ensureValidBeaconId() async -> String? {
+        guard var profile = currentHikerProfile else { return nil }
+        let existing = (profile.beaconId ?? "")
+            .replacingOccurrences(of: ":", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .filter { $0.isHexDigit }
+        
+        if existing.count >= 12 {
+            return String(existing.prefix(12))
+        }
+        
+        let generated = await CloudSyncService.shared.generateUniqueBeaconId()
+        profile.beaconId = generated
+        self.currentHikerProfile = profile
+        
+        if let repo = rutasRepository {
+            try? await repo.updateBeaconId(generated)
+        }
+        let syncedProfile = profile
+        Task.detached(priority: .background) {
+            try? await CloudSyncService.shared.syncSenderista(profile: syncedProfile)
+        }
+        return generated
+    }
+    
+    private func beaconFailureMessage(for code: Int) -> String {
+        switch code {
+        case -1:
+            return "Bluetooth apagado o hardware BLE no disponible. Activa Bluetooth en el iPhone."
+        case -2:
+            return "No se pudo inicializar el paquete del Faro BLE."
+        case -3:
+            return "Permiso de Bluetooth denegado. Actívalo en Ajustes > RutasSendero."
+        default:
+            return bleBroadcaster.lastBroadcastError ?? "Error al iniciar emisión de Faro (Código \(code))."
+        }
+    }
+    
+    @MainActor
     public func toggleBeacon() {
-        isBeaconEmitting.toggle()
-        let bId = currentHikerProfile?.beaconId ?? "010203040506"
-        let lat = locationTracker.currentLocation?.coordinate.latitude ?? 19.2458
-        let lon = locationTracker.currentLocation?.coordinate.longitude ?? -103.7251
+        guard !isStartingBeacon else { return }
         
         if isBeaconEmitting {
-            Task {
-                _ = await bleBroadcaster.startBroadcasting(
-                    beaconId: bId,
-                    latitude: lat,
-                    longitude: lon,
-                    isEmergency: isEmergency911Active
-                )
-            }
-        } else {
             bleBroadcaster.stopBroadcasting()
+            isBeaconEmitting = false
+            if isEmergency911Active {
+                isEmergency911Active = false
+            }
+            saveStatusMessage = "Emisión de Faro detenida"
+            return
+        }
+        
+        guard currentHikerProfile != nil else {
+            saveStatusMessage = "Por favor, registra el perfil del senderista primero."
+            isShowingSenderistaRegistration = true
+            return
+        }
+        
+        isStartingBeacon = true
+        Task { @MainActor in
+            defer { self.isStartingBeacon = false }
+            
+            guard let bId = await ensureValidBeaconId() else {
+                self.isBeaconEmitting = false
+                self.saveStatusMessage = "El senderista no tiene ID de Faro disponible."
+                return
+            }
+            
+            let lat = self.locationTracker.currentLocation?.coordinate.latitude ?? 19.2458
+            let lon = self.locationTracker.currentLocation?.coordinate.longitude ?? -103.7251
+            
+            let code = await self.bleBroadcaster.startBroadcastingWithCode(
+                beaconId: bId,
+                latitude: lat,
+                longitude: lon,
+                isEmergency: self.isEmergency911Active
+            )
+            
+            if code == 0 {
+                self.isBeaconEmitting = true
+                self.saveStatusMessage = "Faro ENCENDIDO (ID: \(bId.uppercased()))"
+            } else {
+                self.isBeaconEmitting = false
+                self.saveStatusMessage = self.beaconFailureMessage(for: code)
+            }
         }
     }
     
     @MainActor
     public func toggleEmergency911() {
-        isEmergency911Active.toggle()
-        let bId = currentHikerProfile?.beaconId ?? "010203040506"
-        let lat = locationTracker.currentLocation?.coordinate.latitude ?? 19.2458
-        let lon = locationTracker.currentLocation?.coordinate.longitude ?? -103.7251
+        guard !isStartingBeacon else { return }
         
-        if isEmergency911Active {
-            isBeaconEmitting = true
-            saveStatusMessage = "¡EMERGENCIA 911 ACTIVADA!"
-            TextToSpeechService.shared.speak("¡Emergencia 911 activada! Transmitiendo señal de auxilio por baliza a compañeros cercanos.")
-            Task {
-                _ = await bleBroadcaster.startBroadcasting(
+        guard currentHikerProfile != nil else {
+            saveStatusMessage = "No se puede emitir 911 sin perfil de senderista."
+            isShowingSenderistaRegistration = true
+            return
+        }
+        
+        let activatingEmergency = !isEmergency911Active
+        isStartingBeacon = true
+        
+        Task { @MainActor in
+            defer { self.isStartingBeacon = false }
+            
+            guard let bId = await ensureValidBeaconId() else {
+                self.saveStatusMessage = "No se puede emitir 911 sin ID de Faro."
+                return
+            }
+            
+            let lat = self.locationTracker.currentLocation?.coordinate.latitude ?? 19.2458
+            let lon = self.locationTracker.currentLocation?.coordinate.longitude ?? -103.7251
+            
+            if activatingEmergency {
+                let code = await self.bleBroadcaster.startBroadcastingWithCode(
                     beaconId: bId,
                     latitude: lat,
                     longitude: lon,
                     isEmergency: true
                 )
-            }
-        } else {
-            saveStatusMessage = "Emergencia cancelada"
-            TextToSpeechService.shared.speak("Emergencia cancelada.")
-            if isBeaconEmitting {
-                Task {
-                    _ = await bleBroadcaster.startBroadcasting(
+                if code == 0 {
+                    self.isEmergency911Active = true
+                    self.isBeaconEmitting = true
+                    self.saveStatusMessage = "¡EMERGENCIA 911 ACTIVADA!"
+                    TextToSpeechService.shared.speak("¡Emergencia 911 activada! Transmitiendo señal de auxilio por baliza a compañeros cercanos.")
+                } else {
+                    self.isEmergency911Active = false
+                    self.saveStatusMessage = self.beaconFailureMessage(for: code)
+                }
+            } else {
+                self.isEmergency911Active = false
+                self.saveStatusMessage = "Emergencia cancelada"
+                TextToSpeechService.shared.speak("Emergencia cancelada.")
+                if self.isBeaconEmitting {
+                    let code = await self.bleBroadcaster.startBroadcastingWithCode(
                         beaconId: bId,
                         latitude: lat,
                         longitude: lon,
                         isEmergency: false
                     )
+                    if code != 0 {
+                        self.isBeaconEmitting = false
+                    }
+                } else {
+                    self.bleBroadcaster.stopBroadcasting()
                 }
-            } else {
-                bleBroadcaster.stopBroadcasting()
             }
         }
     }
@@ -747,6 +851,11 @@ public final class MainViewModel: @unchecked Sendable {
                     self.isRegistrationMandatory = false
                     self.syncAgrupacionLogo(idAgrupacion: profile.idAgrupacion)
                 }
+                // 1:1 Android (RutasViewModel.kt:448): Si falta id_beacon válido, generarlo y sincronizarlo
+                let cleanBeacon = (profile.beaconId ?? "").replacingOccurrences(of: ":", with: "").trimmingCharacters(in: .whitespacesAndNewlines).filter { $0.isHexDigit }
+                if cleanBeacon.count < 12 {
+                    _ = await self.ensureValidBeaconId()
+                }
                 await self.loadLocalRoutes()
                 print("✅ [checkSenderistaRegistration] Perfil existente: \(profile.name) (Rol: \(profile.role))")
             } else {
@@ -774,25 +883,27 @@ public final class MainViewModel: @unchecked Sendable {
             if updatedProfile.role.isEmpty || updatedProfile.role == "S" {
                 updatedProfile.role = "G"
             }
-            if updatedProfile.beaconId == nil || updatedProfile.beaconId?.isEmpty == true {
-                updatedProfile.beaconId = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)).lowercased()
+            let cleanBeacon = updatedProfile.beaconId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if cleanBeacon.count < 12 {
+                updatedProfile.beaconId = await CloudSyncService.shared.generateUniqueBeaconId()
             }
             
-            try await repo.save(profile: updatedProfile)
+            let savedProfile = updatedProfile
+            try await repo.save(profile: savedProfile)
             await MainActor.run {
-                self.currentHikerProfile = updatedProfile
-                self.hikerWeightKg = updatedProfile.weightKg
-                self.activeRole = (updatedProfile.role.uppercased() == "G") ? .guia : .visor
+                self.currentHikerProfile = savedProfile
+                self.hikerWeightKg = savedProfile.weightKg
+                self.activeRole = (savedProfile.role.uppercased() == "G") ? .guia : .visor
                 self.isShowingSenderistaRegistration = false
                 self.isRegistrationMandatory = false
-                self.syncAgrupacionLogo(idAgrupacion: updatedProfile.idAgrupacion)
+                self.syncAgrupacionLogo(idAgrupacion: savedProfile.idAgrupacion)
             }
-            print("✅ [SwiftData] Perfil de senderista registrado exitosamente: \(updatedProfile.name) (Rol: \(updatedProfile.role))")
+            print("✅ [SwiftData] Perfil de senderista registrado exitosamente: \(savedProfile.name) (Rol: \(savedProfile.role))")
             
             // Sincronización en segundo plano con PostgREST en la nube
             Task.detached(priority: .background) {
                 do {
-                    try await CloudSyncService.shared.syncSenderista(profile: updatedProfile)
+                    try await CloudSyncService.shared.syncSenderista(profile: savedProfile)
                 } catch {
                     print("⚠️ [CloudSync] Error sincronizando perfil con la nube: \(error.localizedDescription)")
                 }

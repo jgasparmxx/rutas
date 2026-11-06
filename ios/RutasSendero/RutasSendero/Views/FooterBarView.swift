@@ -17,13 +17,16 @@ public struct FooterBarView: View {
     }
     
     public var body: some View {
+        let isRecording = (viewModel.recordingState != .stopped || viewModel.activeRole == .registrar)
+        let beaconOn = viewModel.isBeaconEmitting
+        
         HStack(spacing: 0) {
-            let isRecording = (viewModel.recordingState != .stopped || viewModel.activeRole == .registrar)
-            
             // 1. Ver Mapa (Solo disponible en modo Guía y Visor, 1:1 Android)
             Button {
                 if isRecording {
                     viewModel.saveStatusMessage = "El mapa no está disponible en el modo Registrar (trazar). Solo está disponible en modo Guía y Visor."
+                } else if viewModel.activeRoute == nil {
+                    viewModel.saveStatusMessage = "Selecciona primero una ruta para abrir el mapa."
                 } else {
                     viewModel.showMapScreen = true
                 }
@@ -31,6 +34,7 @@ public struct FooterBarView: View {
                 VStack(spacing: 3) {
                     Image(systemName: isRecording ? "record.circle.fill" : "map.fill")
                         .font(.system(size: 22, weight: .semibold))
+                        .frame(width: 40, height: 40)
                     Text(isRecording ? "Grabando" : "Mapa")
                         .font(.system(size: 10, weight: .bold))
                 }
@@ -39,23 +43,42 @@ public struct FooterBarView: View {
             }
             .buttonStyle(.plain)
             
-            // 2. Faro / Transmisor BLE (Encender / Apagar Baliza de presencia)
+            // 2. Faro / Transmisor BLE (Encender / Apagar Baliza de presencia 1:1 Android ic_lighthouse_on/off)
             Button {
                 viewModel.toggleBeacon()
             } label: {
                 VStack(spacing: 3) {
                     ZStack {
-                        Circle()
-                            .fill(viewModel.isBeaconEmitting ? AppTheme.accentCyan.opacity(0.25) : Color.clear)
-                            .frame(width: 36, height: 36)
+                        Image(beaconOn ? "LighthouseOn" : "LighthouseOff")
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 42, height: 42)
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(
+                                        beaconOn ? AppTheme.accentCyan : AppTheme.textSecondary.opacity(0.6),
+                                        lineWidth: 2
+                                    )
+                            )
+                            .shadow(
+                                color: beaconOn ? AppTheme.warningYellow.opacity(0.65) : Color.clear,
+                                radius: beaconOn ? 7 : 0
+                            )
                         
-                        Image(systemName: viewModel.isBeaconEmitting ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
-                            .font(.system(size: 20, weight: .semibold))
+                        if viewModel.isStartingBeacon {
+                            Circle()
+                                .fill(Color.black.opacity(0.35))
+                                .frame(width: 42, height: 42)
+                            ProgressView()
+                                .tint(.white)
+                                .scaleEffect(0.8)
+                        }
                     }
-                    Text(viewModel.isBeaconEmitting ? "Faro ON" : "Faro OFF")
+                    Text(beaconOn ? "Faro ON" : "Faro OFF")
                         .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(beaconOn ? AppTheme.accentCyan : AppTheme.darkBackground.opacity(0.7))
                 }
-                .foregroundStyle(viewModel.isBeaconEmitting ? AppTheme.accentCyanDark : AppTheme.darkBackground.opacity(0.6))
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.plain)
@@ -66,9 +89,9 @@ public struct FooterBarView: View {
             } label: {
                 VStack(spacing: 3) {
                     ZStack(alignment: .topTrailing) {
-                        Image(systemName: "person.2.fill")
-                            .font(.system(size: 20, weight: .semibold))
-                            .frame(width: 36, height: 36)
+                        Image(systemName: "list.bullet")
+                            .font(.system(size: 22, weight: .bold))
+                            .frame(width: 40, height: 40)
                         
                         if !viewModel.nearbyPeers.isEmpty {
                             Text("\(viewModel.nearbyPeers.count)")
@@ -78,34 +101,35 @@ public struct FooterBarView: View {
                                 .padding(.vertical, 2)
                                 .background(AppTheme.accent)
                                 .clipShape(Capsule())
-                                .offset(x: 10, y: -2)
+                                .offset(x: 8, y: 0)
                         }
                     }
                     Text("Monitoreo")
                         .font(.system(size: 10, weight: .bold))
                 }
-                .foregroundStyle(AppTheme.primary)
+                .foregroundStyle(beaconOn ? AppTheme.accentCyan : AppTheme.primary)
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.plain)
             
-            // 4. Ayudas Sonoras (Silbato de Rescate / Pitidos de Orientación)
+            // 4. Ayudas Sonoras (Silbato de Rescate / Pitidos de Orientación 1:1 Android ic_whistle_bright)
             Button {
                 viewModel.isShowingSoundAlertsSheet = true
             } label: {
                 VStack(spacing: 3) {
-                    ZStack {
-                        Circle()
-                            .stroke(Color(red: 255/255, green: 152/255, blue: 0/255), lineWidth: 1.5)
-                            .frame(width: 34, height: 34)
-                        
-                        Image(systemName: "speaker.wave.3.fill")
-                            .font(.system(size: 17, weight: .bold))
-                            .foregroundStyle(Color(red: 255/255, green: 152/255, blue: 0/255))
-                    }
+                    Image("WhistleBright")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 42, height: 42)
+                        .clipShape(Circle())
+                        .overlay(
+                            Circle()
+                                .stroke(Color(red: 255/255, green: 152/255, blue: 0/255), lineWidth: 2)
+                        )
+                    
                     Text("Sonidos")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Color(red: 230/255, green: 81/255, blue: 0/255))
+                        .foregroundStyle(beaconOn ? Color(red: 255/255, green: 183/255, blue: 77/255) : Color(red: 230/255, green: 81/255, blue: 0/255))
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -113,19 +137,32 @@ public struct FooterBarView: View {
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 14)
-        .background(.ultraThinMaterial)
-        .background(Color.white.opacity(0.45))
+        .background {
+            if beaconOn {
+                // 1:1 Android: Color(0xFF0F2537) al encender el Faro
+                Color(red: 15/255, green: 37/255, blue: 55/255)
+            } else {
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial)
+                    Color.white.opacity(0.45)
+                }
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 22))
         .overlay(
             RoundedRectangle(cornerRadius: 22)
-                .stroke(viewModel.isBeaconEmitting ? AppTheme.accentCyanDark.opacity(0.6) : AppTheme.accent.opacity(0.3), lineWidth: 1)
+                .stroke(beaconOn ? AppTheme.accentCyan.opacity(0.65) : AppTheme.accent.opacity(0.3), lineWidth: beaconOn ? 1.5 : 1)
         )
-        .shadow(color: Color.black.opacity(0.08), radius: 8, y: 4)
+        .shadow(color: Color.black.opacity(beaconOn ? 0.25 : 0.08), radius: 8, y: 4)
+        .animation(.easeInOut(duration: 0.25), value: beaconOn)
         .padding(.horizontal, 16)
         .padding(.bottom, 6)
     }
     
     private var mapButtonColor: Color {
-        AppTheme.primary
+        if viewModel.isBeaconEmitting {
+            return viewModel.activeRoute != nil ? AppTheme.accentCyan : Color.white.opacity(0.45)
+        }
+        return viewModel.activeRoute != nil ? AppTheme.primary : AppTheme.darkBackground.opacity(0.4)
     }
 }

@@ -482,18 +482,15 @@ public struct RecordingDashboardView: View {
                 Button {
                     viewModel.toggleBeacon()
                 } label: {
-                    ZStack {
-                        Circle()
-                            .fill(viewModel.isBeaconEmitting ? AppTheme.accentCyan.opacity(0.2) : AppTheme.cardMuted)
-                            .frame(width: 44, height: 44)
-                            .overlay(
-                                Circle().stroke(viewModel.isBeaconEmitting ? AppTheme.accentCyan : Color.clear, lineWidth: 1.5)
-                            )
-                        
-                        Image(systemName: viewModel.isBeaconEmitting ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(viewModel.isBeaconEmitting ? AppTheme.accentCyan : AppTheme.textSecondary)
-                    }
+                    Image(viewModel.isBeaconEmitting ? "LighthouseOn" : "LighthouseOff")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 44, height: 44)
+                        .clipShape(Circle())
+                        .overlay(
+                            Circle().stroke(viewModel.isBeaconEmitting ? AppTheme.accentCyan : AppTheme.cardBorder, lineWidth: 2)
+                        )
+                        .shadow(color: viewModel.isBeaconEmitting ? AppTheme.warningYellow.opacity(0.55) : .clear, radius: 6)
                 }
                 .buttonStyle(.plain)
             }

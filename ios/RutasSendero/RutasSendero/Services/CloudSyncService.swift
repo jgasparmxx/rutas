@@ -347,6 +347,21 @@ public final class CloudSyncService: @unchecked Sendable {
         return mapJsonToProfile(obj)
     }
     
+    // MARK: - Generación de id_beacon Único (1:1 Android CloudSyncManager.generateUniqueBeaconId)
+    public func generateUniqueBeaconId() async -> String {
+        for _ in 0..<10 {
+            var bytes = [UInt8](repeating: 0, count: 6)
+            for i in 0..<6 {
+                bytes[i] = UInt8.random(in: 0...255)
+            }
+            let candidate = bytes.map { String(format: "%02x", $0) }.joined()
+            if await fetchSenderistaByBeaconId(idBeacon: candidate) == nil {
+                return candidate
+            }
+        }
+        return String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)).lowercased()
+    }
+    
     // MARK: - Consulta de Senderista por Baliza BLE
     public func fetchSenderistaByBeaconId(idBeacon: String) async -> HikerProfile? {
         let cleanBeacon = idBeacon.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

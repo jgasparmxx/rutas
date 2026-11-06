@@ -834,8 +834,61 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
         initialValue = emptyList()
     )
 
+    suspend fun validateCanCreateNewRoute(): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
+        val senderista = db.senderistaDao().getSenderistaFlow().first()
+            ?: return@withContext false to "Por favor, registra primero tu perfil de senderista."
+
+        if (com.gaspar.rutassendero.data.RoleHierarchy.canCreateRoutes(senderista.rol)) {
+            return@withContext true to null
+        }
+
+        val userPhone = senderista.telefono.trim()
+        val userEmail = senderista.email.trim()
+        val localRutas = db.rutasDao().getAllRutas()
+        val localOwnCount = localRutas.count {
+            matchPhones(it.telefono, userPhone) || (it.fechaImportacion == null && it.telefono.isEmpty())
+        }
+
+        var totalOwnCount = localOwnCount
+        if (localOwnCount < com.gaspar.rutassendero.data.RoleHierarchy.MAX_RUTAS_SENDERISTA &&
+            com.gaspar.rutassendero.utils.NetworkUtils.isNetworkAvailable(app)
+        ) {
+            try {
+                val cloudRoutes = com.gaspar.rutassendero.sync.CloudSyncManager.fetchCloudRoutes()
+                val cloudOwnIds = cloudRoutes.filter { routeMap ->
+                    val cPhone = (routeMap["telefono_creador"] as? String)?.trim() ?: ""
+                    val cEmail = (routeMap["email_creador"] as? String)?.trim() ?: ""
+                    (cPhone.isNotEmpty() && matchPhones(cPhone, userPhone)) ||
+                        (cEmail.isNotEmpty() && cEmail.equals(userEmail, ignoreCase = true))
+                }.mapNotNull { it["id"] as? String }.toSet()
+
+                val localOwnIds = localRutas.filter {
+                    matchPhones(it.telefono, userPhone) || (it.fechaImportacion == null && it.telefono.isEmpty())
+                }.map { it.id }.toSet()
+
+                totalOwnCount = (localOwnIds + cloudOwnIds).size
+            } catch (e: Exception) {
+                Log.w("RutasViewModel", "validateCanCreateNewRoute: no se pudo consultar conteo en nube, usando conteo local ($localOwnCount): ${e.message}")
+            }
+        }
+
+        if (!com.gaspar.rutassendero.data.RoleHierarchy.canCreateRouteWithQuota(senderista.rol, totalOwnCount)) {
+            val maxRutas = com.gaspar.rutassendero.data.RoleHierarchy.MAX_RUTAS_SENDERISTA
+            return@withContext false to "Como Senderista puedes registrar hasta $maxRutas rutas promocionales (ya tienes $totalOwnCount). ¡Solicita el rol de Guía para registrar rutas sin límite!"
+        }
+
+        return@withContext true to null
+    }
+
     fun addRuta(nombre: String, descripcion: String, lat: Double, lng: Double, publico: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
+            val (allowed, reason) = validateCanCreateNewRoute()
+            if (!allowed) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(app, reason ?: "No se puede agregar la ruta.", Toast.LENGTH_LONG).show()
+                }
+                return@launch
+            }
             val id = RutaEntity.generateRouteId(nombre)
             val senderista = db.senderistaDao().getSenderistaFlow().first()
             val creatorPhone = senderista?.telefono ?: ""
@@ -1203,6 +1256,16 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val isSynced = prefs.isRouteSyncedToCloud(ruta.id)
+            val isFinalized = withContext(Dispatchers.IO) { db.rutasDao().isRutaFinalized(ruta.id) } ||
+                !ruta.fechaHoraFin.isNullOrBlank() || isSynced
+
+            if (isOwnRoute && isFinalized && !com.gaspar.rutassendero.data.RoleHierarchy.canDeleteOwnFinalizedRoute(senderista?.rol)) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(app, "Una vez registrada, tu ruta de Senderista no se puede eliminar.", Toast.LENGTH_LONG).show()
+                }
+                return@launch
+            }
+
             val hasNetwork = com.gaspar.rutassendero.utils.NetworkUtils.isNetworkAvailable(app)
 
             if (isOwnRoute && isSynced && !hasNetwork) {

@@ -1282,13 +1282,25 @@ fun MainScreen(
                         onCloudImportClick = { showCloudImportDialog = true },
                         onAddRutaClick = {
                             coroutineScope.launch {
+                                if (senderista == null) {
+                                    Toast.makeText(context, "Por favor, registra primero tu perfil de senderista.", Toast.LENGTH_SHORT).show()
+                                    showSenderistaDialog = true
+                                    return@launch
+                                }
                                 val activeRoute = viewModel.getActiveRoute()
                                 if (activeRoute != null) {
                                     viewModel.selectRuta(activeRoute)
                                     viewModel.stopGuiding()
-                                    Toast.makeText(context, "Se abrió la ruta activa '${activeRoute.nombre}' para que la finalices o borres.", Toast.LENGTH_LONG).show()
+                                    currentAppRole = "registrar"
+                                    viewModel.prefs.appRole = "registrar"
+                                    Toast.makeText(context, "Se abrió la ruta activa '${activeRoute.nombre}' para que la continúes.", Toast.LENGTH_LONG).show()
                                 } else {
-                                    showAddRutaDialog = true
+                                    val (canCreate, reason) = viewModel.validateCanCreateNewRoute()
+                                    if (canCreate) {
+                                        showAddRutaDialog = true
+                                    } else {
+                                        Toast.makeText(context, reason ?: "No puedes agregar más rutas.", Toast.LENGTH_LONG).show()
+                                    }
                                 }
                             }
                         },
@@ -2304,7 +2316,7 @@ fun MainScreen(
                                                             val beaconDist = if (puntosList.isNotEmpty()) RouteStatsCalculator.calculateBeaconDistance(puntosList.map { it.entity }) else 0f
                                                             val finalDist = maxOf(traceDist, beaconDist)
                                                             val currentDistanceKm = finalDist / 1000f
-                                                            val minDistanceKm = senderista?.minimoLongitud ?: 4.0
+                                                            val minDistanceKm = com.gaspar.rutassendero.data.RoleHierarchy.getEffectiveMinRouteDistanceKm(senderista?.rol, senderista?.minimoLongitud)
                                                             
                                                             if (currentDistanceKm < minDistanceKm) {
                                                                 showRouteTooShortDialog = true
@@ -2778,11 +2790,14 @@ fun MainScreen(
                             viewModel.stopGuiding()
                             showSelectRutaDialog = false
                             Toast.makeText(context, "Se abrió la ruta activa '${activeRoute.nombre}' para que la finalices o borres.", Toast.LENGTH_LONG).show()
-                        } else if (com.gaspar.rutassendero.data.RoleHierarchy.canCreateRoutes(senderista?.rol)) {
-                            showSelectRutaDialog = false
-                            showAddRutaDialog = true
                         } else {
-                            Toast.makeText(context, "No tienes permisos para agregar rutas.", Toast.LENGTH_SHORT).show()
+                            val (canCreate, reason) = viewModel.validateCanCreateNewRoute()
+                            if (canCreate) {
+                                showSelectRutaDialog = false
+                                showAddRutaDialog = true
+                            } else {
+                                Toast.makeText(context, reason ?: "No tienes permisos para agregar más rutas.", Toast.LENGTH_LONG).show()
+                            }
                         }
                     }
                 },
@@ -3145,10 +3160,11 @@ fun MainScreen(
         }
 
         if (showRouteTooShortDialog) {
+            val effectiveMinKm = com.gaspar.rutassendero.data.RoleHierarchy.getEffectiveMinRouteDistanceKm(senderista?.rol, senderista?.minimoLongitud)
             AlertDialog(
                 onDismissRequest = { showRouteTooShortDialog = false },
                 title = { Text("Ruta Demasiado Corta") },
-                text = { Text("La ruta actual no alcanza el límite mínimo de ${senderista?.minimoLongitud ?: 4.0} km configurado en tu perfil. Si decides cerrarla ahora, se borrarán todos los datos y fotos locales de esta ruta. ¿Qué deseas hacer?") },
+                text = { Text("La ruta actual no alcanza la distancia mínima requerida de $effectiveMinKm km. Si decides cerrarla ahora, se borrarán todos los datos y fotos locales de esta ruta no finalizada. ¿Qué deseas hacer?") },
                 confirmButton = {
                     TextButton(onClick = {
                         showRouteTooShortDialog = false
@@ -3525,23 +3541,21 @@ fun HeaderBar(
                             },
                             leadingIcon = { Icon(Icons.Default.CalendarToday, contentDescription = null, tint = ColorTekinsPrimary) }
                         )
-                        if (com.gaspar.rutassendero.data.RoleHierarchy.canCreateRoutes(senderistaRol)) {
-                            DropdownMenuItem(
-                                text = { Text("Agregar nueva ruta", color = ColorTekinsDarkBg, fontWeight = FontWeight.Bold) },
-                                onClick = {
-                                    isMenuExpanded = false
-                                    onAddRutaClick()
-                                },
-                                leadingIcon = { 
-                                    Icon(
-                                        imageVector = Icons.Default.Add, 
-                                        contentDescription = null, 
-                                        tint = ColorTekinsPrimary,
-                                        modifier = Modifier.size(24.dp)
-                                    ) 
-                                }
-                            )
-                        }
+                        DropdownMenuItem(
+                            text = { Text("Agregar nueva ruta", color = ColorTekinsDarkBg, fontWeight = FontWeight.Bold) },
+                            onClick = {
+                                isMenuExpanded = false
+                                onAddRutaClick()
+                            },
+                            leadingIcon = { 
+                                Icon(
+                                    imageVector = Icons.Default.Add, 
+                                    contentDescription = null, 
+                                    tint = ColorTekinsPrimary,
+                                    modifier = Modifier.size(24.dp)
+                                ) 
+                            }
+                        )
 
                         if (selectedRoute != null) {
                             HorizontalDivider(

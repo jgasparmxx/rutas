@@ -69,7 +69,7 @@ data class SenderistaEntity(
     val idBeacon: String? = null,
 
     @ColumnInfo(name = "minimo_longitud", defaultValue = "4.0")
-    val minimoLongitud: Double = 4.0,
+    val minimoLongitud: Double = 3.0,
 
     @ColumnInfo(name = "id_agrupacion")
     val idAgrupacion: String? = null,

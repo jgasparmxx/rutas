@@ -676,7 +676,7 @@ object CloudSyncManager {
             seguroMedico = optStr("seguro_medico"),
             nivelSenderista = obj.optString("nivel_senderista", "principiante"),
             idBeacon = optStr("id_beacon"),
-            minimoLongitud = optDbl("minimo_longitud") ?: 4.0,
+            minimoLongitud = optDbl("minimo_longitud") ?: if (com.gaspar.rutassendero.data.RoleHierarchy.canCreateRoutes(normalizedRol)) 4.0 else 3.0,
             bloqueado = optBool("bloqueado"),
             fupdate = fupdateMillis,
             codigoConfianza = optStr("codigo_confianza"),

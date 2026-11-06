@@ -52,4 +52,31 @@ class RoleHierarchyTest {
         assertTrue(RoleHierarchy.canConsumeRoutes("G"))
         assertTrue(RoleHierarchy.canConsumeRoutes("S"))
     }
+
+    @Test
+    fun testSenderistaPromotionalRules() {
+        // Senderista puede crear hasta 2 rutas propias (0 o 1 previas -> true; >= 2 -> false)
+        assertTrue(RoleHierarchy.canCreateRouteWithQuota("S", 0))
+        assertTrue(RoleHierarchy.canCreateRouteWithQuota("S", 1))
+        assertFalse(RoleHierarchy.canCreateRouteWithQuota("S", 2))
+        assertFalse(RoleHierarchy.canCreateRouteWithQuota("S", 3))
+
+        // Guía / Admin / Owner no tienen límite de 2 rutas
+        assertTrue(RoleHierarchy.canCreateRouteWithQuota("G", 2))
+        assertTrue(RoleHierarchy.canCreateRouteWithQuota("G", 25))
+        assertTrue(RoleHierarchy.canCreateRouteWithQuota("A", 10))
+        assertTrue(RoleHierarchy.canCreateRouteWithQuota("O", 50))
+
+        // Distancia mínima relajada a 3.0 km para Senderista incluso si en BD tenía 4.0 km
+        assertEquals(3.0, RoleHierarchy.getEffectiveMinRouteDistanceKm("S", 4.0), 0.001)
+        assertEquals(3.0, RoleHierarchy.getEffectiveMinRouteDistanceKm("S", null), 0.001)
+        assertEquals(4.0, RoleHierarchy.getEffectiveMinRouteDistanceKm("G", 4.0), 0.001)
+        assertEquals(4.0, RoleHierarchy.getEffectiveMinRouteDistanceKm("G", null), 0.001)
+
+        // Senderista NO puede borrar una ruta propia una vez registrada; Guía/Admin/Owner sí
+        assertFalse(RoleHierarchy.canDeleteOwnFinalizedRoute("S"))
+        assertTrue(RoleHierarchy.canDeleteOwnFinalizedRoute("G"))
+        assertTrue(RoleHierarchy.canDeleteOwnFinalizedRoute("A"))
+        assertTrue(RoleHierarchy.canDeleteOwnFinalizedRoute("O"))
+    }
 }

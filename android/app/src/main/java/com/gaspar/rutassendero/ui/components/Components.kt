@@ -729,6 +729,19 @@ fun AddRutaDialog(
     val context = LocalContext.current
     val db = remember { com.gaspar.rutassendero.data.RutasDatabase.getDatabase(context) }
     val scope = rememberCoroutineScope()
+    var senderistaPromoInfo by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val s = db.senderistaDao().getAllSenderistas().firstOrNull()
+            if (s != null && !com.gaspar.rutassendero.data.RoleHierarchy.canCreateRoutes(s.rol)) {
+                val ownCount = db.rutasDao().getAllRutas().count {
+                    matchPhones(it.telefono, s.telefono) || (it.fechaImportacion == null && it.telefono.isEmpty())
+                }
+                senderistaPromoInfo = (ownCount + 1) to com.gaspar.rutassendero.data.RoleHierarchy.MAX_RUTAS_SENDERISTA
+            }
+        }
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -750,6 +763,25 @@ fun AddRutaDialog(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                if (senderistaPromoInfo != null) {
+                    val (nextNum, maxAllowed) = senderistaPromoInfo!!
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        color = ColorTekinsAccent.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, ColorTekinsAccent.copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Ruta promocional $nextNum de $maxAllowed • Distancia mínima: 3.0 km.\nUna vez registrada y finalizada, no se podrá eliminar.",
+                            fontSize = 12.sp,
+                            color = ColorTextoPrincipal,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                        )
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(12.dp))
 
@@ -1014,9 +1046,13 @@ fun SelectRutaDialog(
     onDelete: (RutaEntity) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var showAll by remember { mutableStateOf(false) }
     val isGuia = com.gaspar.rutassendero.data.RoleHierarchy.canCreateRoutes(senderistaRol)
-    var activeTab by remember { mutableStateOf(if (isGuia) 0 else 1) } // 0: Mis Rutas, 1: Otras Rutas
+    val hasOwnRoutes = remember(rutas, userPhone) {
+        rutas.any { matchPhones(it.telefono, userPhone) || (it.fechaImportacion == null && it.telefono.isEmpty()) }
+    }
+    var activeTab by remember { mutableStateOf(if (isGuia || hasOwnRoutes) 0 else 1) } // 0: Mis Rutas, 1: Otras Rutas
     var rutaToDeleteConfirm by remember { mutableStateOf<RutaEntity?>(null) }
 
     // Filtrar rutas según la pestaña seleccionada
@@ -1072,15 +1108,13 @@ fun SelectRutaDialog(
                         .background(ColorTekinsCardMuted, RoundedCornerShape(8.dp))
                         .padding(2.dp)
                 ) {
-                    if (isGuia) {
-                        TabButton(
-                            text = "Mis Rutas",
-                            isSelected = activeTab == 0,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            activeTab = 0
-                            showAll = false
-                        }
+                    TabButton(
+                        text = "Mis Rutas",
+                        isSelected = activeTab == 0,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        activeTab = 0
+                        showAll = false
                     }
                     TabButton(
                         text = "Otras Rutas",
@@ -1152,10 +1186,17 @@ fun SelectRutaDialog(
                                     ""
                                 }
 
+                                val isOwnRutaItem = matchPhones(ruta.telefono, userPhone) || (ruta.fechaImportacion == null && ruta.telefono.isEmpty())
+                                val canDeleteRutaItem = !isOwnRutaItem || com.gaspar.rutassendero.data.RoleHierarchy.canDeleteOwnFinalizedRoute(senderistaRol)
+
                                 val dismissState = rememberSwipeToDismissBoxState(
                                     confirmValueChange = { dismissValue ->
                                         if (dismissValue == SwipeToDismissBoxValue.StartToEnd) {
-                                            rutaToDeleteConfirm = ruta
+                                            if (canDeleteRutaItem) {
+                                                rutaToDeleteConfirm = ruta
+                                            } else {
+                                                Toast.makeText(context, "Una vez registrada, tu ruta de Senderista no se puede eliminar.", Toast.LENGTH_SHORT).show()
+                                            }
                                         }
                                         false
                                     }
@@ -1166,11 +1207,14 @@ fun SelectRutaDialog(
                                     enableDismissFromStartToEnd = true,
                                     enableDismissFromEndToStart = false,
                                     backgroundContent = {
+                                        val swipeBgColor = if (canDeleteRutaItem) ColorTekinsAlert else Color(0xFF64748B)
+                                        val swipeIcon = if (canDeleteRutaItem) Icons.Default.Delete else Icons.Default.Lock
+                                        val swipeLabel = if (canDeleteRutaItem) "Eliminar" else "Ruta permanente"
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxSize()
                                                 .padding(vertical = 4.dp)
-                                                .background(ColorTekinsAlert, RoundedCornerShape(12.dp)),
+                                                .background(swipeBgColor, RoundedCornerShape(12.dp)),
                                             contentAlignment = Alignment.CenterStart
                                         ) {
                                             Row(
@@ -1178,13 +1222,13 @@ fun SelectRutaDialog(
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 Icon(
-                                                    imageVector = Icons.Default.Delete,
-                                                    contentDescription = "Eliminar",
+                                                    imageVector = swipeIcon,
+                                                    contentDescription = swipeLabel,
                                                     tint = Color.White
                                                 )
                                                 Spacer(modifier = Modifier.width(8.dp))
                                                 Text(
-                                                    text = "Eliminar",
+                                                    text = swipeLabel,
                                                     color = Color.White,
                                                     fontWeight = FontWeight.Bold
                                                 )

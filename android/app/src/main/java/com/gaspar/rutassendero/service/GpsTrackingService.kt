@@ -1014,7 +1014,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
 
     enum class RecordingState { RECORDING, PAUSED_VEHICLE, STOPPED }
 
-    private val acknowledgedEmergencies = mutableMapOf<String, Long>()
+    private val acknowledgedEmergencies = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private lateinit var beaconManager: BeaconEmitterManager
     
     
@@ -1031,14 +1031,14 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
     fun startBeaconEmissionInternal(idBeacon: String, isEmergency: Boolean = false, onSuccess: () -> Unit, onFailure: (Int) -> Unit) {
         val lastLoc = currentLocation.value
         serviceScope.launch {
-            val success = beaconManager.startEmitting(
+            val resultCode = beaconManager.startEmitting(
                 idBeacon = idBeacon,
                 latitude = lastLoc?.latitude?.toFloat(),
                 longitude = lastLoc?.longitude?.toFloat(),
                 minor = if (isEmergency) 911 else 1
             )
             
-            if (success) {
+            if (resultCode == 0) {
                 _isBeaconEmitting.value = true
                 _isBeaconEmergencyEmitting.value = isEmergency
                 
@@ -1067,10 +1067,14 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                     }
                 }
                 
-                onSuccess()
+                withContext(Dispatchers.Main) {
+                    onSuccess()
+                }
             } else {
                 _isBeaconEmitting.value = false
-                onFailure(-1)
+                withContext(Dispatchers.Main) {
+                    onFailure(resultCode)
+                }
             }
         }
     }
@@ -1086,8 +1090,8 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
     // --- ESCANEO DE BEACONS Y SEGUIMIENTO DE SENDERISTAS (MODO ABIERTO Y DINAMICO) ---
     private lateinit var beaconScanner: BeaconScannerManager
 
-    private val participantStates = mutableMapOf<String, ParticipantState>()
-    private val stateEmergencies = mutableMapOf<String, Long>() // idBeacon to Last Time Alarm triggered
+    private val participantStates = java.util.concurrent.ConcurrentHashMap<String, ParticipantState>()
+    private val stateEmergencies = java.util.concurrent.ConcurrentHashMap<String, Long>() // idBeacon to Last Time Alarm triggered
     
     private var bleTimeoutJob: Job? = null
     private var blePendingChanges = false
@@ -1358,8 +1362,10 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                                 }
                                 if (System.currentTimeMillis() - lastAlarm > 30000) { // debounce 30s
                                     startEmergencyPatternInternal(listOf(100 to 50, 100 to 50, 400 to 100))
-                                    // You might want to update some state here to show UI indicator
-                                    android.widget.Toast.makeText(applicationContext, "¡EMERGENCIA 911 DE ${existingState?.nombreSenderista ?: idBeacon}!", android.widget.Toast.LENGTH_LONG).show()
+                                    val alertName = existingState?.nombreSenderista ?: idBeacon
+                                    withContext(Dispatchers.Main) {
+                                        android.widget.Toast.makeText(applicationContext, "¡EMERGENCIA 911 DE $alertName!", android.widget.Toast.LENGTH_LONG).show()
+                                    }
                                 }
                             }
                         }
@@ -1658,7 +1664,14 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
         }
 
         fun startBeaconEmission(idBeacon: String, isEmergency: Boolean = false, onSuccess: () -> Unit, onFailure: (Int) -> Unit) {
-            instance?.startBeaconEmissionInternal(idBeacon, isEmergency, onSuccess, onFailure) ?: onFailure(-1)
+            val svc = instance
+            if (svc != null) {
+                svc.startBeaconEmissionInternal(idBeacon, isEmergency, onSuccess, onFailure)
+            } else if (Looper.myLooper() == Looper.getMainLooper()) {
+                onFailure(-1)
+            } else {
+                android.os.Handler(Looper.getMainLooper()).post { onFailure(-1) }
+            }
         }
 
         fun stopBeaconEmission() {

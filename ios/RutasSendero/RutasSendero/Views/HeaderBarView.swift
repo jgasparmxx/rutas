@@ -325,6 +325,12 @@ public struct HeaderBarView: View {
                     Label("Perfil del Senderista", systemImage: "person.crop.circle")
                 }
                 
+                Button {
+                    viewModel.isShowingSettingsSheet = true
+                } label: {
+                    Label("Configuración", systemImage: "gearshape.fill")
+                }
+                
                 if viewModel.activeRoute != nil {
                     // 1:1 Android (MainScreen.kt línea 3803) Iniciar/Pausar/Detener Recorrido Virtual en menú del sistema
                     if viewModel.activeRole == .visor && !viewModel.recordedPoints.isEmpty {

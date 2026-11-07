@@ -63,6 +63,9 @@ public struct BeaconPayload: Sendable, Equatable {
                                   (UInt32(bytes[uuidOffset + 12]) << 8) |
                                   UInt32(bytes[uuidOffset + 13])
                     let longitude = Double(Float(bitPattern: lonBits))
+                    guard !latitude.isNaN && !longitude.isNaN && abs(latitude) <= 90.0 && abs(longitude) <= 180.0 else {
+                        continue
+                    }
                     
                     let majorOffset = uuidOffset + 16
                     let major = (Int(bytes[majorOffset]) << 8) | Int(bytes[majorOffset + 1])
@@ -86,8 +89,9 @@ public struct BeaconPayload: Sendable, Equatable {
         // 2. Fallback: paquete compacto de 16 bytes con firma mágica 0xBE 0xAC al final
         if bytes.count >= 16 {
             for i in 0...(bytes.count - 16) {
-                if bytes[i + 14] == 0xBE && bytes[i + 15] == 0xAC {
-                    return parseRawUUIDBytes(Array(bytes[i..<(i + 16)]), isEmergency: false)
+                if bytes[i + 14] == 0xBE && bytes[i + 15] == 0xAC,
+                   let compact = parseRawUUIDBytes(Array(bytes[i..<(i + 16)]), isEmergency: false) {
+                    return compact
                 }
             }
         }
@@ -105,7 +109,10 @@ public struct BeaconPayload: Sendable, Equatable {
         
         // Service Data (ej. UUID 0xBEAC de scanResponse en Android o tramas multiplataforma)
         if let serviceDataMap = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data] {
-            let emergencyFlag = serviceDataMap.keys.contains { $0.uuidString.uppercased() == "B911" }
+            let emergencyFlag = serviceDataMap.keys.contains {
+                let u = $0.uuidString.uppercased()
+                return u == "B911" || u.hasPrefix("0000B911")
+            }
             for (_, data) in serviceDataMap {
                 if let payload = parse(manufacturerData: data) {
                     if emergencyFlag && !payload.isEmergency {
@@ -122,8 +129,9 @@ public struct BeaconPayload: Sendable, Equatable {
                     return payload
                 }
                 let bytes = [UInt8](data)
-                if bytes.count >= 16 && bytes[14] == 0xBE && bytes[15] == 0xAC {
-                    return parseRawUUIDBytes(Array(bytes[0..<16]), isEmergency: emergencyFlag)
+                if bytes.count >= 16 && bytes[14] == 0xBE && bytes[15] == 0xAC,
+                   let compact = parseRawUUIDBytes(Array(bytes[0..<16]), isEmergency: emergencyFlag) {
+                    return compact
                 }
             }
         }
@@ -145,13 +153,17 @@ public struct BeaconPayload: Sendable, Equatable {
         return nil
     }
     
-    /// Extrae el BeaconPayload desde CBUUIDs de 128 bits emitidos por otros dispositivos RutasSendero (iOS <-> iOS).
+    /// Extrae el BeaconPayload desde CBUUIDs de 128 bits emitidos por otros dispositivos RutasSendero (iOS <-> iOS y Android ScanResponse).
     public static func parse(serviceUUIDs: [CBUUID]) -> BeaconPayload? {
-        let isEmergency = serviceUUIDs.contains { $0.uuidString.uppercased() == "B911" }
+        let isEmergency = serviceUUIDs.contains {
+            let u = $0.uuidString.uppercased()
+            return u == "B911" || u.hasPrefix("0000B911")
+        }
         for cbuuid in serviceUUIDs {
             let raw = [UInt8](cbuuid.data)
-            if raw.count == 16 && raw[14] == 0xBE && raw[15] == 0xAC {
-                return parseRawUUIDBytes(raw, isEmergency: isEmergency)
+            if raw.count == 16 && raw[14] == 0xBE && raw[15] == 0xAC,
+               let parsed = parseRawUUIDBytes(raw, isEmergency: isEmergency) {
+                return parsed
             }
         }
         return nil
@@ -740,6 +752,9 @@ public final class BleBeaconScanner: NSObject, CBCentralManagerDelegate, BleBeac
     @ObservationIgnored
     private var onPeerDetectedCallback: (@Sendable (PeerBeaconData) -> Void)?
     
+    @ObservationIgnored
+    private var lastPeerDiscoveryDate: Date = .distantPast
+    
     public override init() {
         super.init()
     }
@@ -771,6 +786,15 @@ public final class BleBeaconScanner: NSObject, CBCentralManagerDelegate, BleBeac
             startCentralScan()
         } else {
             self.isScanning = false
+        }
+    }
+    
+    /// Re-activa la ventana de escaneo si la radio compartida (Faro BLE + Wi-Fi) lleva más de 6s sin recibir tramas.
+    public func ensureScanHealthy() {
+        guard wantsScanning, let central = centralManager, central.state == .poweredOn else { return }
+        if !central.isScanning || Date().timeIntervalSince(lastPeerDiscoveryDate) > 6.0 {
+            central.stopScan()
+            startCentralScan()
         }
     }
     
@@ -816,6 +840,7 @@ public final class BleBeaconScanner: NSObject, CBCentralManagerDelegate, BleBeac
         guard let payload = BeaconPayload.parse(advertisementData: advertisementData) else {
             return
         }
+        lastPeerDiscoveryDate = Date()
         
         // En CoreBluetooth, RSSI == 127 significa lectura de potencia no disponible en ese pulso; usar -70 dBm nominal
         let rawRssi = RSSI.intValue

@@ -160,17 +160,33 @@ class BeaconEmitterManager(private val context: Context) {
         // Tx Power (1 byte)
         beaconData[22] = txPower.toByte()
 
+        // IMPORTANTE: Company ID 0x0059 (Nordic Semiconductor) en vez de 0x004C (Apple).
+        // En iOS, bluetoothd intercepta y oculta de CoreBluetooth cualquier paquete primario con 0x004C + 0x02 0x15 (iBeacon).
+        // Con 0x0059 en el paquete primario ADV_IND (30 bytes <= 31 bytes), TODOS los iPhones reciben los 23 bytes
+        // completos de forma directa 10 veces/seg sin requerir SCAN_REQ, y TODOS los Android (APKs anteriores y nuevos)
+        // lo siguen detectando idéntico mediante parseBeaconFlexible / parseBeaconBruteForce / 0x0059.
         val advertiseData = AdvertiseData.Builder()
-            .addManufacturerData(0x004C, beaconData) // Apple company identifier (Android <-> Android)
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .addManufacturerData(0x0059, beaconData)
             .build()
 
-        // Scan Response con ServiceData 0xBEAC (27 bytes <= 31 bytes límite BLE Legacy):
-        // Permite que iPhones (CoreBluetooth) lean el payload completo sin que iOS filtre el ManufacturerData 0x004C.
-        val crossPlatformServiceUuid = android.os.ParcelUuid.fromString("0000BEAC-0000-1000-8000-00805F9B34FB")
+        // Respaldo adicional en Scan Response (22 bytes <= 31 bytes): ServiceUUID de 128 bits con idBeacon+GPS+0xBEAC
+        // + bandera 16-bit B911/B001, permitiendo que iOS lo detecte incluso con pantalla bloqueada en segundo plano.
+        val uuidBuf = java.nio.ByteBuffer.wrap(uuidBytes)
+        val msb = uuidBuf.long
+        val lsb = uuidBuf.long
+        val payloadUuid = java.util.UUID(msb, lsb)
+        val statusUuidStr = if (minor == 911 || major == 911) {
+            "0000B911-0000-1000-8000-00805F9B34FB"
+        } else {
+            "0000B001-0000-1000-8000-00805F9B34FB"
+        }
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
-            .addServiceData(crossPlatformServiceUuid, beaconData)
+            .addServiceUuid(android.os.ParcelUuid(payloadUuid))
+            .addServiceUuid(android.os.ParcelUuid.fromString(statusUuidStr))
             .build()
 
         // 3. Define callback

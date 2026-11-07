@@ -65,6 +65,20 @@ public struct MainMapView: View {
                                 TextToSpeechService.shared.stop()
                                 viewModel.virtualTourIndex = idx
                                 viewModel.stepVirtualTour()
+                            } else if viewModel.isGuidingActive && viewModel.targetGuideWaypoint?.id == point.id {
+                                if let userLoc = viewModel.locationTracker.currentLocation {
+                                    let dist = userLoc.distance(from: CLLocation(latitude: point.latitude, longitude: point.longitude))
+                                    let limit = Double(viewModel.tapDistanceLimitMeters)
+                                    if dist <= limit {
+                                        viewModel.advanceGuideToNextWaypoint()
+                                    } else {
+                                        viewModel.selectedPointForDetail = point
+                                        viewModel.saveStatusMessage = "Demasiado lejos para marcar como visto (Distancia: \(Int(dist))m, Límite: \(viewModel.tapDistanceLimitMeters)m)"
+                                    }
+                                } else {
+                                    viewModel.selectedPointForDetail = point
+                                    viewModel.saveStatusMessage = "Esperando señal de GPS..."
+                                }
                             } else {
                                 viewModel.selectedPointForDetail = point
                             }
@@ -72,12 +86,13 @@ public struct MainMapView: View {
                     }
                 }
                 
-                // Balizas de Compañeros Senderistas detectadas vía BLE con ubicación válida
-                ForEach(viewModel.nearbyPeersList.filter { abs($0.latitude) > 0.001 || abs($0.longitude) > 0.001 }) { peer in
+                // Balizas de Compañeros Senderistas detectadas vía BLE (activas en los últimos 25s)
+                ForEach(viewModel.nearbyPeersList.filter { Date().timeIntervalSince($0.lastDetectedTimestamp) <= 25.0 }) { peer in
                     let profileName = viewModel.peerSenderistaProfiles[peer.beaconId.lowercased()]?.name
+                    let coord = peerMapCoordinate(for: peer)
                     Annotation(
                         profileName ?? "Compañero: \(peer.beaconId.prefix(6).uppercased())",
-                        coordinate: CLLocationCoordinate2D(latitude: peer.latitude, longitude: peer.longitude)
+                        coordinate: coord
                     ) {
                         PeerMarkerView(peer: peer, hikerName: profileName)
                             .onTapGesture {
@@ -218,6 +233,21 @@ public struct MainMapView: View {
         case .satellite: return "globe.americas.fill"
         case .hybrid: return "square.2.layers.3d.top.filled"
         }
+    }
+    
+    private func peerMapCoordinate(for peer: PeerBeaconData) -> CLLocationCoordinate2D {
+        if abs(peer.latitude) > 0.001 || abs(peer.longitude) > 0.001 {
+            return CLLocationCoordinate2D(latitude: peer.latitude, longitude: peer.longitude)
+        }
+        let base = viewModel.locationTracker.currentLocation?.coordinate
+            ?? viewModel.tourPoints.first.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+            ?? CLLocationCoordinate2D(latitude: 19.2458, longitude: -103.7251)
+        let hashAngle = Double(abs(peer.beaconId.hashValue % 360)) * .pi / 180.0
+        let radiusMeters = min(max(peer.estimatedDistanceMeters, 8.0), 80.0)
+        let deltaLat = (radiusMeters * cos(hashAngle)) / 111_320.0
+        let lonScale = max(0.2, cos(base.latitude * .pi / 180.0))
+        let deltaLon = (radiusMeters * sin(hashAngle)) / (111_320.0 * lonScale)
+        return CLLocationCoordinate2D(latitude: base.latitude + deltaLat, longitude: base.longitude + deltaLon)
     }
     
     /// Coloca el mapa directamente en el punto donde inicia la ruta o la simulación (respetando Ida vs Retorno),

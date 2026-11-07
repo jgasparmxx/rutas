@@ -183,7 +183,9 @@ class BeaconScannerManager(private val context: Context) {
 
     private fun parseBeaconFromScanRecord(result: ScanResult): BeaconData? {
         val scanRecord = result.scanRecord ?: return null
-        val manufacturerData = scanRecord.getManufacturerSpecificData(0x004C) ?: return null
+        val manufacturerData = scanRecord.getManufacturerSpecificData(0x0059)
+            ?: scanRecord.getManufacturerSpecificData(0x004C)
+            ?: return null
         
         if (manufacturerData.size >= 23 &&
             manufacturerData[0] == 0x02.toByte() &&

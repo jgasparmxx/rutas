@@ -170,12 +170,22 @@ public struct NearbyPeersSheetView: View {
                 fitMapToPeersAndUser()
             }
         }
+        .onChange(of: activePeers.count) { _, _ in
+            if selectedTab == 1 {
+                fitMapToPeersAndUser()
+            }
+        }
         .task(id: viewModel.trackingRefreshIntervalSeconds) {
             let ns = UInt64(max(1.0, viewModel.trackingRefreshIntervalSeconds) * 1_000_000_000)
+            var tickCounter = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: ns)
                 guard !Task.isCancelled else { break }
                 nowTick = Date()
+                tickCounter += 1
+                if tickCounter % 4 == 0 {
+                    viewModel.bleScanner.ensureScanHealthy()
+                }
             }
         }
         .sheet(item: $selectedPeerForEmergency) { peer in

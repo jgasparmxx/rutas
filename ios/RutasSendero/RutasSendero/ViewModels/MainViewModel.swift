@@ -13,6 +13,7 @@ import SwiftUI
 import Observation
 import MapKit
 import UIKit
+import AudioToolbox
 
 public enum RecordingState: String, Sendable, CaseIterable {
     case stopped = "Detenido"
@@ -45,6 +46,7 @@ public enum ActiveSheet: Identifiable, Sendable {
     case quickDictate
     case cloudRoutes
     case recordingDashboard
+    case settings
     
     public var id: String {
         switch self {
@@ -58,6 +60,7 @@ public enum ActiveSheet: Identifiable, Sendable {
         case .quickDictate: return "quickDictate"
         case .cloudRoutes: return "cloudRoutes"
         case .recordingDashboard: return "recordingDashboard"
+        case .settings: return "settings"
         }
     }
 }
@@ -147,7 +150,20 @@ public final class MainViewModel: @unchecked Sendable {
     public var isVoiceGuidanceEnabled: Bool = true
     /// Distancia máxima parametrizada para redirigir a Google Maps al iniciar Guía (1:1 Android: > 2.0 km)
     public var maxDistanceToStartGuideMeters: Double = 2000.0
+    
+    // MARK: - Parámetros de Configuración (1:1 Android PreferencesHelper + SettingsDialog)
+    public var alertDistanceMeters: Int = 50
     public var arrivalToleranceMeters: Double = 25.0
+    public var tapDistanceLimitMeters: Int = 15
+    public var emergencyTimeoutMinutes: Int = 5
+    public var rangoDiasBusquedaSalidas: Int = 20
+    public var rangoKmBusquedaSalidas: Int = 30
+    public var enableDopplerBeeps: Bool = true
+    
+    @ObservationIgnored
+    private var acknowledgedEmergencyDates: [String: Date] = [:]
+    @ObservationIgnored
+    private var lastDopplerBeepTime: Date = .distantPast
     
     @ObservationIgnored
     private var announcedGuideAlertKeys: Set<String> = []
@@ -252,6 +268,10 @@ public final class MainViewModel: @unchecked Sendable {
         get { activeSheet == .recordingDashboard }
         set { activeSheet = newValue ? .recordingDashboard : (activeSheet == .recordingDashboard ? nil : activeSheet) }
     }
+    public var isShowingSettingsSheet: Bool {
+        get { activeSheet == .settings }
+        set { activeSheet = newValue ? .settings : (activeSheet == .settings ? nil : activeSheet) }
+    }
     
     public var agrupacionLogoImage: UIImage? = nil
     public var agrupacionLogoData: Data? = nil
@@ -300,6 +320,9 @@ public final class MainViewModel: @unchecked Sendable {
             }
         }
         
+        // Cargar parámetros configurables del senderista (UserDefaults 1:1 Android PreferencesHelper)
+        self.loadPersistedSettings()
+        
         // Iniciar rastreo básico para visualización en mapa
         self.startLocationUpdates()
         
@@ -308,6 +331,70 @@ public final class MainViewModel: @unchecked Sendable {
         
         // Sincronizar/descargar logo de la agrupación por defecto ("MH" 1:1 Android)
         self.syncAgrupacionLogo(idAgrupacion: "MH")
+    }
+    
+    // MARK: - Persistencia de Configuración (1:1 Android PreferencesHelper + SettingsDialog)
+    
+    public func loadPersistedSettings() {
+        let ud = UserDefaults.standard
+        if ud.object(forKey: "tekins_alert_distance") != nil {
+            self.alertDistanceMeters = max(5, ud.integer(forKey: "tekins_alert_distance"))
+        }
+        if ud.object(forKey: "tekins_arrival_tolerance") != nil {
+            self.arrivalToleranceMeters = Double(max(5, ud.integer(forKey: "tekins_arrival_tolerance")))
+        }
+        if ud.object(forKey: "tekins_tap_distance_limit") != nil {
+            self.tapDistanceLimitMeters = max(1, ud.integer(forKey: "tekins_tap_distance_limit"))
+        }
+        if ud.object(forKey: "tekins_emergency_timeout_min") != nil {
+            self.emergencyTimeoutMinutes = max(1, ud.integer(forKey: "tekins_emergency_timeout_min"))
+        }
+        if ud.object(forKey: "tekins_rango_dias_salidas") != nil {
+            self.rangoDiasBusquedaSalidas = max(1, ud.integer(forKey: "tekins_rango_dias_salidas"))
+        }
+        if ud.object(forKey: "tekins_rango_km_salidas") != nil {
+            self.rangoKmBusquedaSalidas = max(1, ud.integer(forKey: "tekins_rango_km_salidas"))
+        }
+        if ud.object(forKey: "tekins_enable_doppler_beeps") != nil {
+            self.enableDopplerBeeps = ud.bool(forKey: "tekins_enable_doppler_beeps")
+        }
+    }
+    
+    @MainActor
+    public func saveHikingSettings(
+        alertDistance: Int,
+        arrivalTolerance: Int,
+        tapDistanceLimit: Int,
+        emergencyTimeout: Int,
+        rangoDiasSalidas: Int,
+        rangoKmSalidas: Int,
+        enableBeeps: Bool
+    ) {
+        let cleanAlert = max(5, alertDistance)
+        let cleanTolerance = max(5, arrivalTolerance)
+        let cleanTap = max(1, tapDistanceLimit)
+        let cleanTimeout = max(1, emergencyTimeout)
+        let cleanDias = max(1, rangoDiasSalidas)
+        let cleanKm = max(1, rangoKmSalidas)
+        
+        self.alertDistanceMeters = cleanAlert
+        self.arrivalToleranceMeters = Double(cleanTolerance)
+        self.tapDistanceLimitMeters = cleanTap
+        self.emergencyTimeoutMinutes = cleanTimeout
+        self.rangoDiasBusquedaSalidas = cleanDias
+        self.rangoKmBusquedaSalidas = cleanKm
+        self.enableDopplerBeeps = enableBeeps
+        
+        let ud = UserDefaults.standard
+        ud.set(cleanAlert, forKey: "tekins_alert_distance")
+        ud.set(cleanTolerance, forKey: "tekins_arrival_tolerance")
+        ud.set(cleanTap, forKey: "tekins_tap_distance_limit")
+        ud.set(cleanTimeout, forKey: "tekins_emergency_timeout_min")
+        ud.set(cleanDias, forKey: "tekins_rango_dias_salidas")
+        ud.set(cleanKm, forKey: "tekins_rango_km_salidas")
+        ud.set(enableBeeps, forKey: "tekins_enable_doppler_beeps")
+        
+        self.saveStatusMessage = "Parámetros de senderismo actualizados."
     }
     
     deinit {
@@ -359,10 +446,22 @@ public final class MainViewModel: @unchecked Sendable {
                 
                 if !peer.isEmergency {
                     self.acknowledgedEmergencies.remove(normalizedId)
+                    self.acknowledgedEmergencyDates.removeValue(forKey: normalizedId)
+                } else if let ackDate = self.acknowledgedEmergencyDates[normalizedId] {
+                    // Reactivar SOS tras Espera 911 configurada (1:1 Android GpsTrackingService.kt:1521)
+                    let timeoutSeconds = Double(max(1, self.emergencyTimeoutMinutes)) * 60.0
+                    if Date().timeIntervalSince(ackDate) >= timeoutSeconds {
+                        self.acknowledgedEmergencies.remove(normalizedId)
+                        self.acknowledgedEmergencyDates.removeValue(forKey: normalizedId)
+                    }
                 }
                 
-                // Si el compañero activó 911 y no ha sido silenciado, disparar alerta inmediata (1:1 Android)
-                if peer.isEmergency && !previousEmergency && !self.acknowledgedEmergencies.contains(normalizedId) {
+                // Si el compañero activó 911 (primera detección o tras cumplirse Espera 911), disparar alerta (1:1 Android)
+                let shouldTriggerEmergencyAlert = peer.isEmergency
+                    && !self.acknowledgedEmergencies.contains(normalizedId)
+                    && (!previousEmergency || self.acknowledgedEmergencyDates[normalizedId] == nil)
+                if shouldTriggerEmergencyAlert {
+                    self.acknowledgedEmergencyDates[normalizedId] = Date()
                     let displayName = self.peerSenderistaProfiles[normalizedId]?.name ?? normalizedId.uppercased()
                     TextToSpeechService.shared.speak("¡Alerta! Emergencia 911 detectada de compañero \(displayName) a \(Int(peer.estimatedDistanceMeters)) metros.")
                     self.saveStatusMessage = "¡EMERGENCIA 911 DE \(displayName)!"
@@ -380,6 +479,7 @@ public final class MainViewModel: @unchecked Sendable {
     public func acknowledgePeerEmergency(beaconId: String) {
         let clean = beaconId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         acknowledgedEmergencies.insert(clean)
+        acknowledgedEmergencyDates[clean] = Date()
         let name = peerSenderistaProfiles[clean]?.name ?? clean.uppercased()
         saveStatusMessage = "Alarma silenciada para \(name)"
     }
@@ -1359,17 +1459,18 @@ public final class MainViewModel: @unchecked Sendable {
         )
         let remElevSuffix = RouteStatsCalculator.formatElevationSpeechSuffix(remDeltaAlt)
         
-        // 1. Avisos anticipados de puntos especiales (50m y 20m) con desnivel (1:1 Android GpsTrackingService.kt:638)
+        // 1. Avisos anticipados de puntos especiales usando Aviso Cerc. parametrizado y 20m con desnivel (1:1 Android GpsTrackingService.kt:638)
+        let configuredAlertDist = Double(max(21, alertDistanceMeters))
         if target.estado != 1 {
             let stateInfo = PointStateInfo.forPoint(estado: target.estado, isRouteEnd: target.isRouteEnd, description: target.descriptionText)
-            for threshold in [50.0, 20.0] {
+            for threshold in [configuredAlertDist, 20.0] {
                 if distance <= threshold {
                     let key = "\(target.id)_\(Int(threshold))"
                     if !announcedGuideAlertKeys.contains(key) {
                         announcedGuideAlertKeys.insert(key)
                         let descPart = target.descriptionText.isEmpty ? "" : ". A continuación: \(target.descriptionText)"
-                        if threshold == 50.0 {
-                            TextToSpeechService.shared.speak("Atención a 50 metros\(remElevSuffix), \(stateInfo.name.lowercased())\(descPart).")
+                        if threshold == configuredAlertDist {
+                            TextToSpeechService.shared.speak("Atención a \(Int(configuredAlertDist)) metros\(remElevSuffix), \(stateInfo.name.lowercased())\(descPart).")
                         } else {
                             TextToSpeechService.shared.speak("Alerta, estás llegando a \(stateInfo.name.lowercased())\(descPart).")
                         }
@@ -1378,6 +1479,15 @@ public final class MainViewModel: @unchecked Sendable {
                         break
                     }
                 }
+            }
+        }
+        
+        // Pitidos Doppler de cercanía cuando están activos y la voz guía está silenciada (1:1 Android GpsTrackingService.kt:776)
+        if enableDopplerBeeps && !isVoiceGuidanceEnabled && distance <= Double(alertDistanceMeters) {
+            let interval = max(0.35, min(2.5, distance / 25.0))
+            if Date().timeIntervalSince(lastDopplerBeepTime) >= interval {
+                lastDopplerBeepTime = Date()
+                AudioServicesPlaySystemSound(1057)
             }
         }
         

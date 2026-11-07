@@ -201,6 +201,8 @@ public struct MainScreen: View {
                 QuickDictateSheetView(viewModel: viewModel)
             case .cloudRoutes:
                 CloudRoutesSheetView(viewModel: viewModel)
+            case .settings:
+                SettingsSheetView(viewModel: viewModel)
             case .recordingDashboard:
                 NavigationStack {
                     RecordingDashboardView(viewModel: viewModel)

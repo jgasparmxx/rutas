@@ -161,11 +161,22 @@ class BeaconEmitterManager(private val context: Context) {
         beaconData[22] = txPower.toByte()
 
         val advertiseData = AdvertiseData.Builder()
-            .addManufacturerData(0x004C, beaconData) // Apple company identifier
+            .addManufacturerData(0x004C, beaconData) // Apple company identifier (Android <-> Android)
+            .build()
+
+        // Scan Response con ServiceData 0xBEAC (27 bytes <= 31 bytes límite BLE Legacy):
+        // Permite que iPhones (CoreBluetooth) lean el payload completo sin que iOS filtre el ManufacturerData 0x004C.
+        val crossPlatformServiceUuid = android.os.ParcelUuid.fromString("0000BEAC-0000-1000-8000-00805F9B34FB")
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .addServiceData(crossPlatformServiceUuid, beaconData)
             .build()
 
         // 3. Define callback
-        val callback = object : AdvertiseCallback() {
+        var retriedWithoutScanResponse = false
+        lateinit var callback: AdvertiseCallback
+        callback = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
                 super.onStartSuccess(settingsInEffect)
                 Log.i(TAG, "BLE iBeacon advertising started successfully")
@@ -174,6 +185,14 @@ class BeaconEmitterManager(private val context: Context) {
 
             override fun onStartFailure(errorCode: Int) {
                 super.onStartFailure(errorCode)
+                if (!retriedWithoutScanResponse && errorCode == ADVERTISE_FAILED_DATA_TOO_LARGE) {
+                    retriedWithoutScanResponse = true
+                    Log.w(TAG, "ScanResponse rejected by chipset, falling back to primary iBeacon packet")
+                    try {
+                        leAdvertiser.startAdvertising(settings, advertiseData, callback)
+                        return
+                    } catch (_: Exception) { }
+                }
                 Log.e(TAG, "BLE iBeacon advertising failed to start. Error code: $errorCode")
                 if (continuation.isActive) continuation.resume(errorCode)
             }
@@ -185,9 +204,9 @@ class BeaconEmitterManager(private val context: Context) {
             stopEmitting()
         }
 
-        // 4. Start advertising
+        // 4. Start advertising (Primary iBeacon + Cross-Platform Scan Response for iOS)
         try {
-            leAdvertiser.startAdvertising(settings, advertiseData, callback)
+            leAdvertiser.startAdvertising(settings, advertiseData, scanResponse, callback)
         } catch (e: SecurityException) {
             Log.e(TAG, "SecurityException starting advertising: ${e.message}", e)
             if (continuation.isActive) continuation.resume(-3)

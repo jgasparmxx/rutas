@@ -11,6 +11,9 @@ import Foundation
 import CoreBluetooth
 import CoreLocation
 import Observation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 // MARK: - Decodificador y Estructura de Datos de Baliza
 
@@ -92,12 +95,37 @@ public struct BeaconPayload: Sendable, Equatable {
         return nil
     }
     
-    /// Parsea un diccionario completo de anuncio CoreBluetooth (ManufacturerData, ServiceUUIDs y ServiceData).
+    /// Parsea un diccionario completo de anuncio CoreBluetooth (ManufacturerData, ServiceData y ServiceUUIDs).
     /// Permite recepción cruzada Android <-> iOS e iOS <-> iOS incluso cuando iOS oculta paquetes iBeacon 0x004C.
     public static func parse(advertisementData: [String: Any]) -> BeaconPayload? {
         if let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
            let payload = parse(manufacturerData: manufacturerData) {
             return payload
+        }
+        
+        // Service Data (ej. UUID 0xBEAC de scanResponse en Android o tramas multiplataforma)
+        if let serviceDataMap = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data] {
+            let emergencyFlag = serviceDataMap.keys.contains { $0.uuidString.uppercased() == "B911" }
+            for (_, data) in serviceDataMap {
+                if let payload = parse(manufacturerData: data) {
+                    if emergencyFlag && !payload.isEmergency {
+                        return BeaconPayload(
+                            idBeacon: payload.idBeacon,
+                            latitude: payload.latitude,
+                            longitude: payload.longitude,
+                            major: payload.major,
+                            minor: 911,
+                            txPower: payload.txPower,
+                            isEmergency: true
+                        )
+                    }
+                    return payload
+                }
+                let bytes = [UInt8](data)
+                if bytes.count >= 16 && bytes[14] == 0xBE && bytes[15] == 0xAC {
+                    return parseRawUUIDBytes(Array(bytes[0..<16]), isEmergency: emergencyFlag)
+                }
+            }
         }
         
         var allServiceUUIDs: [CBUUID] = []
@@ -107,18 +135,11 @@ public struct BeaconPayload: Sendable, Equatable {
         if let overflowUUIDs = advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID] {
             allServiceUUIDs.append(contentsOf: overflowUUIDs)
         }
+        if let solicitedUUIDs = advertisementData[CBAdvertisementDataSolicitedServiceUUIDsKey] as? [CBUUID] {
+            allServiceUUIDs.append(contentsOf: solicitedUUIDs)
+        }
         if !allServiceUUIDs.isEmpty, let payload = parse(serviceUUIDs: allServiceUUIDs) {
             return payload
-        }
-        
-        if let serviceDataMap = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data] {
-            let emergencyFlag = serviceDataMap.keys.contains { $0.uuidString.uppercased() == "B911" }
-            for (_, data) in serviceDataMap {
-                let bytes = [UInt8](data)
-                if bytes.count >= 16 && bytes[14] == 0xBE && bytes[15] == 0xAC {
-                    return parseRawUUIDBytes(Array(bytes[0..<16]), isEmergency: emergencyFlag)
-                }
-            }
         }
         
         return nil
@@ -374,8 +395,18 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
             peripheral.stopAdvertising()
         }
         
-        let adData = buildAdvertisementDictionary(uuid: uuid, id: validHexChars, isEmergency: isEmergency)
-        guard let advertisementData = adData else {
+        let isAppActive: Bool = {
+            #if os(iOS)
+            return UIApplication.shared.applicationState == .active
+            #else
+            return true
+            #endif
+        }()
+        
+        let initialData: [String: Any]? = isAppActive
+            ? buildAdvertisementDictionary(uuid: uuid, id: validHexChars, isEmergency: isEmergency)
+            : buildServiceUUIDAdvertisementDictionary(uuid: uuid, isEmergency: isEmergency)
+        guard let advertisementData = initialData else {
             self.isBroadcasting = false
             self.lastBroadcastError = "No se pudo generar el paquete iBeacon."
             return -2
@@ -386,6 +417,7 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
             self.isBroadcasting = true
             self.lastAdvertisedLocation = hasRealLocation ? CLLocation(latitude: latitude, longitude: longitude) : nil
             self.lastAdvertisedDate = Date()
+            self.registerLifecycleObserversIfNeeded()
             self.startDualFrameLoop()
         } else {
             self.isBroadcasting = false
@@ -393,15 +425,75 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
         return resultCode
     }
     
-    /// Alterna ráfagas entre iBeacon estándar (0x004C para receptores Android) y CBUUID de 128 bits
-    /// (visible sin bloqueo de CoreBluetooth para receptores iOS <-> iOS en primer y segundo plano).
+    @ObservationIgnored
+    private var lifecycleObserversRegistered: Bool = false
+    
+    @MainActor
+    private func registerLifecycleObserversIfNeeded() {
+        #if os(iOS)
+        guard !lifecycleObserversRegistered else { return }
+        lifecycleObserversRegistered = true
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self,
+                      self.isBroadcasting,
+                      let peripheral = self.peripheralManager,
+                      peripheral.state == .poweredOn,
+                      let id = self.pendingBeaconId,
+                      let uuid = BeaconPayload.buildProximityUUID(beaconId: id, latitude: self.pendingLat, longitude: self.pendingLon) else {
+                    return
+                }
+                // En segundo plano o pantalla bloqueada, iOS silencia kCBAdvDataAppleBeaconKey;
+                // mantenemos ServiceUUID de 128 bits continuo para que Android e iOS sigan localizando el iPhone.
+                self.dualModeTask?.cancel()
+                self.dualModeTask = nil
+                self.isCyclingAdvertisement = true
+                if peripheral.isAdvertising {
+                    peripheral.stopAdvertising()
+                }
+                let bgDict = self.buildServiceUUIDAdvertisementDictionary(uuid: uuid, isEmergency: self.pendingIsEmergency)
+                peripheral.startAdvertising(bgDict)
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self,
+                      self.isBroadcasting,
+                      let peripheral = self.peripheralManager,
+                      peripheral.state == .poweredOn,
+                      let id = self.pendingBeaconId,
+                      let uuid = BeaconPayload.buildProximityUUID(beaconId: id, latitude: self.pendingLat, longitude: self.pendingLon),
+                      let fgDict = self.buildAdvertisementDictionary(uuid: uuid, id: id, isEmergency: self.pendingIsEmergency) else {
+                    return
+                }
+                self.isCyclingAdvertisement = true
+                if peripheral.isAdvertising {
+                    peripheral.stopAdvertising()
+                }
+                peripheral.startAdvertising(fgDict)
+                self.startDualFrameLoop()
+            }
+        }
+        #endif
+    }
+    
+    /// En primer plano mantiene ráfagas largas y estables de iBeacon 0x004C (5.0s continuos = ~150 tramas sin corte
+    /// para que Android lo localice de inmediato) con pulsos breves de CBUUID 128-bit (1.0s para iOS <-> iOS).
     @MainActor
     private func startDualFrameLoop() {
         dualModeTask?.cancel()
         dualModeTask = Task { @MainActor [weak self] in
             var emitServiceUUIDFrame = false
             while !Task.isCancelled {
-                let sleepNs: UInt64 = emitServiceUUIDFrame ? 1_200_000_000 : 2_000_000_000
+                let sleepNs: UInt64 = emitServiceUUIDFrame ? 1_000_000_000 : 5_000_000_000
                 try? await Task.sleep(nanoseconds: sleepNs)
                 guard !Task.isCancelled,
                       let self = self,
@@ -412,6 +504,13 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
                       let uuid = BeaconPayload.buildProximityUUID(beaconId: id, latitude: self.pendingLat, longitude: self.pendingLon) else {
                     break
                 }
+                
+                #if os(iOS)
+                if UIApplication.shared.applicationState != .active {
+                    // En fondo permanece fijo en ServiceUUID sin ciclar
+                    continue
+                }
+                #endif
                 
                 emitServiceUUIDFrame.toggle()
                 self.isCyclingAdvertisement = true
@@ -509,8 +608,21 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
         self.lastAdvertisedLocation = newLoc
         self.lastAdvertisedDate = now
         
-        guard let uuid = BeaconPayload.buildProximityUUID(beaconId: id, latitude: latitude, longitude: longitude),
-              let data = buildAdvertisementDictionary(uuid: uuid, id: id, isEmergency: pendingIsEmergency) else {
+        guard let uuid = BeaconPayload.buildProximityUUID(beaconId: id, latitude: latitude, longitude: longitude) else {
+            return
+        }
+        
+        let isAppActive: Bool = {
+            #if os(iOS)
+            return UIApplication.shared.applicationState == .active
+            #else
+            return true
+            #endif
+        }()
+        
+        guard let data = isAppActive
+            ? buildAdvertisementDictionary(uuid: uuid, id: id, isEmergency: pendingIsEmergency)
+            : buildServiceUUIDAdvertisementDictionary(uuid: uuid, isEmergency: pendingIsEmergency) else {
             return
         }
         
@@ -547,13 +659,10 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
             identifier: "com.gaspar.rutassendero.beacon"
         )
         let dict = region.peripheralData(withMeasuredPower: NSNumber(value: -59))
-        var result: [String: Any] = [:]
-        for (key, value) in dict {
-            if let k = key as? String {
-                result[k] = value
-            }
+        if let bridged = NSDictionary(dictionary: dict) as? [String: Any], !bridged.isEmpty {
+            return bridged
         }
-        return result.isEmpty ? nil : result
+        return nil
         #else
         return [
             CBAdvertisementDataLocalNameKey: "RutasBeacon-\(id.prefix(6))"

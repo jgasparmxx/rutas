@@ -290,6 +290,16 @@ public final class MainViewModel: @unchecked Sendable {
             }
         }
         
+        // Mantener coordenadas reales actualizadas en el Faro BLE incluso en interiores (Wi-Fi/Celular)
+        self.locationTracker.onBeaconLocationFix = { [weak self] lat, lon in
+            guard let self = self else { return }
+            Task { @MainActor in
+                if self.isBeaconEmitting {
+                    self.bleBroadcaster.updateCoordinates(latitude: lat, longitude: lon)
+                }
+            }
+        }
+        
         // Iniciar rastreo básico para visualización en mapa
         self.startLocationUpdates()
         
@@ -610,6 +620,12 @@ public final class MainViewModel: @unchecked Sendable {
             route.elevationLoss = elevationStats.elevationLoss
             route.climbsCount = elevationStats.climbsCount
             route.descentsCount = elevationStats.descentsCount
+            if !recordedPoints.isEmpty {
+                let connectedCount = recordedPoints.filter { $0.hasConnectivity }.count
+                route.connectivity = (Double(connectedCount) / Double(recordedPoints.count)) * 100.0
+            } else {
+                route.connectivity = 100.0
+            }
             self.activeRoute = route
             
             // Persistir ruta completa, puntos y traza en SwiftData
@@ -762,8 +778,8 @@ public final class MainViewModel: @unchecked Sendable {
             }
             
             let realLoc = self.locationTracker.currentLocation
-            let lat = realLoc?.coordinate.latitude ?? 19.2458
-            let lon = realLoc?.coordinate.longitude ?? -103.7251
+            let lat = realLoc?.coordinate.latitude ?? 0.0
+            let lon = realLoc?.coordinate.longitude ?? 0.0
             
             let code = await self.bleBroadcaster.startBroadcastingWithCode(
                 beaconId: bId,
@@ -806,8 +822,8 @@ public final class MainViewModel: @unchecked Sendable {
             }
             
             let realLoc = self.locationTracker.currentLocation
-            let lat = realLoc?.coordinate.latitude ?? 19.2458
-            let lon = realLoc?.coordinate.longitude ?? -103.7251
+            let lat = realLoc?.coordinate.latitude ?? 0.0
+            let lon = realLoc?.coordinate.longitude ?? 0.0
             
             if activatingEmergency {
                 let code = await self.bleBroadcaster.startBroadcastingWithCode(
@@ -1660,6 +1676,52 @@ public final class MainViewModel: @unchecked Sendable {
                     } else {
                         self.stopVirtualTour()
                     }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Privacidad de Ruta Propia (Pública / Privada + Clave 1:1 Android RutaDetailDialog)
+    
+    @MainActor
+    public func updateActiveRoutePrivacy(isPublic: Bool) async {
+        guard var route = activeRoute else { return }
+        let userPhone = currentHikerProfile?.phone ?? ""
+        guard route.isOwnRoute(userPhone: userPhone) else { return }
+        
+        if !isPublic {
+            let maxLimit = currentHikerProfile?.maxPrivadas ?? 3
+            if let allRoutes = try? await rutasRepository?.getAllRoutes() {
+                let privateCount = allRoutes.filter { !$0.isPublic && $0.id != route.id && $0.isOwnRoute(userPhone: userPhone) }.count
+                if privateCount >= maxLimit {
+                    saveStatusMessage = "Límite alcanzado: Sólo puedes tener un máximo de \(maxLimit) rutas no públicas."
+                    return
+                }
+            }
+            if route.accessCode.isEmpty {
+                let allowed = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+                route.accessCode = String((0..<5).compactMap { _ in allowed.randomElement() })
+            }
+            route.isPublic = false
+        } else {
+            route.isPublic = true
+        }
+        
+        self.activeRoute = route
+        if let idx = availableLocalRoutes.firstIndex(where: { $0.id == route.id }) {
+            availableLocalRoutes[idx] = route
+        }
+        
+        if let repo = rutasRepository {
+            try? await repo.save(route: route)
+            if let profile = currentHikerProfile {
+                let routeId = route.id
+                Task.detached(priority: .background) {
+                    try? await CloudSyncService.shared.uploadRouteToCloud(
+                        routeId: routeId,
+                        from: repo,
+                        creator: profile
+                    )
                 }
             }
         }

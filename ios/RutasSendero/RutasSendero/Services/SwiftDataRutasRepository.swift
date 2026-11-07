@@ -55,6 +55,8 @@ public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepo
             existing.desnivelNegativo = route.elevationLoss
             existing.contadorSubidas = route.climbsCount
             existing.contadorBajadas = route.descentsCount
+            existing.conectividad = Float(route.connectivity)
+            existing.codigo = route.accessCode
             existing.publico = route.isPublic
             existing.telefono = route.creatorPhone
             existing.fechaImportacion = route.importDate
@@ -77,6 +79,8 @@ public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepo
                 contadorSubidas: route.climbsCount,
                 contadorBajadas: route.descentsCount,
                 telefono: route.creatorPhone,
+                conectividad: Float(route.connectivity),
+                codigo: route.accessCode,
                 publico: route.isPublic,
                 fechaImportacion: route.importDate,
                 fupdate: route.syncTimestamp > 0 ? route.syncTimestamp : Int64(Date().timeIntervalSince1970 * 1000)
@@ -265,6 +269,8 @@ extension SDCacheRuta {
             elevationLoss: self.desnivelNegativo,
             climbsCount: self.contadorSubidas,
             descentsCount: self.contadorBajadas,
+            connectivity: Double(self.conectividad),
+            accessCode: self.codigo,
             isPublic: self.publico,
             syncTimestamp: self.fupdate,
             creatorPhone: self.telefono,

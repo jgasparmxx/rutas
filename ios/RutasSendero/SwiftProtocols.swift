@@ -26,6 +26,8 @@ public struct Route: Identifiable, Codable, Sendable {
     public var elevationLoss: Double
     public var climbsCount: Int
     public var descentsCount: Int
+    public var connectivity: Double
+    public var accessCode: String
     public var isPublic: Bool
     public var syncTimestamp: Int64
     public var creatorPhone: String
@@ -47,6 +49,8 @@ public struct Route: Identifiable, Codable, Sendable {
         elevationLoss: Double = 0.0,
         climbsCount: Int = 0,
         descentsCount: Int = 0,
+        connectivity: Double = 0.0,
+        accessCode: String = "",
         isPublic: Bool = true,
         syncTimestamp: Int64 = 0,
         creatorPhone: String = "",
@@ -67,6 +71,8 @@ public struct Route: Identifiable, Codable, Sendable {
         self.elevationLoss = elevationLoss
         self.climbsCount = climbsCount
         self.descentsCount = descentsCount
+        self.connectivity = connectivity
+        self.accessCode = accessCode
         self.isPublic = isPublic
         self.syncTimestamp = syncTimestamp
         self.creatorPhone = creatorPhone

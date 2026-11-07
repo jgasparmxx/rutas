@@ -163,10 +163,35 @@ public enum RouteStatsCalculator {
         )
     }
     
-    /// Estimación de calorías quemadas: Peso (kg) * Distancia (km) * 1.036
-    public static func calculateCalories(weightKg: Double = 70.0, distanceMeters: Double) -> Double {
+    /// Estimación de calorías quemadas (Margaria + Pandolf 1:1 Android RouteFitnessCalculator.kt)
+    public static func calculateCalories(weightKg: Double = 70.0, distanceMeters: Double, elevationGainMeters: Double = 0.0) -> Double {
         let distanceKm = distanceMeters / 1000.0
-        return weightKg * distanceKm * 1.036
+        let distanceCalories = weightKg * distanceKm * 0.82
+        let elevationCalories = weightKg * (elevationGainMeters / 100.0) * 1.6
+        return distanceCalories + elevationCalories
+    }
+    
+    /// Resumen de calorías 1:1 con Android RouteFitnessCalculator.getCaloriesSummary
+    public static func getCaloriesSummary(
+        distanceKm: Double,
+        elevationGainMeters: Double,
+        userWeightKg: Double? = nil
+    ) -> String {
+        if distanceKm <= 0 && elevationGainMeters <= 0 {
+            return "Comienza a caminar para estimar las calorías."
+        }
+        
+        if let weight = userWeightKg, weight > 0.0 {
+            let exactCalories = Int(calculateCalories(weightKg: weight, distanceMeters: distanceKm * 1000.0, elevationGainMeters: elevationGainMeters))
+            let weightText = weight.truncatingRemainder(dividingBy: 1.0) == 0 ? String(format: "%.0f", weight) : String(format: "%.1f", weight)
+            return "Peso: \(weightText) kg  🔥 ~\(exactCalories) kcal"
+        }
+        
+        let calLight = Int(calculateCalories(weightKg: 68.0, distanceMeters: distanceKm * 1000.0, elevationGainMeters: elevationGainMeters))
+        let calMid = Int(calculateCalories(weightKg: 77.5, distanceMeters: distanceKm * 1000.0, elevationGainMeters: elevationGainMeters))
+        let calHeavy = Int(calculateCalories(weightKg: 85.0, distanceMeters: distanceKm * 1000.0, elevationGainMeters: elevationGainMeters))
+        
+        return "🔥 Calorías Estimadas\n< 75 kg: ~\(calLight) kcal\n75 - 80 kg: ~\(calMid) kcal\n> 80 kg: ~\(calHeavy) kcal"
     }
     
     // MARK: - Formateadores para UI

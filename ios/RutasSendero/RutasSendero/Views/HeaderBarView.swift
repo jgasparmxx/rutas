@@ -72,8 +72,7 @@ public struct HeaderBarView: View {
                 }
                 
                 Button {
-                    viewModel.saveStatusMessage = "Salidas y eventos programados"
-                    viewModel.isShowingRouteDetailsSheet = true
+                    viewModel.saveStatusMessage = "Salidas y eventos programados próximamente."
                 } label: {
                     Label("4. Salidas", systemImage: "calendar")
                 }
@@ -293,34 +292,6 @@ public struct HeaderBarView: View {
                 .buttonStyle(.plain)
             }
             
-            // Botón contextual: Simulación Recorrido Virtual (solo con ruta activa en modo visor, 1:1 Android)
-            if viewModel.activeRole == .visor && viewModel.activeRoute != nil && !viewModel.recordedPoints.isEmpty {
-                Button {
-                    if viewModel.isVirtualTourActive {
-                        viewModel.togglePauseVirtualTour()
-                    } else {
-                        viewModel.startVirtualTour()
-                    }
-                } label: {
-                    ZStack {
-                        // Background negro destacado (1:1 solicitud usuario)
-                        Circle()
-                            .fill(Color.black)
-                            .frame(width: 38, height: 38)
-                            .overlay(
-                                Circle()
-                                    .stroke(Color(red: 56/255, green: 189/255, blue: 248/255), lineWidth: 1.8)
-                            )
-                            .shadow(color: Color.black.opacity(0.6), radius: 4, x: 0, y: 2)
-                        
-                        Image(systemName: viewModel.isVirtualTourActive ? (viewModel.isVirtualTourPaused ? "play.fill" : "pause.fill") : "play.fill")
-                            .font(.system(size: 15, weight: .black))
-                            .foregroundStyle(Color(red: 56/255, green: 189/255, blue: 248/255))
-                    }
-                }
-                .buttonStyle(.plain)
-            }
-            
             // Botón contextual: Bloqueo Modo Bolsillo (solo cuando hay ruta seleccionada y no es visor)
             if viewModel.activeRoute != nil && viewModel.activeRole != .visor {
                 Button {
@@ -339,8 +310,8 @@ public struct HeaderBarView: View {
                 .buttonStyle(.plain)
             }
             
-            // Botón contextual: Emergencia 911 (Modo Guía o emergencia activa, 1:1 Android con 4 clics)
-            if viewModel.activeRole == .guia || viewModel.isEmergency911Active {
+            // Botón contextual: Emergencia 911 (Solo en Modo Guía con ruta activa o cuando hay emergencia activa)
+            if (viewModel.activeRole == .guia && viewModel.activeRoute != nil) || viewModel.isEmergency911Active {
                 Emergency911HeaderButton(viewModel: viewModel)
             }
             
@@ -355,7 +326,7 @@ public struct HeaderBarView: View {
                 }
                 
                 if viewModel.activeRoute != nil {
-                    // 1:1 Android (MainScreen.kt línea 3803) Iniciar/Pausar Recorrido Virtual en menú
+                    // 1:1 Android (MainScreen.kt línea 3803) Iniciar/Pausar/Detener Recorrido Virtual en menú del sistema
                     if viewModel.activeRole == .visor && !viewModel.recordedPoints.isEmpty {
                         Button {
                             if viewModel.isVirtualTourActive {
@@ -368,6 +339,14 @@ public struct HeaderBarView: View {
                                 viewModel.isVirtualTourActive ? (viewModel.isVirtualTourPaused ? "Reanudar Recorrido Virtual" : "Pausar Recorrido Virtual") : "Iniciar Recorrido Virtual",
                                 systemImage: viewModel.isVirtualTourActive ? (viewModel.isVirtualTourPaused ? "play.fill" : "pause.fill") : "play.fill"
                             )
+                        }
+                        
+                        if viewModel.isVirtualTourActive {
+                            Button(role: .destructive) {
+                                viewModel.stopVirtualTour()
+                            } label: {
+                                Label("Detener Recorrido Virtual", systemImage: "stop.fill")
+                            }
                         }
                     }
                     

@@ -31,6 +31,10 @@ public final class LocationTracker: NSObject, CLLocationManagerDelegate, Locatio
     @ObservationIgnored
     private var onUpdateCallback: (@Sendable (Double, Double, Double) -> Void)?
     
+    /// Callback opcional para notificar cualquier fix válido (incluso en interiores por Wi-Fi/Red <= 200m) para el Faro BLE
+    @ObservationIgnored
+    public var onBeaconLocationFix: (@Sendable (Double, Double) -> Void)?
+    
     // MARK: - Inicialización
     public override init() {
         super.init()
@@ -110,14 +114,7 @@ public final class LocationTracker: NSObject, CLLocationManagerDelegate, Locatio
     
     public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
-        
-        // Filtrar lecturas inválidas o con mala precisión horizontal (> 20.0 metros)
-        guard location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 20.0 else {
-            Task { @MainActor in
-                self.horizontalAccuracy = location.horizontalAccuracy
-            }
-            return
-        }
+        guard location.horizontalAccuracy >= 0 else { return }
         
         let lat = location.coordinate.latitude
         let lon = location.coordinate.longitude
@@ -127,16 +124,29 @@ public final class LocationTracker: NSObject, CLLocationManagerDelegate, Locatio
         let course = location.course
         let accuracy = location.horizontalAccuracy
         
-        Task { @MainActor in
-            self.currentLocation = location
-            self.currentAltitude = alt
-            self.currentSpeedKmh = speedKmh
-            self.currentCourse = course
-            self.horizontalAccuracy = accuracy
-            self.isGpsReady = true
+        // Permitir ubicación general y de Faro BLE incluso en interiores (<= 200m),
+        // pero exigir precisión fina (<= 25m) para grabar trazas de sendero sin ruido GPS.
+        if accuracy <= 200.0 {
+            Task { @MainActor in
+                if self.currentLocation == nil || accuracy <= 35.0 || accuracy <= (self.currentLocation?.horizontalAccuracy ?? 200.0) {
+                    self.currentLocation = location
+                    self.currentAltitude = alt
+                    self.currentSpeedKmh = speedKmh
+                    self.currentCourse = course
+                }
+                self.horizontalAccuracy = accuracy
+                self.isGpsReady = true
+            }
+            onBeaconLocationFix?(lat, lon)
+        } else {
+            Task { @MainActor in
+                self.horizontalAccuracy = accuracy
+            }
         }
         
-        // Invocar el callback del protocolo en background/sendable
+        guard accuracy <= 25.0 else { return }
+        
+        // Invocar el callback de traza / guiado fino cuando la precisión horizontal es óptima
         onUpdateCallback?(lat, lon, alt)
     }
     

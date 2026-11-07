@@ -716,6 +716,16 @@ public final class CloudSyncService: @unchecked Sendable {
         let desNeg = rJson["desnivel_negativo"] as? Double ?? 0.0
         let subidas = rJson["contador_subidas"] as? Int ?? 0
         let bajadas = rJson["contador_bajadas"] as? Int ?? 0
+        let conectividad: Double = {
+            if let num = rJson["conectividad"] as? NSNumber {
+                if CFGetTypeID(num) == CFBooleanGetTypeID() {
+                    return num.boolValue ? 100.0 : 0.0
+                }
+                return num.doubleValue
+            }
+            return 0.0
+        }()
+        let codigoRuta = rJson["codigo"] as? String ?? ""
         let esPublico = rJson["publico"] as? Bool ?? true
         let tel = rJson["telefono"] as? String ?? (rJson["telefono_creador"] as? String ?? "")
         let importDate = Int64(Date().timeIntervalSince1970 * 1000)
@@ -736,6 +746,8 @@ public final class CloudSyncService: @unchecked Sendable {
             elevationLoss: desNeg,
             climbsCount: subidas,
             descentsCount: bajadas,
+            connectivity: conectividad,
+            accessCode: codigoRuta,
             isPublic: esPublico,
             syncTimestamp: Int64(Date().timeIntervalSince1970 * 1000),
             creatorPhone: tel,
@@ -854,8 +866,8 @@ public final class CloudSyncService: @unchecked Sendable {
             "contador_subidas": route.climbsCount,
             "contador_bajadas": route.descentsCount,
             "telefono": route.creatorPhone.isEmpty ? creator.phone : route.creatorPhone,
-            "conectividad": true,
-            "codigo": route.id,
+            "conectividad": route.connectivity > 0 ? route.connectivity : (points.isEmpty ? 100.0 : (Double(points.filter { $0.hasConnectivity }.count) / Double(points.count)) * 100.0),
+            "codigo": route.accessCode.isEmpty ? route.id : route.accessCode,
             "publico": route.isPublic
         ]
         if let start = route.startTime { routeDict["fecha_hora_inicio"] = start }

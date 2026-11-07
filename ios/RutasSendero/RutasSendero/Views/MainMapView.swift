@@ -335,7 +335,7 @@ public struct MainMapView: View {
     }
 }
 
-// MARK: - Vista Personalizada de Marcador (Waypoint)
+// MARK: - Vista Personalizada de Marcador de Estado (1:1 Android getMarkerVisuals sin fotos)
 
 public struct WaypointMarkerView: View {
     public let point: RoutePoint
@@ -343,81 +343,169 @@ public struct WaypointMarkerView: View {
     public var isHighlighted: Bool = false
     public var nextStepBadge: String? = nil
     
+    private struct MarkerVisuals {
+        let bg: Color
+        let border: Color
+        let systemIcon: String
+        let stateName: String
+    }
+    
+    private func resolveVisuals(num: Int) -> MarkerVisuals {
+        if num == 1 {
+            return MarkerVisuals(
+                bg: Color(red: 15/255, green: 118/255, blue: 110/255),     // #0F766E
+                border: Color(red: 45/255, green: 212/255, blue: 191/255), // #2DD4BF
+                systemIcon: "play.fill",
+                stateName: "Inicio"
+            )
+        }
+        if point.isRouteEnd {
+            return MarkerVisuals(
+                bg: Color(red: 211/255, green: 47/255, blue: 47/255),      // #D32F2F
+                border: Color(red: 255/255, green: 205/255, blue: 210/255),// #FFCDD2
+                systemIcon: "flag.fill",
+                stateName: "Fin de ruta"
+            )
+        }
+        
+        let resolvedState = PointStateInfo.forPoint(
+            estado: point.estado,
+            isRouteEnd: false,
+            description: point.descriptionText
+        ).estado
+        
+        switch resolvedState {
+        case 2: // Sitio de interés
+            return MarkerVisuals(
+                bg: Color(red: 46/255, green: 125/255, blue: 50/255),      // #2E7D32
+                border: Color(red: 165/255, green: 214/255, blue: 167/255),// #A5D6A7
+                systemIcon: "camera.fill",
+                stateName: "Sitio de interés"
+            )
+        case 3: // Bifurcación
+            return MarkerVisuals(
+                bg: Color(red: 94/255, green: 53/255, blue: 177/255),      // #5E35B1
+                border: Color(red: 209/255, green: 196/255, blue: 233/255),// #D1C4E9
+                systemIcon: "arrow.triangle.branch",
+                stateName: "Bifurcación"
+            )
+        case 4: // Suelo flojo
+            return MarkerVisuals(
+                bg: Color(red: 141/255, green: 110/255, blue: 99/255),     // #8D6E63
+                border: Color(red: 215/255, green: 204/255, blue: 200/255),// #D7CCC8
+                systemIcon: "figure.fall",
+                stateName: "Suelo flojo"
+            )
+        case 5: // Cuidado
+            return MarkerVisuals(
+                bg: Color(red: 245/255, green: 158/255, blue: 11/255),     // #F59E0B
+                border: Color(red: 254/255, green: 243/255, blue: 199/255),// #FEF3C7
+                systemIcon: "exclamationmark.triangle.fill",
+                stateName: "Cuidado"
+            )
+        case 6: // Alerta / Peligro
+            return MarkerVisuals(
+                bg: Color(red: 211/255, green: 47/255, blue: 47/255),      // #D32F2F
+                border: Color(red: 255/255, green: 205/255, blue: 210/255),// #FFCDD2
+                systemIcon: "skull.fill",
+                stateName: "Alerta"
+            )
+        case 8: // Vehículo
+            return MarkerVisuals(
+                bg: Color(red: 96/255, green: 125/255, blue: 139/255),     // #607D8B
+                border: Color(red: 207/255, green: 216/255, blue: 220/255),// #CFD8DC
+                systemIcon: "car.fill",
+                stateName: "Vehículo"
+            )
+        case 9: // Refugio
+            return MarkerVisuals(
+                bg: Color(red: 78/255, green: 52/255, blue: 46/255),       // #4E342E
+                border: Color(red: 215/255, green: 204/255, blue: 200/255),// #D7CCC8
+                systemIcon: "house.fill",
+                stateName: "Refugio"
+            )
+        case 10: // Comida
+            return MarkerVisuals(
+                bg: Color(red: 230/255, green: 81/255, blue: 0/255),       // #E65100
+                border: Color(red: 255/255, green: 224/255, blue: 178/255),// #FFE0B2
+                systemIcon: "fork.knife",
+                stateName: "Comida"
+            )
+        default: // 1: Punto normal
+            return MarkerVisuals(
+                bg: Color(red: 25/255, green: 118/255, blue: 210/255),     // #1976D2
+                border: Color(red: 144/255, green: 202/255, blue: 249/255),// #90CAF9
+                systemIcon: "circle.fill",
+                stateName: "Punto normal"
+            )
+        }
+    }
+    
     public var body: some View {
         let num = displayNumber ?? point.id
+        let visuals = resolveVisuals(num: num)
+        
         VStack(spacing: 2) {
             ZStack {
                 if isHighlighted {
                     Circle()
                         .stroke(Color(red: 56/255, green: 189/255, blue: 248/255), lineWidth: 3.5)
-                        .frame(width: 44, height: 44)
-                        .shadow(color: Color(red: 56/255, green: 189/255, blue: 248/255).opacity(0.8), radius: 6)
+                        .frame(width: 42, height: 42)
+                        .shadow(color: Color(red: 56/255, green: 189/255, blue: 248/255).opacity(0.85), radius: 6)
                 }
                 
-                if let path = point.photoUrl, !path.isEmpty {
-                    // Marcador con foto real del punto
-                    ZStack(alignment: .bottomTrailing) {
-                        WaypointThumbnailView(photoPath: path, size: 36, borderColor: markerBackgroundColor(num: num))
-                            .clipShape(Circle())
-                            .overlay(Circle().stroke(markerBackgroundColor(num: num), lineWidth: 2.5))
-                            .shadow(color: Color.black.opacity(0.4), radius: 4, y: 2)
-                        
-                        Text("\(num)")
-                            .font(.system(size: 8, weight: .heavy))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 3)
-                            .padding(.vertical, 1)
-                            .background(markerBackgroundColor(num: num))
-                            .clipShape(Capsule())
-                            .offset(x: 2, y: 2)
-                    }
-                } else {
+                ZStack(alignment: .bottomTrailing) {
                     Circle()
-                        .fill(num == 1 ? Color.black : markerBackgroundColor(num: num))
-                        .frame(width: 32, height: 32)
+                        .fill(visuals.bg)
+                        .frame(width: 30, height: 30)
                         .overlay(
-                            Circle().stroke(num == 1 ? Color(red: 56/255, green: 189/255, blue: 248/255) : Color.white, lineWidth: 2)
+                            Circle()
+                                .stroke(isHighlighted ? Color(red: 56/255, green: 189/255, blue: 248/255) : visuals.border, lineWidth: 2.5)
                         )
-                        .shadow(color: Color.black.opacity(0.4), radius: 4, x: 0, y: 2)
+                        .shadow(color: Color.black.opacity(0.45), radius: 3, x: 0, y: 2)
                     
-                    if point.isRouteEnd && num != 1 {
-                        Image(systemName: "flag.checkered")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white)
-                    } else if num == 1 {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 12, weight: .black))
-                            .foregroundStyle(Color(red: 56/255, green: 189/255, blue: 248/255))
-                    } else {
-                        Text("\(num)")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(isHighlighted ? Color(red: 15/255, green: 23/255, blue: 42/255) : .white)
-                    }
+                    Image(systemName: visuals.systemIcon)
+                        .font(.system(size: visuals.systemIcon == "circle.fill" ? 8 : 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                    
+                    Text("\(num)")
+                        .font(.system(size: 8, weight: .heavy, design: .rounded))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 3.5)
+                        .padding(.vertical, 1)
+                        .background(Color(red: 15/255, green: 23/255, blue: 42/255))
+                        .overlay(
+                            Capsule().stroke(visuals.border.opacity(0.8), lineWidth: 0.8)
+                        )
+                        .clipShape(Capsule())
+                        .offset(x: 4, y: 4)
                 }
             }
             
-            // Etiqueta flotante con distancia y subida/bajada al siguiente punto (sin altitud absoluta)
-            if let badge = nextStepBadge, !badge.isEmpty {
+            // Etiqueta flotante con el estatus especial (si no es punto normal) + distancia y subida/bajada
+            let chipText: String? = {
+                let statePrefix = (visuals.stateName != "Punto normal" && visuals.stateName != "Inicio" && visuals.stateName != "Fin de ruta")
+                    ? "\(visuals.stateName)"
+                    : nil
+                if let sp = statePrefix, let badge = nextStepBadge, !badge.isEmpty, badge != "Fin" {
+                    return "\(sp) · \(badge)"
+                } else if let sp = statePrefix {
+                    return sp
+                } else {
+                    return nextStepBadge
+                }
+            }()
+            
+            if let badge = chipText, !badge.isEmpty {
                 Text(badge)
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(isHighlighted ? Color(red: 94/255, green: 234/255, blue: 212/255) : .white)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1.5)
-                    .background(AppTheme.darkBackground.opacity(0.88))
+                    .background(AppTheme.darkBackground.opacity(0.9))
                     .clipShape(Capsule())
             }
-        }
-    }
-    
-    private func markerBackgroundColor(num: Int) -> Color {
-        if isHighlighted {
-            return Color(red: 56/255, green: 189/255, blue: 248/255) // Azul Celeste
-        } else if point.isRouteEnd && num != 1 {
-            return AppTheme.alert
-        } else if num == 1 {
-            return AppTheme.primaryLight
-        } else {
-            return AppTheme.warningYellow
         }
     }
 }

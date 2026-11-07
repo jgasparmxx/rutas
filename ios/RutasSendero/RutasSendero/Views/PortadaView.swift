@@ -20,15 +20,15 @@ public struct PortadaView: View {
     }
     
     public var body: some View {
-        VStack(spacing: 12) {
-            // 1. Selector de Modos (1:1 Android Kotlin: Guía y Visor, nunca Trazar)
-            if viewModel.activeRoute == nil || viewModel.isRouteConsumptionOnly || viewModel.recordingState == .stopped {
+        VStack(spacing: 8) {
+            // 1. Selector de Modos (1:1 Android MainScreen.kt:1606: se oculta al tener ruta activa para recuperar espacio)
+            if viewModel.activeRoute == nil {
                 modeSelectorView
                     .padding(.horizontal, 16)
                     .padding(.top, 4)
             }
             
-            // 2. Contenido Central (Portada o Tarjeta de Ruta Seleccionada)
+            // 2. Contenido Central (Portada o Lista de Puntos de Ruta Activa)
             if let activeRoute = viewModel.activeRoute {
                 if viewModel.recordingState == .recording || viewModel.recordingState == .paused || viewModel.activeRole == .registrar {
                     Spacer()
@@ -37,17 +37,18 @@ public struct PortadaView: View {
                     Spacer()
                 } else {
                     consumedRouteCard(activeRoute)
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
                 }
             } else {
                 emptyStatePortada
+                
+                // 3. Pie de Pantalla: Derechos reservados Tekins S.A. (Solo en la Portada inicial, 1:1 Android MainScreen.kt:1977)
+                Text("© Todos los derechos reservados Tekins S.A.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(AppTheme.darkBackground.opacity(0.55))
+                    .padding(.bottom, 6)
             }
-            
-            // 3. Pie de Pantalla: Derechos reservados Tekins S.A.
-            Text("© Todos los derechos reservados Tekins S.A.")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(AppTheme.darkBackground.opacity(0.55))
-                .padding(.bottom, 6)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -183,120 +184,38 @@ public struct PortadaView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     
-    // MARK: - Tarjeta de Ruta en Modo Visor / Guía (1:1 Android: Solo Lista de Puntos)
+    // MARK: - Lista de Puntos en Modo Visor / Guía (1:1 Android MainScreen.kt:1986: sin sub-header redundante)
     @ViewBuilder
     private func consumedRouteCard(_ route: Route) -> some View {
-        let isVisor = (viewModel.activeRole == .visor)
-        let primaryColor = isVisor ? Color(red: 56/255, green: 189/255, blue: 248/255) : AppTheme.accentCyan
         let pts = viewModel.tourPoints
         
-        VStack(spacing: 10) {
-            // Cabecera compacta: Indicador de Modo, total de puntos, sentido de ruta y botón cerrar
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: isVisor ? "eye.fill" : "location.north.circle.fill")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(primaryColor)
-                    
-                    Text(isVisor ? "MODO VISOR" : "MODO GUÍA")
-                        .font(.system(size: 11, weight: .heavy))
-                        .foregroundStyle(primaryColor)
-                    
-                    Text("· \(pts.count) PUNTOS")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(AppTheme.textSecondary)
-                }
-                
+        if pts.isEmpty {
+            VStack(spacing: 12) {
                 Spacer()
-                
-                // Conmutador rápido de sentido (Ida vs Retorno)
-                if !pts.isEmpty {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            viewModel.isVisorReversed.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: viewModel.isVisorReversed ? "arrow.left" : "arrow.right")
-                                .font(.system(size: 10, weight: .bold))
-                            Text(viewModel.isVisorReversed ? "Retorno" : "Ida")
-                                .font(.system(size: 10, weight: .bold))
-                        }
-                        .foregroundStyle(primaryColor)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(primaryColor.opacity(0.12))
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    
-                    // Botón para saltar directamente al mapa
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            viewModel.showMapScreen = true
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "map.fill")
-                                .font(.system(size: 10, weight: .bold))
-                            Text("Mapa")
-                                .font(.system(size: 10, weight: .bold))
-                        }
-                        .foregroundStyle(Color(red: 15/255, green: 23/255, blue: 42/255))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(primaryColor)
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
-                
-                Button(role: .destructive) {
-                    viewModel.clearActiveRoute()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(AppTheme.alert.opacity(0.8))
-                }
+                Image(systemName: "map.circle")
+                    .font(.system(size: 48))
+                    .foregroundStyle(AppTheme.darkBackground.opacity(0.45))
+                Text("No hay puntos registrados en esta ruta")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(AppTheme.darkBackground.opacity(0.75))
+                Spacer()
             }
-            .padding(.horizontal, 4)
-            .padding(.top, 2)
-            
-            // Lista limpia de puntos del sendero (1:1 Android)
-            if pts.isEmpty {
-                VStack(spacing: 12) {
-                    Spacer()
-                    Image(systemName: "map.circle")
-                        .font(.system(size: 44))
-                        .foregroundStyle(AppTheme.textSecondary.opacity(0.4))
-                    Text("No hay puntos registrados en esta ruta")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(AppTheme.textSecondary)
-                    Spacer()
-                }
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(Array(pts.enumerated()), id: \.element.id) { index, pt in
-                            let nextPt = (index < pts.count - 1) ? pts[index + 1] : nil
-                            let nextPhrase = RouteStatsCalculator.nextPointPhrase(from: pt, to: nextPt)
-                            ConsumedPointRowView(index: index, pt: pt, nextPhrase: nextPhrase) {
-                                viewModel.selectedPointForDetail = pt
-                            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(Array(pts.enumerated()), id: \.element.id) { index, pt in
+                        let nextPt = (index < pts.count - 1) ? pts[index + 1] : nil
+                        let nextPhrase = RouteStatsCalculator.nextPointPhrase(from: pt, to: nextPt)
+                        ConsumedPointRowView(index: index, pt: pt, nextPhrase: nextPhrase) {
+                            viewModel.selectedPointForDetail = pt
                         }
                     }
-                    .padding(.vertical, 4)
                 }
+                .padding(.vertical, 4)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(12)
-        .background(AppTheme.cardBackground.opacity(0.92))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(primaryColor.opacity(0.35), lineWidth: 1.5)
-        )
-        .frame(maxHeight: .infinity)
     }
     
     // MARK: - Tarjeta de Registro Activo (Trazar Nueva Ruta 1:1 Android)
@@ -583,13 +502,14 @@ private struct ConsumedPointRowView: View {
                 .foregroundStyle(AppTheme.textSecondary.opacity(0.6))
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(AppTheme.cardBackground.opacity(0.8))
+        .padding(.vertical, 10)
+        .background(AppTheme.cardBackground.opacity(0.95))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(AppTheme.cardBorder.opacity(0.6), lineWidth: 1)
+                .stroke(AppTheme.cardBorder, lineWidth: 1)
         )
+        .shadow(color: Color.black.opacity(0.15), radius: 4, y: 2)
         .contentShape(Rectangle())
         .onTapGesture {
             onSelect()

@@ -109,6 +109,7 @@ class BeaconScannerManager(private val context: Context) {
                 if (result == null) return
                 
                 val beacon = parseBeaconFromScanRecord(result)?.also { Log.d(TAG, "Beacon parsed via standard manufacturer data (0x004C)") }
+                    ?: parseBeaconFromIosCrossPlatform(result)?.also { Log.d(TAG, "Beacon parsed via iOS cross-platform ServiceUUID/ServiceData") }
                     ?: parseBeacon(result.scanRecord?.bytes)?.also { Log.d(TAG, "Beacon parsed via standard raw bytes AD structures") }
                     ?: parseBeaconFlexible(result.scanRecord?.bytes)?.also { Log.d(TAG, "Beacon parsed via flexible AD structures") }
                     ?: parseBeaconBruteForce(result.scanRecord?.bytes)?.also { Log.d(TAG, "Beacon parsed via brute force raw bytes") }
@@ -121,6 +122,7 @@ class BeaconScannerManager(private val context: Context) {
                 super.onBatchScanResults(results)
                 results?.forEach { result ->
                     val beacon = parseBeaconFromScanRecord(result)?.also { Log.d(TAG, "Beacon parsed via standard manufacturer data (0x004C)") }
+                        ?: parseBeaconFromIosCrossPlatform(result)?.also { Log.d(TAG, "Beacon parsed via iOS cross-platform ServiceUUID/ServiceData") }
                         ?: parseBeacon(result.scanRecord?.bytes)?.also { Log.d(TAG, "Beacon parsed via standard raw bytes AD structures") }
                         ?: parseBeaconFlexible(result.scanRecord?.bytes)?.also { Log.d(TAG, "Beacon parsed via flexible AD structures") }
                         ?: parseBeaconBruteForce(result.scanRecord?.bytes)?.also { Log.d(TAG, "Beacon parsed via brute force raw bytes") }
@@ -202,6 +204,98 @@ class BeaconScannerManager(private val context: Context) {
             }
         }
         return null
+    }
+
+    /**
+     * Decodifica tramas BLE multiplataforma emitidas por iPhones (ServiceUUIDs de 128 bits con firma 0xBE 0xAC
+     * en primer y segundo plano / pantalla bloqueada) y ServiceData 0xBEAC.
+     */
+    private fun parseBeaconFromIosCrossPlatform(result: ScanResult): BeaconData? {
+        val scanRecord = result.scanRecord ?: return null
+
+        // 1. ServiceData bajo UUID 0xBEAC
+        val serviceDataMap = scanRecord.serviceData
+        if (!serviceDataMap.isNullOrEmpty()) {
+            val emergencyFlag = serviceDataMap.keys.any { it.uuid.toString().uppercase().startsWith("0000B911") }
+            for ((_, data) in serviceDataMap) {
+                parseBeaconBruteForce(data)?.let { parsed ->
+                    return if (emergencyFlag && parsed.minor != 911) parsed.copy(minor = 911) else parsed
+                }
+                if (data.size >= 16 && data[14] == 0xBE.toByte() && data[15] == 0xAC.toByte()) {
+                    parseRawUuidPayload(data.sliceArray(0..15), if (emergencyFlag) 911 else 1)?.let { return it }
+                }
+            }
+        }
+
+        // 2. ServiceUUIDs de 128 bits (usados por iOS en foreground/background)
+        val serviceUuids = scanRecord.serviceUuids
+        if (!serviceUuids.isNullOrEmpty()) {
+            val isEmergency = serviceUuids.any { it.uuid.toString().uppercase().startsWith("0000B911") }
+            val minor = if (isEmergency) 911 else 1
+            for (parcelUuid in serviceUuids) {
+                val uuid = parcelUuid.uuid
+                val buf = java.nio.ByteBuffer.allocate(16)
+                buf.putLong(uuid.mostSignificantBits)
+                buf.putLong(uuid.leastSignificantBits)
+                val uuidBytes = buf.array()
+                if (uuidBytes[14] == 0xBE.toByte() && uuidBytes[15] == 0xAC.toByte()) {
+                    parseRawUuidPayload(uuidBytes, minor)?.let { return it }
+                }
+            }
+        }
+
+        // 3. Respaldo sobre bytes crudos AD Type 0x06 / 0x07 (128-bit Service UUIDs en little-endian sobre el aire)
+        val raw = scanRecord.bytes
+        if (raw != null) {
+            var isEmergencyRaw = false
+            var idx = 0
+            while (idx < raw.size - 3) {
+                val len = raw[idx].toInt() and 0xFF
+                if (len == 0 || idx + 1 + len > raw.size) break
+                val type = raw[idx + 1].toInt() and 0xFF
+                if ((type == 0x02 || type == 0x03) && len >= 3) {
+                    var offset = idx + 2
+                    while (offset + 1 <= idx + len) {
+                        // 0xB911 en little-endian es 0x11, 0xB9
+                        if (raw[offset] == 0x11.toByte() && raw[offset + 1] == 0xB9.toByte()) {
+                            isEmergencyRaw = true
+                        }
+                        offset += 2
+                    }
+                }
+                idx += 1 + len
+            }
+            var i = 0
+            while (i < raw.size - 17) {
+                val len = raw[i].toInt() and 0xFF
+                if (len == 0 || i + 1 + len > raw.size) break
+                val type = raw[i + 1].toInt() and 0xFF
+                if ((type == 0x06 || type == 0x07) && len >= 17) {
+                    var offset = i + 2
+                    while (offset + 15 <= i + len) {
+                        val reversed = ByteArray(16) { j -> raw[offset + 15 - j] }
+                        if (reversed[14] == 0xBE.toByte() && reversed[15] == 0xAC.toByte()) {
+                            parseRawUuidPayload(reversed, if (isEmergencyRaw) 911 else 1)?.let { return it }
+                        }
+                        offset += 16
+                    }
+                }
+                i += 1 + len
+            }
+        }
+
+        return null
+    }
+
+    private fun parseRawUuidPayload(uuidBytes: ByteArray, minor: Int): BeaconData? {
+        if (uuidBytes.size < 16 || uuidBytes[14] != 0xBE.toByte() || uuidBytes[15] != 0xAC.toByte()) return null
+        val idBeacon = uuidBytes.sliceArray(0..5).joinToString("") { "%02x".format(it) }
+        val latitude = java.nio.ByteBuffer.wrap(uuidBytes, 6, 4).float.toDouble()
+        val longitude = java.nio.ByteBuffer.wrap(uuidBytes, 10, 4).float.toDouble()
+        if (latitude.isNaN() || longitude.isNaN() || kotlin.math.abs(latitude) > 90.0 || kotlin.math.abs(longitude) > 180.0) {
+            return null
+        }
+        return BeaconData(idBeacon, latitude, longitude, -59, minor)
     }
 
     private fun parseBeacon(scanRecordBytes: ByteArray?): BeaconData? {

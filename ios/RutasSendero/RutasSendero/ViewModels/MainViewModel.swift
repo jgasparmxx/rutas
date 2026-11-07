@@ -100,6 +100,8 @@ public final class MainViewModel: @unchecked Sendable {
         Array(nearbyPeers.values).sorted { $0.estimatedDistanceMeters < $1.estimatedDistanceMeters }
     }
     public var peerSenderistaProfiles: [String: HikerProfile] = [:]
+    public var trackingRefreshIntervalSeconds: Double = 1.5
+    public var acknowledgedEmergencies: Set<String> = []
     public var currentHikerProfile: HikerProfile? = nil
     public var isSavedLocally: Bool = false
     public var saveStatusMessage: String? = nil
@@ -110,7 +112,7 @@ public final class MainViewModel: @unchecked Sendable {
     public var isStartingBeacon: Bool = false
     public var isEmergency911Active: Bool = false
     public var mapStyle: MapStyleMode = .standard
-    public var isFollowingUser: Bool = true
+    public var isFollowingUser: Bool = false
     public var isPointsListReversed: Bool {
         get { isVisorReversed }
         set { isVisorReversed = newValue }
@@ -142,6 +144,19 @@ public final class MainViewModel: @unchecked Sendable {
     public var isGuidingActive: Bool = false
     public var guideDirectionForward: Bool = true
     public var guidanceStatusMessage: String? = nil
+    public var isVoiceGuidanceEnabled: Bool = true
+    /// Distancia máxima parametrizada para redirigir a Google Maps al iniciar Guía (1:1 Android: > 2.0 km)
+    public var maxDistanceToStartGuideMeters: Double = 2000.0
+    public var arrivalToleranceMeters: Double = 25.0
+    
+    @ObservationIgnored
+    private var announcedGuideAlertKeys: Set<String> = []
+    @ObservationIgnored
+    private var lastGuideTtsTime: Date = .distantPast
+    @ObservationIgnored
+    private var lastGuideOffRouteWarningTime: Date = .distantPast
+    @ObservationIgnored
+    private var lastGuideDistanceToTarget: Double? = nil
     
     public var distanceToTargetGuideWaypoint: Double? {
         guard let target = targetGuideWaypoint, let current = locationTracker.currentLocation else { return nil }
@@ -149,11 +164,32 @@ public final class MainViewModel: @unchecked Sendable {
         return current.distance(from: targetLoc)
     }
     
+    /// Desnivel restante estimado hacia el siguiente punto objetivo en Modo Guía (positivo = subida, negativo = bajada).
+    public var remainingElevationToTargetGuideWaypoint: Int? {
+        guard let target = targetGuideWaypoint else { return nil }
+        let pts = recordedPoints
+        let prevPt: RoutePoint?
+        if let curIdx = pts.firstIndex(where: { $0.id == target.id }) {
+            let prevIdx = guideDirectionForward ? (curIdx - 1) : (curIdx + 1)
+            prevPt = (prevIdx >= 0 && prevIdx < pts.count) ? pts[prevIdx] : nil
+        } else {
+            prevPt = nil
+        }
+        return RouteStatsCalculator.estimateRemainingElevationToTarget(
+            prevPoint: prevPt,
+            targetPoint: target,
+            currentLocation: locationTracker.currentLocation,
+            remainingDistanceMeters: distanceToTargetGuideWaypoint
+        )
+    }
+    
     @MainActor
     public func stopGuiding() {
         isGuidingActive = false
         targetGuideWaypoint = nil
         guidanceStatusMessage = nil
+        announcedGuideAlertKeys.removeAll()
+        lastGuideDistanceToTarget = nil
     }
     
     /// Jerarquía de roles: 'G' (Guía), 'A' (Admin), 'O' (Dueño) pueden crear y mapear rutas
@@ -285,16 +321,57 @@ public final class MainViewModel: @unchecked Sendable {
         _ = bleScanner.startScanning { [weak self] peer in
             guard let self = self else { return }
             Task { @MainActor in
-                let previousEmergency = self.nearbyPeers[peer.beaconId]?.isEmergency ?? false
-                self.nearbyPeers[peer.beaconId] = peer
+                let normalizedId = peer.beaconId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !normalizedId.isEmpty else { return }
                 
-                // Si el compañero activó 911, disparar alerta inmediata (1:1 Android)
-                if peer.isEmergency && !previousEmergency {
-                    TextToSpeechService.shared.speak("¡Alerta! Emergencia 911 detectada de compañero \(peer.beaconId) a \(Int(peer.estimatedDistanceMeters)) metros.")
-                    self.saveStatusMessage = "¡EMERGENCIA 911 DE \(peer.beaconId)!"
+                // Ignorar nuestra propia baliza si el radio local recibe eco
+                let ownId = (self.currentHikerProfile?.beaconId ?? "")
+                    .replacingOccurrences(of: ":", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                if !ownId.isEmpty && normalizedId == ownId {
+                    return
+                }
+                
+                let previousEmergency = self.nearbyPeers[normalizedId]?.isEmergency ?? false
+                let normalizedPeer = PeerBeaconData(
+                    beaconId: normalizedId,
+                    latitude: peer.latitude,
+                    longitude: peer.longitude,
+                    rssi: peer.rssi,
+                    txPower: peer.txPower,
+                    estimatedDistanceMeters: peer.estimatedDistanceMeters,
+                    lastDetectedTimestamp: peer.lastDetectedTimestamp,
+                    isEmergency: peer.isEmergency
+                )
+                self.nearbyPeers[normalizedId] = normalizedPeer
+                self.resolvePeerProfile(for: normalizedId)
+                
+                if !peer.isEmergency {
+                    self.acknowledgedEmergencies.remove(normalizedId)
+                }
+                
+                // Si el compañero activó 911 y no ha sido silenciado, disparar alerta inmediata (1:1 Android)
+                if peer.isEmergency && !previousEmergency && !self.acknowledgedEmergencies.contains(normalizedId) {
+                    let displayName = self.peerSenderistaProfiles[normalizedId]?.name ?? normalizedId.uppercased()
+                    TextToSpeechService.shared.speak("¡Alerta! Emergencia 911 detectada de compañero \(displayName) a \(Int(peer.estimatedDistanceMeters)) metros.")
+                    self.saveStatusMessage = "¡EMERGENCIA 911 DE \(displayName)!"
                 }
             }
         }
+    }
+    
+    @MainActor
+    public func refreshBleScanning() {
+        bleScanner.refreshScan()
+    }
+    
+    @MainActor
+    public func acknowledgePeerEmergency(beaconId: String) {
+        let clean = beaconId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        acknowledgedEmergencies.insert(clean)
+        let name = peerSenderistaProfiles[clean]?.name ?? clean.uppercased()
+        saveStatusMessage = "Alarma silenciada para \(name)"
     }
     
     @MainActor
@@ -302,6 +379,11 @@ public final class MainViewModel: @unchecked Sendable {
         // Si la baliza está transmitiendo, actualizar coordenadas emitidas
         if isBeaconEmitting {
             bleBroadcaster.updateCoordinates(latitude: latitude, longitude: longitude)
+        }
+        
+        // Si el Modo Guía está activo, evaluar avance, alertas y distancia + subida/bajada al siguiente punto
+        if isGuidingActive && activeRole == .guia {
+            evaluateGuideProgress(latitude: latitude, longitude: longitude, altitude: altitude)
         }
         
         guard recordingState == .recording else { return }
@@ -658,6 +740,7 @@ public final class MainViewModel: @unchecked Sendable {
             if isEmergency911Active {
                 isEmergency911Active = false
             }
+            bleScanner.refreshScan()
             saveStatusMessage = "Emisión de Faro detenida"
             return
         }
@@ -678,18 +761,21 @@ public final class MainViewModel: @unchecked Sendable {
                 return
             }
             
-            let lat = self.locationTracker.currentLocation?.coordinate.latitude ?? 19.2458
-            let lon = self.locationTracker.currentLocation?.coordinate.longitude ?? -103.7251
+            let realLoc = self.locationTracker.currentLocation
+            let lat = realLoc?.coordinate.latitude ?? 19.2458
+            let lon = realLoc?.coordinate.longitude ?? -103.7251
             
             let code = await self.bleBroadcaster.startBroadcastingWithCode(
                 beaconId: bId,
                 latitude: lat,
                 longitude: lon,
-                isEmergency: self.isEmergency911Active
+                isEmergency: self.isEmergency911Active,
+                hasRealLocation: realLoc != nil
             )
             
             if code == 0 {
                 self.isBeaconEmitting = true
+                self.bleScanner.refreshScan()
                 self.saveStatusMessage = "Faro ENCENDIDO (ID: \(bId.uppercased()))"
             } else {
                 self.isBeaconEmitting = false
@@ -719,19 +805,22 @@ public final class MainViewModel: @unchecked Sendable {
                 return
             }
             
-            let lat = self.locationTracker.currentLocation?.coordinate.latitude ?? 19.2458
-            let lon = self.locationTracker.currentLocation?.coordinate.longitude ?? -103.7251
+            let realLoc = self.locationTracker.currentLocation
+            let lat = realLoc?.coordinate.latitude ?? 19.2458
+            let lon = realLoc?.coordinate.longitude ?? -103.7251
             
             if activatingEmergency {
                 let code = await self.bleBroadcaster.startBroadcastingWithCode(
                     beaconId: bId,
                     latitude: lat,
                     longitude: lon,
-                    isEmergency: true
+                    isEmergency: true,
+                    hasRealLocation: realLoc != nil
                 )
                 if code == 0 {
                     self.isEmergency911Active = true
                     self.isBeaconEmitting = true
+                    self.bleScanner.refreshScan()
                     self.saveStatusMessage = "¡EMERGENCIA 911 ACTIVADA!"
                     TextToSpeechService.shared.speak("¡Emergencia 911 activada! Transmitiendo señal de auxilio por baliza a compañeros cercanos.")
                 } else {
@@ -747,13 +836,16 @@ public final class MainViewModel: @unchecked Sendable {
                         beaconId: bId,
                         latitude: lat,
                         longitude: lon,
-                        isEmergency: false
+                        isEmergency: false,
+                        hasRealLocation: realLoc != nil
                     )
                     if code != 0 {
                         self.isBeaconEmitting = false
                     }
+                    self.bleScanner.refreshScan()
                 } else {
                     self.bleBroadcaster.stopBroadcasting()
+                    self.bleScanner.refreshScan()
                 }
             }
         }
@@ -761,10 +853,11 @@ public final class MainViewModel: @unchecked Sendable {
     
     /// Simula la detección de un compañero cercano (ideal para pruebas y validación visual)
     public func simulatePeerDetected(beaconId: String = "C0QU1M4TL4N1", distanceMeters: Double = 18.5) {
+        let cleanId = beaconId.lowercased()
         let curLat = locationTracker.currentLocation?.coordinate.latitude ?? 19.2458
         let curLon = locationTracker.currentLocation?.coordinate.longitude ?? -103.7251
         let peer = PeerBeaconData(
-            beaconId: beaconId,
+            beaconId: cleanId,
             latitude: curLat + 0.0003,
             longitude: curLon + 0.0004,
             rssi: -62,
@@ -772,8 +865,8 @@ public final class MainViewModel: @unchecked Sendable {
             estimatedDistanceMeters: distanceMeters,
             lastDetectedTimestamp: Date()
         )
-        nearbyPeers[beaconId] = peer
-        resolvePeerProfile(for: beaconId)
+        nearbyPeers[cleanId] = peer
+        resolvePeerProfile(for: cleanId)
     }
     
     /// Resuelve el nombre y datos de un compañero senderista desde PostgREST en la nube por su baliza BLE
@@ -961,6 +1054,7 @@ public final class MainViewModel: @unchecked Sendable {
             // Por omisión se activa el modo VISOR para ver la ruta (1:1 Android)
             self.activeRole = .visor
             self.isGuidingActive = false
+            self.isFollowingUser = false
             self.isVisorReversed = reversed
             self.isVirtualTourActive = false
             self.virtualTourIndex = 0
@@ -1010,7 +1104,7 @@ public final class MainViewModel: @unchecked Sendable {
         let pts = (try? await rutasRepository?.getPoints(forRouteId: route.id)) ?? []
         let trs = (try? await rutasRepository?.getTrace(forRouteId: route.id)) ?? []
         
-        let orderedPts = toStart ? pts.reversed() : pts
+        let orderedPts = toStart ? Array(pts.reversed()) : pts
         
         // Coordenada del punto de inicio según el sentido seleccionado (Ida vs Retorno)
         let startLat = orderedPts.first?.latitude ?? route.originLatitude
@@ -1040,7 +1134,7 @@ public final class MainViewModel: @unchecked Sendable {
             distToStartMeters = 0.0
         }
         
-        // Distancia mínima a cualquiera de los puntos del sendero para orientar al senderista
+        // Distancia mínima a cualquiera de los puntos del sendero para orientar al senderista (1:1 Android MainScreen.kt:2704)
         var minDistanceMeters = distToStartMeters
         var closestPoint: RoutePoint? = orderedPts.first
         if let userLoc = currentLoc {
@@ -1054,13 +1148,17 @@ public final class MainViewModel: @unchecked Sendable {
             }
         }
         
-        // Siempre se carga la ruta y se mantiene activo el rol y modo Guía (1:1 Android)
+        // Siempre se carga la ruta y se posiciona el mapa de la aplicación en el punto donde inicia
         self.activeRoute = route
         let userPhone = self.currentHikerProfile?.phone ?? ""
         self.isRouteConsumptionOnly = !route.isOwnRoute(userPhone: userPhone)
-        self.activeRole = .guia // Respeta estrictamente el estado y atributo de Guía
+        self.activeRole = .guia
+        self.isFollowingUser = false
         self.isVisorReversed = toStart
         self.guideDirectionForward = !toStart
+        self.announcedGuideAlertKeys.removeAll()
+        self.lastGuideDistanceToTarget = nil
+        self.lastGuideTtsTime = Date()
         self.recordedPoints = pts
         self.recordedTrace = trs
         self.recordedCoordinates = trs.isEmpty
@@ -1077,35 +1175,293 @@ public final class MainViewModel: @unchecked Sendable {
             self.elevationStats = RouteStatsCalculator.calculateElevationStats(tracePoints: trs)
         }
         
-        // Si el usuario está cerca, guiar al punto más cercano; si está lejos, al inicio del sentido seleccionado
-        self.targetGuideWaypoint = (minDistanceMeters <= 1000.0 && closestPoint != nil) ? closestPoint : orderedPts.first
+        let isVeryFarFromTrail = (minDistanceMeters > maxDistanceToStartGuideMeters && currentLoc != nil)
+        let selectedInitialTarget: RoutePoint? = isVeryFarFromTrail ? orderedPts.first : (closestPoint ?? orderedPts.first)
+        
+        self.targetGuideWaypoint = selectedInitialTarget
         self.isGuidingActive = true
         self.isShowingVisorOrderDialog = false
         self.pendingRouteForOrderSelection = nil
         self.showMapScreen = true
         
         let destText = toStart ? "el inicio (retorno)" : "el final (ida)"
+        let destSpeech = toStart ? "el inicio" : "el final"
         
-        // REGLA 1: Si el usuario está a más de 1 km (> 1000m) de toda la ruta (ningún punto ni inicio a <= 1km):
-        // Mostrarle en Google Maps cómo llegar al inicio de la ruta, conservando la ruta cargada en modo guía
-        if minDistanceMeters > 1000.0 && currentLoc != nil {
+        // REGLA 1 (1:1 Android MainScreen.kt:2717): Si la distancia es muy grande (> 2.0 km parametrizados):
+        // Redirigir a Google Maps para cómo llegar al inicio, dejando el mapa de la app colocado en el punto donde inicia.
+        if isVeryFarFromTrail {
             let distKm = minDistanceMeters / 1000.0
             let distStr = String(format: "%.1f", distKm)
             
-            self.guidanceStatusMessage = "Estás a \(distStr) km del sendero. Redirigiendo a Google Maps para llegar al inicio..."
+            self.guidanceStatusMessage = "Está muy lejos del sendero (a \(distStr) km). Acérquese para iniciar. Redirigiendo a Google Maps..."
             self.saveStatusMessage = self.guidanceStatusMessage
             
             openGoogleMapsDirections(lat: startLat, lon: startLon, label: "Inicio de \(route.name)")
-        } else if let cp = closestPoint, minDistanceMeters > 50.0 {
-            // REGLA 2: Si está cerca (<= 1 km / 1000m):
-            // NUNCA abrir Google Maps. Mostrar solo la ruta en el mapa y orientar al usuario al hito más cercano
-            let pointDistStr = minDistanceMeters >= 1000 ? String(format: "%.1f km", minDistanceMeters / 1000.0) : "\(Int(minDistanceMeters)) m"
-            self.guidanceStatusMessage = "Estás a \(pointDistStr) de \(cp.name). Dirígete hacia él para iniciar la ruta hacia \(destText)."
-            self.saveStatusMessage = self.guidanceStatusMessage
         } else {
-            self.guidanceStatusMessage = "Iniciando guía hacia \(destText) del sendero."
-            self.saveStatusMessage = self.guidanceStatusMessage
+            if let cp = closestPoint, minDistanceMeters > 50.0 {
+                let pointDistStr = RouteStatsCalculator.formatDistanceShort(minDistanceMeters)
+                self.guidanceStatusMessage = "Estás a \(pointDistStr) de \(cp.name). Dirígete hacia él para seguir la ruta hacia \(destText)."
+                self.saveStatusMessage = self.guidanceStatusMessage
+            } else {
+                self.guidanceStatusMessage = "Iniciando guía hacia \(destText) del sendero."
+                self.saveStatusMessage = self.guidanceStatusMessage
+            }
+            
+            // Locución inicial de Modo Guía con distancia y subida/bajada (1:1 Android GpsTrackingService.kt:1864-1881)
+            if isVoiceGuidanceEnabled, let target = selectedInitialTarget {
+                let initialTargetMsg: String
+                if let userLoc = currentLoc {
+                    let tLoc = CLLocation(latitude: target.latitude, longitude: target.longitude)
+                    let d = userLoc.distance(from: tLoc)
+                    let prevPt = previousPointInGuideOrder(for: target)
+                    let delta = RouteStatsCalculator.estimateRemainingElevationToTarget(
+                        prevPoint: prevPt,
+                        targetPoint: target,
+                        currentLocation: userLoc,
+                        remainingDistanceMeters: d
+                    )
+                    let dSpoken = RouteStatsCalculator.formatDistanceSpoken(d)
+                    let eSuffix = RouteStatsCalculator.formatElevationSpeechSuffix(delta)
+                    initialTargetMsg = "Avance al punto: \(target.name), distancia a caminar \(dSpoken)\(eSuffix)."
+                } else {
+                    initialTargetMsg = "Avance al punto: \(target.name)."
+                }
+                TextToSpeechService.shared.speak("Iniciando guía hacia \(destSpeech) del sendero. \(initialTargetMsg)")
+            }
         }
+    }
+    
+    private func previousPointInGuideOrder(for target: RoutePoint) -> RoutePoint? {
+        guard let curIdx = recordedPoints.firstIndex(where: { $0.id == target.id }) else { return nil }
+        let prevIdx = guideDirectionForward ? (curIdx - 1) : (curIdx + 1)
+        return (prevIdx >= 0 && prevIdx < recordedPoints.count) ? recordedPoints[prevIdx] : nil
+    }
+    
+    @MainActor
+    public func advanceGuideToNextWaypoint() {
+        guard let currentTarget = targetGuideWaypoint else { return }
+        guard let index = recordedPoints.firstIndex(where: { $0.id == currentTarget.id }) else { return }
+        let nextIndex = guideDirectionForward ? (index + 1) : (index - 1)
+        
+        if nextIndex >= 0 && nextIndex < recordedPoints.count {
+            let nextPunto = recordedPoints[nextIndex]
+            targetGuideWaypoint = nextPunto
+            lastGuideDistanceToTarget = nil
+            lastGuideTtsTime = Date()
+            
+            let fromLoc = locationTracker.currentLocation ?? CLLocation(latitude: currentTarget.latitude, longitude: currentTarget.longitude)
+            let nextLoc = CLLocation(latitude: nextPunto.latitude, longitude: nextPunto.longitude)
+            let segDist = fromLoc.distance(from: nextLoc)
+            let segDeltaAlt = RouteStatsCalculator.calculateElevationDeltaMeters(fromAlt: currentTarget.altitude, toAlt: nextPunto.altitude)
+                ?? RouteStatsCalculator.estimateRemainingElevationToTarget(
+                    prevPoint: currentTarget,
+                    targetPoint: nextPunto,
+                    currentLocation: locationTracker.currentLocation,
+                    remainingDistanceMeters: segDist
+                )
+            let nextDistSpoken = RouteStatsCalculator.formatDistanceSpoken(segDist)
+            let nextElevSuffix = RouteStatsCalculator.formatElevationSpeechSuffix(segDeltaAlt)
+            if isVoiceGuidanceEnabled {
+                TextToSpeechService.shared.speak("Punto \(currentTarget.name) localizado manualmente. Siguiente destino: \(nextPunto.name), distancia a caminar \(nextDistSpoken)\(nextElevSuffix).")
+            }
+        } else {
+            if isVoiceGuidanceEnabled {
+                TextToSpeechService.shared.speak("Felicidades. Has llegado a tu destino final, completando la ruta: \(currentTarget.name).")
+            }
+            stopGuiding()
+        }
+    }
+    
+    /// Motor en tiempo real de Modo Guía con avisos de distancia + subida/bajada (1:1 Android GpsTrackingService.kt:607-840)
+    @MainActor
+    private func evaluateGuideProgress(latitude: Double, longitude: Double, altitude: Double) {
+        guard isGuidingActive, let target = targetGuideWaypoint, !recordedPoints.isEmpty else { return }
+        guard let currentIndex = recordedPoints.firstIndex(where: { $0.id == target.id }) else { return }
+        
+        let userLoc = locationTracker.currentLocation ?? CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+            altitude: altitude,
+            horizontalAccuracy: 5.0,
+            verticalAccuracy: RouteStatsCalculator.hasValidAltitude(altitude) ? 10.0 : -1.0,
+            timestamp: Date()
+        )
+        let targetLoc = CLLocation(latitude: target.latitude, longitude: target.longitude)
+        let distance = userLoc.distance(from: targetLoc)
+        let isMovingAway: Bool = {
+            if let prevDist = lastGuideDistanceToTarget {
+                return distance > prevDist + 3.0
+            }
+            return false
+        }()
+        lastGuideDistanceToTarget = distance
+        
+        // Detectar si el senderista tomó un atajo hacia un punto más adelante en el sentido de la guía
+        let aheadIndices: [Int] = guideDirectionForward
+            ? Array((currentIndex + 1)..<recordedPoints.count)
+            : Array((0..<currentIndex).reversed())
+        
+        var closestAheadIdx: Int? = nil
+        var minAheadDist = Double.greatestFiniteMagnitude
+        var minRemainingDist = distance
+        for idx in aheadIndices {
+            let pt = recordedPoints[idx]
+            let d = userLoc.distance(from: CLLocation(latitude: pt.latitude, longitude: pt.longitude))
+            if d < minAheadDist {
+                minAheadDist = d
+                closestAheadIdx = idx
+            }
+            if d < minRemainingDist {
+                minRemainingDist = d
+            }
+        }
+        
+        if isMovingAway, let aheadIdx = closestAheadIdx, minAheadDist < distance - 20.0 {
+            let nextPoint = recordedPoints[aheadIdx]
+            let prevAheadPt = previousPointInGuideOrder(for: nextPoint)
+            let nextDeltaAlt = RouteStatsCalculator.estimateRemainingElevationToTarget(
+                prevPoint: prevAheadPt,
+                targetPoint: nextPoint,
+                currentLocation: userLoc,
+                remainingDistanceMeters: minAheadDist
+            )
+            let nextDistSpoken = RouteStatsCalculator.formatDistanceSpoken(minAheadDist)
+            let nextElevSuffix = RouteStatsCalculator.formatElevationSpeechSuffix(nextDeltaAlt)
+            targetGuideWaypoint = nextPoint
+            lastGuideDistanceToTarget = minAheadDist
+            if isVoiceGuidanceEnabled {
+                TextToSpeechService.shared.speak("Parece que tomaste un atajo o desvío. Redirigiendo al punto: \(nextPoint.name), a \(nextDistSpoken)\(nextElevSuffix).")
+            }
+            return
+        }
+        
+        let prevPt = previousPointInGuideOrder(for: target)
+        let remDeltaAlt = RouteStatsCalculator.estimateRemainingElevationToTarget(
+            prevPoint: prevPt,
+            targetPoint: target,
+            currentLocation: userLoc,
+            remainingDistanceMeters: distance
+        )
+        let remElevSuffix = RouteStatsCalculator.formatElevationSpeechSuffix(remDeltaAlt)
+        
+        // 1. Avisos anticipados de puntos especiales (50m y 20m) con desnivel (1:1 Android GpsTrackingService.kt:638)
+        if target.estado != 1 {
+            let stateInfo = PointStateInfo.forPoint(estado: target.estado, isRouteEnd: target.isRouteEnd, description: target.descriptionText)
+            for threshold in [50.0, 20.0] {
+                if distance <= threshold {
+                    let key = "\(target.id)_\(Int(threshold))"
+                    if !announcedGuideAlertKeys.contains(key) {
+                        announcedGuideAlertKeys.insert(key)
+                        let descPart = target.descriptionText.isEmpty ? "" : ". A continuación: \(target.descriptionText)"
+                        if threshold == 50.0 {
+                            TextToSpeechService.shared.speak("Atención a 50 metros\(remElevSuffix), \(stateInfo.name.lowercased())\(descPart).")
+                        } else {
+                            TextToSpeechService.shared.speak("Alerta, estás llegando a \(stateInfo.name.lowercased())\(descPart).")
+                        }
+                        let generator = UINotificationFeedbackGenerator()
+                        generator.notificationOccurred(.warning)
+                        break
+                    }
+                }
+            }
+        }
+        
+        // 2. Llegada al punto objetivo actual (<= tolerancia 25m)
+        if distance <= arrivalToleranceMeters {
+            let nextIndex = guideDirectionForward ? (currentIndex + 1) : (currentIndex - 1)
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.success)
+            
+            if nextIndex >= 0 && nextIndex < recordedPoints.count {
+                let nextPunto = recordedPoints[nextIndex]
+                let nextLoc = CLLocation(latitude: nextPunto.latitude, longitude: nextPunto.longitude)
+                let segDist = userLoc.distance(from: nextLoc)
+                let segDeltaAlt = RouteStatsCalculator.calculateElevationDeltaMeters(fromAlt: target.altitude, toAlt: nextPunto.altitude)
+                    ?? RouteStatsCalculator.estimateRemainingElevationToTarget(
+                        prevPoint: target,
+                        targetPoint: nextPunto,
+                        currentLocation: userLoc,
+                        remainingDistanceMeters: segDist
+                    )
+                let nextDistSpoken = RouteStatsCalculator.formatDistanceSpoken(segDist)
+                let nextElevSuffix = RouteStatsCalculator.formatElevationSpeechSuffix(segDeltaAlt)
+                let nextTargetMsg = "Siguiente destino: \(nextPunto.name), distancia a caminar \(nextDistSpoken)\(nextElevSuffix)."
+                
+                if target.estado == 1 {
+                    if isVoiceGuidanceEnabled {
+                        TextToSpeechService.shared.speak("Llegaste a punto de ruta: \(target.name). \(nextTargetMsg)")
+                    }
+                } else {
+                    let stateInfo = PointStateInfo.forPoint(estado: target.estado, isRouteEnd: target.isRouteEnd, description: target.descriptionText)
+                    let suffix = isVoiceGuidanceEnabled ? " \(nextTargetMsg)" : ""
+                    TextToSpeechService.shared.speak("\(stateInfo.name). \(target.name).\(suffix)")
+                }
+                
+                targetGuideWaypoint = nextPunto
+                lastGuideDistanceToTarget = segDist
+                lastGuideTtsTime = Date()
+            } else {
+                TextToSpeechService.shared.speak("Felicidades. Has llegado a tu destino final, completando la ruta: \(target.name).")
+                saveStatusMessage = "¡Ruta completada! Destino final alcanzado."
+                stopGuiding()
+            }
+            return
+        }
+        
+        // 3. Alarma de desvío peligroso (1:1 Android GpsTrackingService.kt:679-696)
+        let distPrevToNext: Double = {
+            if let p = prevPt {
+                return CLLocation(latitude: p.latitude, longitude: p.longitude).distance(from: targetLoc)
+            }
+            return 0.0
+        }()
+        let maxAllowedDistance = max(150.0, distPrevToNext + 50.0)
+        let now = Date()
+        if minRemainingDist > maxAllowedDistance && now.timeIntervalSince(lastGuideOffRouteWarningTime) > 30.0 {
+            lastGuideOffRouteWarningTime = now
+            TextToSpeechService.shared.speak("Alarma. Te estás alejando peligrosamente de la ruta. Verifica el mapa.")
+            return
+        }
+        
+        // 4. Aviso periódico cuando se aleja del punto objetivo incluyendo subida/bajada (1:1 Android líneas 725-745)
+        if isVoiceGuidanceEnabled && isMovingAway && now.timeIntervalSince(lastGuideTtsTime) > 20.0 && distance > arrivalToleranceMeters {
+            lastGuideTtsTime = now
+            if userLoc.course >= 0 && userLoc.speed > 0.5 {
+                let targetBearing = Self.bearingDegrees(from: userLoc.coordinate, to: targetLoc.coordinate)
+                var relative = targetBearing - userLoc.course
+                while relative < -180 { relative += 360 }
+                while relative > 180 { relative -= 360 }
+                let dirText: String
+                if relative >= -22.5 && relative <= 22.5 {
+                    dirText = "adelante"
+                } else if relative > 22.5 && relative <= 112.5 {
+                    dirText = "gira a la derecha"
+                } else if relative > 112.5 && relative <= 157.5 {
+                    dirText = "da la vuelta a la derecha"
+                } else if relative >= -112.5 && relative < -22.5 {
+                    dirText = "gira a la izquierda"
+                } else if relative >= -157.5 && relative < -112.5 {
+                    dirText = "da la vuelta a la izquierda"
+                } else {
+                    dirText = "da la vuelta"
+                }
+                TextToSpeechService.shared.speak("A \(Int(distance)) metros\(remElevSuffix), \(dirText).")
+            } else {
+                TextToSpeechService.shared.speak("Punto a \(Int(distance)) metros\(remElevSuffix).")
+            }
+        }
+    }
+    
+    private static func bearingDegrees(from start: CLLocationCoordinate2D, to end: CLLocationCoordinate2D) -> Double {
+        let lat1 = start.latitude * .pi / 180.0
+        let lon1 = start.longitude * .pi / 180.0
+        let lat2 = end.latitude * .pi / 180.0
+        let lon2 = end.longitude * .pi / 180.0
+        let dLon = lon2 - lon1
+        let y = sin(dLon) * cos(lat2)
+        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        var brng = atan2(y, x) * 180.0 / .pi
+        if brng < 0 { brng += 360.0 }
+        return brng
     }
     
     // MARK: - Sincronización Manual con la Nube (1:1 Android)
@@ -1163,6 +1519,7 @@ public final class MainViewModel: @unchecked Sendable {
     @MainActor
     public func clearActiveRoute() {
         stopVirtualTour()
+        stopGuiding()
         self.activeRoute = nil
         self.isRouteConsumptionOnly = false
         if self.activeRole == .registrar {
@@ -1186,11 +1543,12 @@ public final class MainViewModel: @unchecked Sendable {
         }
         guard !recordedPoints.isEmpty else { return }
         virtualTourTask?.cancel()
+        isFollowingUser = false
         isVirtualTourActive = true
         isVirtualTourPaused = false
         virtualTourIndex = 0
         showVirtualTourPhotoCard = true
-        showMapScreen = true // Mostrar el mapa para la simulación
+        showMapScreen = true // Mostrar el mapa posicionado en el punto de inicio de la simulación
         stepVirtualTour()
     }
     
@@ -1259,31 +1617,31 @@ public final class MainViewModel: @unchecked Sendable {
         let currentPoint = pts[virtualTourIndex]
         let nextPoint = (virtualTourIndex < pts.count - 1) ? pts[virtualTourIndex + 1] : nil
         
-        // Calcular distancia al siguiente punto (1:1 Android)
-        let nextDistText: String?
+        // Calcular distancia y subida/bajada respecto al punto actual hacia el siguiente (1:1 Android MainScreen.kt:499-523)
+        let nextStepSpeech: String?
         if let next = nextPoint {
             let loc1 = CLLocation(latitude: currentPoint.latitude, longitude: currentPoint.longitude)
             let loc2 = CLLocation(latitude: next.latitude, longitude: next.longitude)
             let d = loc1.distance(from: loc2)
-            if d >= 1000 {
-                nextDistText = String(format: "%.1f kilómetros", d / 1000.0)
-            } else {
-                nextDistText = "\(Int(d)) metros"
-            }
+            let deltaAlt = RouteStatsCalculator.calculateElevationDeltaMeters(fromAlt: currentPoint.altitude, toAlt: next.altitude)
+            nextStepSpeech = RouteStatsCalculator.formatNextPointSimulationSpeech(distanceMeters: d, deltaMeters: deltaAlt)
         } else {
-            nextDistText = nil
+            nextStepSpeech = nil
         }
         
-        // Construir locución descriptiva 1:1 con Android MainScreen.kt líneas 492-508
+        let stateInfo = PointStateInfo.forPoint(estado: currentPoint.estado, isRouteEnd: currentPoint.isRouteEnd, description: currentPoint.descriptionText)
+        let isNormalPoint = (currentPoint.estado == 1 || stateInfo.name.lowercased() == "punto normal") && !currentPoint.isRouteEnd
+        
+        // Construir locución descriptiva SIN decir la altitud absoluta del punto, solo lo que sube o baja al siguiente punto
         var speech = "Punto \(virtualTourIndex + 1) de \(pts.count). "
-        if currentPoint.altitude > 0 {
-            speech += "Altitud: \(Int(currentPoint.altitude)) metros. "
+        if !isNormalPoint {
+            speech += "Tipo: \(stateInfo.name). "
         }
         if !currentPoint.descriptionText.isEmpty {
             speech += "Descripción: \(currentPoint.descriptionText). "
         }
-        if let dist = nextDistText {
-            speech += "Distancia a caminar al siguiente punto: \(dist)."
+        if let nextStepSpeech = nextStepSpeech {
+            speech += nextStepSpeech
         } else {
             speech += "Este es el último punto del recorrido."
         }

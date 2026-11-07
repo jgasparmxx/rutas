@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import CoreLocation
 
 public struct HeaderBarView: View {
     @Bindable var viewModel: MainViewModel
@@ -20,6 +21,9 @@ public struct HeaderBarView: View {
             // Si el mapa está activo, mostrar botón de Volver a Portada (1:1 Android)
             if viewModel.showMapScreen {
                 Button {
+                    if viewModel.isVirtualTourActive {
+                        viewModel.stopVirtualTour()
+                    }
                     withAnimation(.easeInOut(duration: 0.25)) {
                         viewModel.showMapScreen = false
                     }
@@ -124,62 +128,170 @@ public struct HeaderBarView: View {
                 .buttonStyle(.plain)
             }
             
-            // Centro: Título de Ruta y Píldora de Estado GPS (Clickable para ver detalles de la ruta 1:1 Kotlin)
+            // Centro: En Mapa muestra telemetría de Simulación / Guía (distancia + subida/bajada); en Portada muestra Ruta y Fecha
             Button {
                 if viewModel.activeRoute != nil {
                     viewModel.isShowingRouteDetailsSheet = true
                 }
             } label: {
-                VStack(alignment: .center, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(viewModel.activeRoute?.name ?? "RutasSendero")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(viewModel.activeRoute != nil ? AppTheme.activeColor(for: viewModel.activeRole) : (viewModel.showMapScreen ? AppTheme.textPrimary : AppTheme.darkBackground))
+                if viewModel.showMapScreen && viewModel.isVirtualTourActive {
+                    let pts = viewModel.tourPoints
+                    let curPt = viewModel.virtualTourIndex < pts.count ? pts[viewModel.virtualTourIndex] : nil
+                    let nextPt = (viewModel.virtualTourIndex + 1) < pts.count ? pts[viewModel.virtualTourIndex + 1] : nil
+                    let simSubLine: (text: String, color: Color)? = {
+                        guard let c = curPt, let n = nextPt else { return nil }
+                        let d = CLLocation(latitude: c.latitude, longitude: c.longitude)
+                            .distance(from: CLLocation(latitude: n.latitude, longitude: n.longitude))
+                        let dAlt = RouteStatsCalculator.calculateElevationDeltaMeters(fromAlt: c.altitude, toAlt: n.altitude)
+                        let badge = RouteStatsCalculator.formatElevationHeaderBadge(dAlt)
+                        let dStr = RouteStatsCalculator.formatDistanceShort(d)
+                        let txt = badge.isEmpty ? "Sig: \(dStr)" : "Sig: \(dStr) · \(badge)"
+                        let col: Color
+                        if let delta = dAlt, delta > 0 {
+                            col = Color(red: 52/255, green: 211/255, blue: 153/255)
+                        } else if let delta = dAlt, delta < 0 {
+                            col = Color(red: 96/255, green: 165/255, blue: 250/255)
+                        } else {
+                            col = Color(red: 56/255, green: 189/255, blue: 248/255)
+                        }
+                        return (txt, col)
+                    }()
+                    
+                    VStack(alignment: .center, spacing: 1) {
+                        Text(curPt?.name ?? viewModel.activeRoute?.name ?? "Simulación")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(AppTheme.textPrimary)
                             .lineLimit(1)
                         
-                        if viewModel.activeRoute != nil {
-                            Image(systemName: "info.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(AppTheme.activeColor(for: viewModel.activeRole))
+                        if let sub = simSubLine {
+                            Text(sub.text)
+                                .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                .foregroundStyle(sub.color)
+                                .lineLimit(1)
+                        } else {
+                            Text("Último punto del recorrido")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(AppTheme.success)
+                                .lineLimit(1)
                         }
                     }
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                } else if viewModel.showMapScreen && viewModel.activeRole == .guia && viewModel.isGuidingActive, let target = viewModel.targetGuideWaypoint {
+                    let remElev = viewModel.remainingElevationToTargetGuideWaypoint
+                    let elevBadge = RouteStatsCalculator.formatElevationHeaderBadge(remElev)
+                    let distShort: String? = {
+                        if let d = viewModel.distanceToTargetGuideWaypoint, d > 0 {
+                            return RouteStatsCalculator.formatDistanceShort(d)
+                        }
+                        return nil
+                    }()
+                    let guideSubLine: String = {
+                        var parts: [String] = []
+                        if let ds = distShort {
+                            parts.append("Al sig. punto: \(ds)")
+                        }
+                        if !elevBadge.isEmpty {
+                            parts.append(elevBadge)
+                        }
+                        return parts.joined(separator: " · ")
+                    }()
+                    let elevColor: Color = {
+                        if let delta = remElev {
+                            if delta > 0 { return Color(red: 52/255, green: 211/255, blue: 153/255) }
+                            if delta < 0 { return Color(red: 96/255, green: 165/255, blue: 250/255) }
+                        }
+                        return AppTheme.accent
+                    }()
                     
-                    if let route = viewModel.activeRoute {
-                        // 1:1 Android Kotlin: Cuando hay ruta seleccionada, mostrar la Fecha + Distancia total en km
-                        let totalMeters = route.gpsDistanceMeters > 0 ? route.gpsDistanceMeters : (route.beaconDistanceMeters > 0 ? route.beaconDistanceMeters : viewModel.totalDistanceMeters)
-                        let distText = totalMeters >= 1000.0 ? String(format: "%.2f km", totalMeters / 1000.0) : String(format: "%.0f m", totalMeters)
-                        let subtitleText = route.date.isEmpty ? "Distancia total: \(distText)" : "\(route.date) • \(distText)"
+                    VStack(alignment: .center, spacing: 1) {
+                        Text("🎯 \(target.name)")
+                            .font(.system(size: 13, weight: .heavy))
+                            .foregroundStyle(AppTheme.textPrimary)
+                            .lineLimit(1)
                         
-                        HStack(spacing: 4) {
-                            Image(systemName: "calendar")
-                                .font(.system(size: 9))
-                                .foregroundStyle(roleColor)
-                            
-                            Text(subtitleText)
-                                .font(.system(size: 10, weight: .bold, design: .rounded))
-                                .foregroundStyle(roleColor)
-                                .lineLimit(1)
-                        }
-                    } else {
-                        // Píldora de Estado del GPS cuando NO hay ruta seleccionada
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(gpsStatusColor)
-                                .frame(width: 6, height: 6)
-                                .shadow(color: gpsStatusColor.opacity(0.8), radius: 2)
-                            
-                            Text(gpsStatusText)
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(viewModel.showMapScreen ? AppTheme.textSecondary : AppTheme.darkBackground.opacity(0.75))
+                        if !guideSubLine.isEmpty {
+                            Text(guideSubLine)
+                                .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                .foregroundStyle(elevColor)
                                 .lineLimit(1)
                         }
                     }
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                } else {
+                    VStack(alignment: .center, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Text(viewModel.activeRoute?.name ?? "RutasSendero")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(viewModel.activeRoute != nil ? AppTheme.activeColor(for: viewModel.activeRole) : (viewModel.showMapScreen ? AppTheme.textPrimary : AppTheme.darkBackground))
+                                .lineLimit(1)
+                            
+                            if viewModel.activeRoute != nil {
+                                Image(systemName: "info.circle.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(AppTheme.activeColor(for: viewModel.activeRole))
+                            }
+                        }
+                        
+                        if let route = viewModel.activeRoute {
+                            // 1:1 Android Kotlin: Cuando hay ruta seleccionada, mostrar la Fecha + Distancia total en km
+                            let totalMeters = route.gpsDistanceMeters > 0 ? route.gpsDistanceMeters : (route.beaconDistanceMeters > 0 ? route.beaconDistanceMeters : viewModel.totalDistanceMeters)
+                            let distText = totalMeters >= 1000.0 ? String(format: "%.2f km", totalMeters / 1000.0) : String(format: "%.0f m", totalMeters)
+                            let subtitleText = route.date.isEmpty ? "Distancia total: \(distText)" : "\(route.date) • \(distText)"
+                            
+                            HStack(spacing: 4) {
+                                Image(systemName: "calendar")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(roleColor)
+                                
+                                Text(subtitleText)
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                                    .foregroundStyle(roleColor)
+                                    .lineLimit(1)
+                            }
+                        } else {
+                            // Píldora de Estado del GPS cuando NO hay ruta seleccionada
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(gpsStatusColor)
+                                    .frame(width: 6, height: 6)
+                                    .shadow(color: gpsStatusColor.opacity(0.8), radius: 2)
+                                
+                                Text(gpsStatusText)
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(viewModel.showMapScreen ? AppTheme.textSecondary : AppTheme.darkBackground.opacity(0.75))
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
                 }
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(viewModel.activeRoute == nil)
+            
+            // Botón contextual: Voz Guía en Mapa (1:1 Android MainScreen.kt:938)
+            if viewModel.showMapScreen && viewModel.activeRole == .guia && viewModel.isGuidingActive {
+                Button {
+                    viewModel.isVoiceGuidanceEnabled.toggle()
+                    if !viewModel.isVoiceGuidanceEnabled {
+                        TextToSpeechService.shared.stop()
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(AppTheme.cardMuted.opacity(0.8))
+                            .frame(width: 36, height: 36)
+                        
+                        Image(systemName: viewModel.isVoiceGuidanceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(viewModel.isVoiceGuidanceEnabled ? AppTheme.accent : AppTheme.textSecondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
             
             // Botón contextual: Simulación Recorrido Virtual (solo con ruta activa en modo visor, 1:1 Android)
             if viewModel.activeRole == .visor && viewModel.activeRoute != nil && !viewModel.recordedPoints.isEmpty {

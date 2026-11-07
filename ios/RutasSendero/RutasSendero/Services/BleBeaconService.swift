@@ -33,69 +33,126 @@ public struct BeaconPayload: Sendable, Equatable {
         self.isEmergency = isEmergency
     }
 
-    /// Parsea los bytes de Manufacturer Data recibidos por CoreBluetooth
+    /// Parsea los bytes de Manufacturer Data recibidos por CoreBluetooth (soporta cualquier Company ID: 0x004C Apple, 0x0075 Samsung, etc.)
     public static func parse(manufacturerData: Data) -> BeaconPayload? {
-        // Formato Apple iBeacon esperado:
-        // [0..1] Company ID 0x004C (en little endian: 0x4C, 0x00)
-        // [2] Type 0x02 (iBeacon)
-        // [3] Length 0x15 (21 bytes)
-        // [4..19] Proximity UUID (16 bytes custom)
-        // [20..21] Major (2 bytes)
-        // [22..23] Minor (2 bytes)
-        // [24] TxPower (1 byte)
+        let bytes = [UInt8](manufacturerData)
         
-        var offset = 0
-        if manufacturerData.count >= 25 && manufacturerData[0] == 0x4C && manufacturerData[1] == 0x00 {
-            offset = 2
-        } else if manufacturerData.count < 23 {
-            return nil
+        // 1. Búsqueda flexible 1:1 con Android parseBeaconBruteForce:
+        // Busca la cabecera iBeacon (0x02, 0x15) seguida 14 bytes después por la firma mágica (0xBE, 0xAC)
+        // sin importar el Company ID de 2 bytes que anteponga el fabricante del teléfono emisor.
+        if bytes.count >= 23 {
+            for i in 0...(bytes.count - 23) {
+                if bytes[i] == 0x02 && bytes[i + 1] == 0x15 &&
+                   bytes[i + 16] == 0xBE && bytes[i + 17] == 0xAC {
+                    let uuidOffset = i + 2
+                    let idBeacon = bytes[uuidOffset..<(uuidOffset + 6)]
+                        .map { String(format: "%02x", $0) }
+                        .joined()
+                    
+                    let latBits = (UInt32(bytes[uuidOffset + 6]) << 24) |
+                                  (UInt32(bytes[uuidOffset + 7]) << 16) |
+                                  (UInt32(bytes[uuidOffset + 8]) << 8) |
+                                  UInt32(bytes[uuidOffset + 9])
+                    let latitude = Double(Float(bitPattern: latBits))
+                    
+                    let lonBits = (UInt32(bytes[uuidOffset + 10]) << 24) |
+                                  (UInt32(bytes[uuidOffset + 11]) << 16) |
+                                  (UInt32(bytes[uuidOffset + 12]) << 8) |
+                                  UInt32(bytes[uuidOffset + 13])
+                    let longitude = Double(Float(bitPattern: lonBits))
+                    
+                    let majorOffset = uuidOffset + 16
+                    let major = (Int(bytes[majorOffset]) << 8) | Int(bytes[majorOffset + 1])
+                    let minor = (Int(bytes[majorOffset + 2]) << 8) | Int(bytes[majorOffset + 3])
+                    let txPower = Int(Int8(bitPattern: bytes[majorOffset + 4]))
+                    let isEmergency = (major == 911 || major == 0x038F || minor == 911 || minor == 0x038F)
+                    
+                    return BeaconPayload(
+                        idBeacon: idBeacon,
+                        latitude: latitude,
+                        longitude: longitude,
+                        major: major,
+                        minor: minor,
+                        txPower: txPower,
+                        isEmergency: isEmergency
+                    )
+                }
+            }
         }
         
-        guard manufacturerData[offset] == 0x02 && manufacturerData[offset + 1] == 0x15 else {
-            return nil
+        // 2. Fallback: paquete compacto de 16 bytes con firma mágica 0xBE 0xAC al final
+        if bytes.count >= 16 {
+            for i in 0...(bytes.count - 16) {
+                if bytes[i + 14] == 0xBE && bytes[i + 15] == 0xAC {
+                    return parseRawUUIDBytes(Array(bytes[i..<(i + 16)]), isEmergency: false)
+                }
+            }
         }
         
-        // Offset de los 16 bytes de UUID
-        let uuidOffset = offset + 2
-        guard manufacturerData.count >= uuidOffset + 16 + 5 else { return nil }
+        return nil
+    }
+    
+    /// Parsea un diccionario completo de anuncio CoreBluetooth (ManufacturerData, ServiceUUIDs y ServiceData).
+    /// Permite recepción cruzada Android <-> iOS e iOS <-> iOS incluso cuando iOS oculta paquetes iBeacon 0x004C.
+    public static func parse(advertisementData: [String: Any]) -> BeaconPayload? {
+        if let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
+           let payload = parse(manufacturerData: manufacturerData) {
+            return payload
+        }
         
-        // Validar firma mágica 0xBE 0xAC en los bytes 14 y 15 del UUID
-        let magicByte1 = manufacturerData[uuidOffset + 14]
-        let magicByte2 = manufacturerData[uuidOffset + 15]
-        guard magicByte1 == 0xBE && magicByte2 == 0xAC else { return nil }
-
-        // 1. idBeacon (6 bytes = 12 caracteres hex)
-        let idBytes = manufacturerData.subdata(in: uuidOffset..<(uuidOffset + 6))
-        let idBeacon = idBytes.map { String(format: "%02x", $0) }.joined()
-
-        // 2. Latitud (Float32 Big-Endian)
-        let latBits = manufacturerData.subdata(in: (uuidOffset + 6)..<(uuidOffset + 10))
-            .withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        var allServiceUUIDs: [CBUUID] = []
+        if let uuids = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] {
+            allServiceUUIDs.append(contentsOf: uuids)
+        }
+        if let overflowUUIDs = advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID] {
+            allServiceUUIDs.append(contentsOf: overflowUUIDs)
+        }
+        if !allServiceUUIDs.isEmpty, let payload = parse(serviceUUIDs: allServiceUUIDs) {
+            return payload
+        }
+        
+        if let serviceDataMap = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data] {
+            let emergencyFlag = serviceDataMap.keys.contains { $0.uuidString.uppercased() == "B911" }
+            for (_, data) in serviceDataMap {
+                let bytes = [UInt8](data)
+                if bytes.count >= 16 && bytes[14] == 0xBE && bytes[15] == 0xAC {
+                    return parseRawUUIDBytes(Array(bytes[0..<16]), isEmergency: emergencyFlag)
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    /// Extrae el BeaconPayload desde CBUUIDs de 128 bits emitidos por otros dispositivos RutasSendero (iOS <-> iOS).
+    public static func parse(serviceUUIDs: [CBUUID]) -> BeaconPayload? {
+        let isEmergency = serviceUUIDs.contains { $0.uuidString.uppercased() == "B911" }
+        for cbuuid in serviceUUIDs {
+            let raw = [UInt8](cbuuid.data)
+            if raw.count == 16 && raw[14] == 0xBE && raw[15] == 0xAC {
+                return parseRawUUIDBytes(raw, isEmergency: isEmergency)
+            }
+        }
+        return nil
+    }
+    
+    private static func parseRawUUIDBytes(_ bytes: [UInt8], isEmergency: Bool) -> BeaconPayload? {
+        guard bytes.count == 16, bytes[14] == 0xBE, bytes[15] == 0xAC else { return nil }
+        let idBeacon = bytes[0..<6].map { String(format: "%02x", $0) }.joined()
+        let latBits = (UInt32(bytes[6]) << 24) | (UInt32(bytes[7]) << 16) | (UInt32(bytes[8]) << 8) | UInt32(bytes[9])
+        let lonBits = (UInt32(bytes[10]) << 24) | (UInt32(bytes[11]) << 16) | (UInt32(bytes[12]) << 8) | UInt32(bytes[13])
         let latitude = Double(Float(bitPattern: latBits))
-
-        // 3. Longitud (Float32 Big-Endian)
-        let lonBits = manufacturerData.subdata(in: (uuidOffset + 10)..<(uuidOffset + 14))
-            .withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
         let longitude = Double(Float(bitPattern: lonBits))
-
-        // 4. Major y Minor
-        let majorOffset = uuidOffset + 16
-        let major = Int(manufacturerData[majorOffset]) << 8 | Int(manufacturerData[majorOffset + 1])
-        let minor = Int(manufacturerData[majorOffset + 2]) << 8 | Int(manufacturerData[majorOffset + 3])
-        
-        // 5. Tx Power calibrada a 1 metro
-        let txPower = Int(Int8(bitPattern: manufacturerData[majorOffset + 4]))
-        
-        // Si el Major o Minor es 911 o 0x038F, se clasifica como emergencia activa (1:1 Android y BLE spec)
-        let isEmergency = (major == 911 || major == 0x038F || minor == 911 || minor == 0x038F)
-
+        guard !latitude.isNaN && !longitude.isNaN && abs(latitude) <= 90.0 && abs(longitude) <= 180.0 else {
+            return nil
+        }
         return BeaconPayload(
             idBeacon: idBeacon,
             latitude: latitude,
             longitude: longitude,
-            major: major,
-            minor: minor,
-            txPower: txPower,
+            major: 1,
+            minor: isEmergency ? 911 : 1,
+            txPower: -59,
             isEmergency: isEmergency
         )
     }
@@ -186,6 +243,12 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
     private var lastAdvertisedLocation: CLLocation?
     @ObservationIgnored
     private var lastAdvertisedDate: Date?
+    @ObservationIgnored
+    private var hasRealLocationFix: Bool = false
+    @ObservationIgnored
+    private var dualModeTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var isCyclingAdvertisement: Bool = false
     
     @ObservationIgnored
     private var stateContinuation: CheckedContinuation<CBManagerState, Never>?
@@ -205,7 +268,8 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
             beaconId: beaconId,
             latitude: latitude,
             longitude: longitude,
-            isEmergency: false
+            isEmergency: false,
+            hasRealLocation: true
         )
         return code == 0
     }
@@ -220,7 +284,8 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
             beaconId: beaconId,
             latitude: latitude,
             longitude: longitude,
-            isEmergency: isEmergency
+            isEmergency: isEmergency,
+            hasRealLocation: true
         )
         return code == 0
     }
@@ -233,8 +298,13 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
         beaconId: String,
         latitude: Double,
         longitude: Double,
-        isEmergency: Bool = false
+        isEmergency: Bool = false,
+        hasRealLocation: Bool = true
     ) async -> Int {
+        dualModeTask?.cancel()
+        dualModeTask = nil
+        isCyclingAdvertisement = false
+        
         let cleanId = beaconId
             .replacingOccurrences(of: ":", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -260,6 +330,7 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
         self.pendingLat = latitude
         self.pendingLon = longitude
         self.pendingIsEmergency = isEmergency
+        self.hasRealLocationFix = hasRealLocation
         
         if peripheralManager == nil {
             peripheralManager = CBPeripheralManager(delegate: self, queue: .main)
@@ -313,12 +384,56 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
         let resultCode = await startAdvertisingAndWait(peripheral: peripheral, data: advertisementData)
         if resultCode == 0 {
             self.isBroadcasting = true
-            self.lastAdvertisedLocation = CLLocation(latitude: latitude, longitude: longitude)
+            self.lastAdvertisedLocation = hasRealLocation ? CLLocation(latitude: latitude, longitude: longitude) : nil
             self.lastAdvertisedDate = Date()
+            self.startDualFrameLoop()
         } else {
             self.isBroadcasting = false
         }
         return resultCode
+    }
+    
+    /// Alterna ráfagas entre iBeacon estándar (0x004C para receptores Android) y CBUUID de 128 bits
+    /// (visible sin bloqueo de CoreBluetooth para receptores iOS <-> iOS en primer y segundo plano).
+    @MainActor
+    private func startDualFrameLoop() {
+        dualModeTask?.cancel()
+        dualModeTask = Task { @MainActor [weak self] in
+            var emitServiceUUIDFrame = false
+            while !Task.isCancelled {
+                let sleepNs: UInt64 = emitServiceUUIDFrame ? 1_200_000_000 : 2_000_000_000
+                try? await Task.sleep(nanoseconds: sleepNs)
+                guard !Task.isCancelled,
+                      let self = self,
+                      self.isBroadcasting,
+                      let peripheral = self.peripheralManager,
+                      peripheral.state == .poweredOn,
+                      let id = self.pendingBeaconId,
+                      let uuid = BeaconPayload.buildProximityUUID(beaconId: id, latitude: self.pendingLat, longitude: self.pendingLon) else {
+                    break
+                }
+                
+                emitServiceUUIDFrame.toggle()
+                self.isCyclingAdvertisement = true
+                if peripheral.isAdvertising {
+                    peripheral.stopAdvertising()
+                }
+                
+                if emitServiceUUIDFrame {
+                    let gattDict = self.buildServiceUUIDAdvertisementDictionary(uuid: uuid, isEmergency: self.pendingIsEmergency)
+                    peripheral.startAdvertising(gattDict)
+                } else if let ibeaconDict = self.buildAdvertisementDictionary(uuid: uuid, id: id, isEmergency: self.pendingIsEmergency) {
+                    peripheral.startAdvertising(ibeaconDict)
+                }
+            }
+        }
+    }
+    
+    private func buildServiceUUIDAdvertisementDictionary(uuid: UUID, isEmergency: Bool) -> [String: Any] {
+        let statusUUID = CBUUID(string: isEmergency ? "B911" : "B001")
+        return [
+            CBAdvertisementDataServiceUUIDsKey: [CBUUID(nsuuid: uuid), statusUUID]
+        ]
     }
     
     @MainActor
@@ -375,12 +490,12 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
             return
         }
         
-        // 1:1 Android (GpsTrackingService.kt:1056):
-        // Solo reiniciar anuncio BLE si el senderista se desplazó > 10m Y pasaron al menos 20s,
-        // evitando cortar la señal continuamente con cada pulso del GPS.
+        // 1:1 Android (GpsTrackingService.kt:1097):
+        // Si no había fix real al encender el Faro, actualizar de inmediato con la primera lectura GPS válida;
+        // después, solo reiniciar anuncio si se desplazó > 10m Y pasaron al menos 20s.
         let newLoc = CLLocation(latitude: latitude, longitude: longitude)
         let now = Date()
-        if let lastLoc = lastAdvertisedLocation, let lastDate = lastAdvertisedDate {
+        if hasRealLocationFix, let lastLoc = lastAdvertisedLocation, let lastDate = lastAdvertisedDate {
             let movedMeters = lastLoc.distance(from: newLoc)
             let elapsedSeconds = now.timeIntervalSince(lastDate)
             if movedMeters <= 10.0 || elapsedSeconds < 20.0 {
@@ -388,6 +503,7 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
             }
         }
         
+        self.hasRealLocationFix = true
         self.pendingLat = latitude
         self.pendingLon = longitude
         self.lastAdvertisedLocation = newLoc
@@ -398,6 +514,7 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
             return
         }
         
+        self.isCyclingAdvertisement = true
         if peripheral.isAdvertising {
             peripheral.stopAdvertising()
         }
@@ -405,6 +522,9 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
     }
     
     public func stopBroadcasting() {
+        dualModeTask?.cancel()
+        dualModeTask = nil
+        isCyclingAdvertisement = false
         if let prev = startAdvContinuation {
             startAdvContinuation = nil
             prev.resume(returning: -4)
@@ -413,6 +533,7 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
         self.isBroadcasting = false
         self.lastAdvertisedLocation = nil
         self.lastAdvertisedDate = nil
+        self.hasRealLocationFix = false
     }
     
     private func buildAdvertisementDictionary(uuid: UUID, id: String, isEmergency: Bool) -> [String: Any]? {
@@ -450,6 +571,9 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
         }
         
         if peripheral.state != .poweredOn && isBroadcasting {
+            dualModeTask?.cancel()
+            dualModeTask = nil
+            isCyclingAdvertisement = false
             self.isBroadcasting = false
             let msg: String
             switch peripheral.state {
@@ -466,23 +590,27 @@ public final class BleBeaconBroadcaster: NSObject, CBPeripheralManagerDelegate, 
     }
     
     public func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
-        if let error = error {
-            lastBroadcastError = error.localizedDescription
-            isBroadcasting = false
-            print("⚠️ [BleBroadcaster] Error al emitir baliza: \(error.localizedDescription)")
-            if let cont = startAdvContinuation {
-                startAdvContinuation = nil
+        if let cont = startAdvContinuation {
+            startAdvContinuation = nil
+            if let error = error {
+                lastBroadcastError = error.localizedDescription
+                isBroadcasting = false
+                print("⚠️ [BleBroadcaster] Error al emitir baliza: \(error.localizedDescription)")
                 cont.resume(returning: -4)
-            }
-        } else {
-            lastBroadcastError = nil
-            isBroadcasting = true
-            print("📡 [BleBroadcaster] Baliza iBeacon emitiendo con éxito")
-            if let cont = startAdvContinuation {
-                startAdvContinuation = nil
+            } else {
+                lastBroadcastError = nil
+                isBroadcasting = true
+                print("📡 [BleBroadcaster] Baliza iBeacon emitiendo con éxito")
                 cont.resume(returning: 0)
             }
+            return
         }
+        
+        // Eventos de rotación dual de trama (sin afectar la continuación inicial)
+        if let error = error {
+            print("⚠️ [BleBroadcaster] Aviso en cambio de trama BLE: \(error.localizedDescription)")
+        }
+        isCyclingAdvertisement = false
     }
 }
 
@@ -498,6 +626,9 @@ public final class BleBeaconScanner: NSObject, CBCentralManagerDelegate, BleBeac
     private var centralManager: CBCentralManager?
     
     @ObservationIgnored
+    private var wantsScanning: Bool = false
+    
+    @ObservationIgnored
     private var onPeerDetectedCallback: (@Sendable (PeerBeaconData) -> Void)?
     
     public override init() {
@@ -506,17 +637,36 @@ public final class BleBeaconScanner: NSObject, CBCentralManagerDelegate, BleBeac
     
     public func startScanning(onPeerDetected: @escaping @Sendable (PeerBeaconData) -> Void) -> Bool {
         self.onPeerDetectedCallback = onPeerDetected
-        self.isScanning = true
+        self.wantsScanning = true
         
         if centralManager == nil {
-            centralManager = CBCentralManager(delegate: self, queue: nil)
+            centralManager = CBCentralManager(delegate: self, queue: .main)
         } else if centralManager?.state == .poweredOn {
             startCentralScan()
+        } else {
+            self.isScanning = false
         }
         return true
     }
     
+    /// Re-arma activamente el escaneo CoreBluetooth al abrir el mapa/monitoreo de balizas o volver a primer plano.
+    public func refreshScan() {
+        guard wantsScanning else { return }
+        if centralManager == nil {
+            centralManager = CBCentralManager(delegate: self, queue: .main)
+            return
+        }
+        guard let central = centralManager else { return }
+        if central.state == .poweredOn {
+            central.stopScan()
+            startCentralScan()
+        } else {
+            self.isScanning = false
+        }
+    }
+    
     public func stopScanning() {
+        wantsScanning = false
         centralManager?.stopScan()
         self.isScanning = false
         self.onPeerDetectedCallback = nil
@@ -524,22 +674,26 @@ public final class BleBeaconScanner: NSObject, CBCentralManagerDelegate, BleBeac
     
     private func startCentralScan() {
         guard let central = centralManager, central.state == .poweredOn else {
+            self.isScanning = false
             return
         }
-        // En iOS, escanear paquetes con opciones de duplicados para actualizar telemetría en vivo
+        // En iOS, escanear paquetes con opciones de duplicados para actualizar telemetría y mapa en vivo
         let options: [String: Any] = [
             CBCentralManagerScanOptionAllowDuplicatesKey: true
         ]
         central.scanForPeripherals(withServices: nil, options: options)
+        self.isScanning = true
+        self.lastScannerError = nil
         print("🔍 [BleScanner] Escaneo de compañeros senderistas activado")
     }
     
     // MARK: - CBCentralManagerDelegate
     
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        if central.state == .poweredOn && isScanning {
+        if central.state == .poweredOn && wantsScanning {
             startCentralScan()
         } else if central.state != .poweredOn {
+            self.isScanning = false
             lastScannerError = "Bluetooth apagado o sin permisos"
         }
     }
@@ -550,15 +704,13 @@ public final class BleBeaconScanner: NSObject, CBCentralManagerDelegate, BleBeac
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
-        guard let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data else {
+        guard let payload = BeaconPayload.parse(advertisementData: advertisementData) else {
             return
         }
         
-        guard let payload = BeaconPayload.parse(manufacturerData: manufacturerData) else {
-            return
-        }
-        
-        let rssiInt = RSSI.intValue
+        // En CoreBluetooth, RSSI == 127 significa lectura de potencia no disponible en ese pulso; usar -70 dBm nominal
+        let rawRssi = RSSI.intValue
+        let rssiInt = (rawRssi == 127 || rawRssi == 0) ? -70 : rawRssi
         let estimatedMeters = BeaconPayload.estimateDistance(rssi: rssiInt, txPower: payload.txPower)
         
         let peerData = PeerBeaconData(
@@ -567,7 +719,7 @@ public final class BleBeaconScanner: NSObject, CBCentralManagerDelegate, BleBeac
             longitude: payload.longitude,
             rssi: rssiInt,
             txPower: payload.txPower,
-            estimatedDistanceMeters: estimatedMeters,
+            estimatedDistanceMeters: max(0.1, estimatedMeters),
             lastDetectedTimestamp: Date(),
             isEmergency: payload.isEmergency
         )

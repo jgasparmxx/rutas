@@ -23,8 +23,6 @@ public struct RecordingDashboardView: View {
                 virtualTourHUDView
             } else if viewModel.activeRole == .guia {
                 guideRouteMapHUDView
-            } else if viewModel.activeRole == .visor || viewModel.isRouteConsumptionOnly {
-                consumedRouteMapHUDView
             } else {
                 switch viewModel.recordingState {
                 case .stopped:
@@ -50,17 +48,14 @@ public struct RecordingDashboardView: View {
             if currentIndex < pts.count {
                 let currentPoint = pts[currentIndex]
                 let nextPoint = (currentIndex < pts.count - 1) ? pts[currentIndex + 1] : nil
-                let nextDistText: String? = {
-                    if let next = nextPoint {
-                        let loc1 = CLLocation(latitude: currentPoint.latitude, longitude: currentPoint.longitude)
-                        let loc2 = CLLocation(latitude: next.latitude, longitude: next.longitude)
-                        let d = loc1.distance(from: loc2)
-                        return d >= 1000 ? String(format: "%.1f km", d / 1000.0) : "\(Int(d)) m"
-                    }
-                    return nil
-                }()
+                let stateInfo = PointStateInfo.forPoint(
+                    estado: currentPoint.estado,
+                    isRouteEnd: currentPoint.isRouteEnd,
+                    description: currentPoint.descriptionText
+                )
+                let nextPhrase = RouteStatsCalculator.nextPointPhrase(from: currentPoint, to: nextPoint)
                 
-                // Cabecera del Tour: Badge de Punto, Altitud y Botón de Salir
+                // Cabecera del Tour: Badge de Punto, Tipo de Punto y Botón de Salir (sin altitud absoluta)
                 HStack(alignment: .center) {
                     HStack(spacing: 6) {
                         Text("PUNTO \(currentIndex + 1)/\(pts.count)")
@@ -71,11 +66,13 @@ public struct RecordingDashboardView: View {
                             .background(Color(red: 56/255, green: 189/255, blue: 248/255))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                         
-                        if currentPoint.altitude > 0 {
-                            Text("\(Int(currentPoint.altitude))m alt")
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundStyle(AppTheme.textSecondary)
-                        }
+                        Text(stateInfo.name)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(stateInfo.color)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(stateInfo.backgroundColor)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
                     
                     Spacer()
@@ -94,7 +91,7 @@ public struct RecordingDashboardView: View {
                     .buttonStyle(.plain)
                 }
                 
-                // Foto y Descripción del Punto (Tocar foto para abrir detalle)
+                // Foto y Descripción del Punto + Frase de distancia y subida/bajada al siguiente punto
                 HStack(spacing: 12) {
                     if let photoPath = currentPoint.photoUrl, !photoPath.isEmpty {
                         WaypointThumbnailView(photoPath: photoPath, size: 54)
@@ -103,16 +100,17 @@ public struct RecordingDashboardView: View {
                             }
                     }
                     
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(currentPoint.descriptionText.isEmpty ? "Punto de control del sendero" : currentPoint.descriptionText)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(currentPoint.descriptionText.isEmpty ? stateInfo.name : currentPoint.descriptionText)
                             .font(.system(size: 14, weight: .bold))
                             .foregroundStyle(AppTheme.textPrimary)
                             .lineLimit(2)
                         
-                        if let nextDist = nextDistText {
-                            Text("Avanzar a pie hacia el siguiente punto: \(nextDist)")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(Color(red: 56/255, green: 189/255, blue: 248/255))
+                        if let nextPhrase = nextPhrase {
+                            Text(nextPhrase)
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(Color(red: 94/255, green: 234/255, blue: 212/255))
+                                .fixedSize(horizontal: false, vertical: true)
                         } else {
                             Text("¡Último punto del recorrido!")
                                 .font(.system(size: 12, weight: .bold))
@@ -192,88 +190,6 @@ public struct RecordingDashboardView: View {
         }
     }
     
-    // MARK: - HUD de Ruta Consumida en el Mapa (Sin tour activo)
-    
-    @ViewBuilder
-    private var consumedRouteMapHUDView: some View {
-        if let route = viewModel.activeRoute {
-            VStack(spacing: 12) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text("MODO VISOR")
-                                .font(.system(size: 10, weight: .heavy))
-                                .foregroundStyle(Color(red: 56/255, green: 189/255, blue: 248/255))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color(red: 56/255, green: 189/255, blue: 248/255).opacity(0.15))
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
-                            
-                            Text("· SOLO LECTURA")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(AppTheme.textSecondary)
-                        }
-                        
-                        Text(route.name)
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(AppTheme.textPrimary)
-                            .lineLimit(1)
-                    }
-                    
-                    Spacer()
-                    
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(RouteStatsCalculator.formatDistance(route.gpsDistanceMeters))
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundStyle(AppTheme.textPrimary)
-                        Text("\(viewModel.recordedPoints.count) puntos")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(AppTheme.textSecondary)
-                    }
-                }
-                
-                // Botón Play de Simulación (ESTRICTAMENTE EXCLUSIVO PARA VISOR)
-                if viewModel.activeRole == .visor && !viewModel.recordedPoints.isEmpty {
-                    Button {
-                        viewModel.startVirtualTour()
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "play.circle.fill")
-                                .font(.system(size: 18, weight: .bold))
-                            Text("SIMULAR RECORRIDO (PLAY)")
-                                .font(.system(size: 13, weight: .heavy))
-                        }
-                        .foregroundStyle(Color(red: 15/255, green: 23/255, blue: 42/255))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 46)
-                        .background(Color(red: 56/255, green: 189/255, blue: 248/255))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .shadow(color: Color(red: 56/255, green: 189/255, blue: 248/255).opacity(0.35), radius: 6, y: 3)
-                    }
-                    .buttonStyle(.plain)
-                }
-                
-                // Botón Volver a Portada
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        viewModel.showMapScreen = false
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 12, weight: .bold))
-                        Text("Volver a Portada")
-                            .font(.system(size: 12, weight: .bold))
-                    }
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-    
     // MARK: - HUD de Modo Guía en el Mapa (1:1 Android, NUNCA Simular Recorrido)
     
     @ViewBuilder
@@ -336,9 +252,18 @@ public struct RecordingDashboardView: View {
     private func guideTargetCardView(_ target: RoutePoint) -> some View {
         let distText: String = {
             if let d = viewModel.distanceToTargetGuideWaypoint {
-                return d >= 1000 ? String(format: "%.2f km", d / 1000.0) : "\(Int(d)) m"
+                return RouteStatsCalculator.formatDistanceShort(d)
             }
             return "Calculando..."
+        }()
+        let remElev = viewModel.remainingElevationToTargetGuideWaypoint
+        let elevBadge = RouteStatsCalculator.formatElevationHeaderBadge(remElev)
+        let elevColor: Color = {
+            if let r = remElev {
+                if r > 0 { return Color(red: 52/255, green: 211/255, blue: 153/255) }
+                if r < 0 { return Color(red: 96/255, green: 165/255, blue: 250/255) }
+            }
+            return AppTheme.textSecondary
         }()
         
         VStack(alignment: .leading, spacing: 8) {
@@ -373,14 +298,26 @@ public struct RecordingDashboardView: View {
             Divider()
                 .background(AppTheme.cardBorder)
             
-            HStack(spacing: 20) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Al punto:")
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Al sig. punto:")
                         .font(.system(size: 10))
                         .foregroundStyle(AppTheme.textSecondary)
-                    Text(distText)
-                        .font(.system(size: 16, weight: .heavy, design: .rounded))
-                        .foregroundStyle(AppTheme.textPrimary)
+                    HStack(spacing: 6) {
+                        Text(distText)
+                            .font(.system(size: 16, weight: .heavy, design: .rounded))
+                            .foregroundStyle(AppTheme.textPrimary)
+                        
+                        if !elevBadge.isEmpty {
+                            Text(elevBadge)
+                                .font(.system(size: 12, weight: .heavy, design: .rounded))
+                                .foregroundStyle(elevColor)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(elevColor.opacity(0.16))
+                                .clipShape(Capsule())
+                        }
+                    }
                 }
                 
                 VStack(alignment: .leading, spacing: 1) {
@@ -388,7 +325,7 @@ public struct RecordingDashboardView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(AppTheme.textSecondary)
                     Text(RouteStatsCalculator.formatSpeedKmh(viewModel.locationTracker.currentSpeedKmh))
-                        .font(.system(size: 16, weight: .heavy, design: .rounded))
+                        .font(.system(size: 15, weight: .heavy, design: .rounded))
                         .foregroundStyle(AppTheme.accent)
                 }
                 
@@ -397,7 +334,7 @@ public struct RecordingDashboardView: View {
                 let points = viewModel.tourPoints
                 if let idx = points.firstIndex(where: { $0.id == target.id }), idx < points.count - 1 {
                     Button {
-                        viewModel.targetGuideWaypoint = points[idx + 1]
+                        viewModel.advanceGuideToNextWaypoint()
                     } label: {
                         HStack(spacing: 3) {
                             Text("Siguiente")

@@ -278,7 +278,9 @@ public struct PortadaView: View {
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(Array(pts.enumerated()), id: \.element.id) { index, pt in
-                            ConsumedPointRowView(index: index, pt: pt) {
+                            let nextPt = (index < pts.count - 1) ? pts[index + 1] : nil
+                            let nextPhrase = RouteStatsCalculator.nextPointPhrase(from: pt, to: nextPt)
+                            ConsumedPointRowView(index: index, pt: pt, nextPhrase: nextPhrase) {
                                 viewModel.selectedPointForDetail = pt
                             }
                         }
@@ -524,6 +526,7 @@ public struct PortadaView: View {
 private struct ConsumedPointRowView: View {
     let index: Int
     let pt: RoutePoint
+    let nextPhrase: String?
     let onSelect: () -> Void
     
     var body: some View {
@@ -547,10 +550,16 @@ private struct ConsumedPointRowView: View {
                         .lineLimit(1)
                 }
                 
-                Text(String(format: "Alt: %.1fm | (%.5f, %.5f)", pt.altitude, pt.latitude, pt.longitude))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .lineLimit(1)
+                if let nextPhrase = nextPhrase {
+                    Text(nextPhrase)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color(red: 94/255, green: 234/255, blue: 212/255))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Último punto del recorrido")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(AppTheme.success)
+                }
                 
                 HStack(spacing: 6) {
                     Text(pt.hasConnectivity ? "📶 Conectado" : "📵 Sin señal")

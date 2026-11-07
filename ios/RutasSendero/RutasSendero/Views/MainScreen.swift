@@ -13,6 +13,7 @@ import SwiftData
 
 public struct MainScreen: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = MainViewModel()
     
     public init() {}
@@ -29,7 +30,10 @@ public struct MainScreen: View {
                     VStack {
                         HeaderBarView(viewModel: viewModel)
                         Spacer()
-                        RecordingDashboardView(viewModel: viewModel)
+                        // En modo Visor sin simulación activa NO se muestra recuadro inferior (el botón Play ya está arriba en HeaderBar)
+                        if (viewModel.activeRole == .visor && viewModel.isVirtualTourActive) || viewModel.activeRole == .guia {
+                            RecordingDashboardView(viewModel: viewModel)
+                        }
                     }
                 }
                 .transition(.opacity)
@@ -136,6 +140,11 @@ public struct MainScreen: View {
                     Spacer()
                 }
                 .zIndex(150)
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                viewModel.refreshBleScanning()
             }
         }
         .onChange(of: viewModel.saveStatusMessage) { _, newMsg in

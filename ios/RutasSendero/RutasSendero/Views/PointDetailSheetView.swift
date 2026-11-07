@@ -155,7 +155,12 @@ public struct PointDetailSheetView: View {
                             .stroke(AppTheme.cardBorder, lineWidth: 1)
                     )
                     
-                    // 3. Descripción del Hito / Punto (Solo Lectura en Visor y Guía)
+                    // 3. Descripción del Hito / Punto y Tramo al Siguiente Punto (Solo Lectura en Visor y Guía)
+                    let pts = viewModel.tourPoints
+                    let currentIndex = pts.firstIndex(where: { $0.id == point.id }) ?? 0
+                    let nextPoint = (currentIndex < pts.count - 1) ? pts[currentIndex + 1] : nil
+                    let nextPhrase = RouteStatsCalculator.nextPointPhrase(from: point, to: nextPoint)
+                    
                     VStack(alignment: .leading, spacing: 8) {
                         Text("DESCRIPCIÓN DEL PUNTO")
                             .font(.system(size: 11, weight: .heavy))
@@ -168,11 +173,29 @@ public struct PointDetailSheetView: View {
                             .padding(12)
                             .background(AppTheme.cardMuted.opacity(0.5))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
+                        
+                        if let nextPhrase = nextPhrase {
+                            HStack(spacing: 8) {
+                                Image(systemName: "figure.walk")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundStyle(Color(red: 94/255, green: 234/255, blue: 212/255))
+                                Text(nextPhrase)
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundStyle(Color(red: 94/255, green: 234/255, blue: 212/255))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(Color(red: 15/255, green: 118/255, blue: 110/255).opacity(0.28))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color(red: 94/255, green: 234/255, blue: 212/255).opacity(0.45), lineWidth: 1)
+                            )
+                        }
                     }
                     
                     // 4. Navegación entre Puntos (Anterior y Siguiente)
-                    let pts = viewModel.tourPoints
-                    let currentIndex = pts.firstIndex(where: { $0.id == point.id }) ?? 0
                     
                     HStack(spacing: 12) {
                         Button {

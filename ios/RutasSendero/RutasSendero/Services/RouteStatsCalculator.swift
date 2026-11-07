@@ -198,4 +198,147 @@ public enum RouteStatsCalculator {
     public static func formatElevation(_ meters: Double) -> String {
         return String(format: "%.0f m", meters)
     }
+    
+    // MARK: - Desnivel y Frases de Distancia / Altura al Siguiente Punto (1:1 Android RouteStatsCalculator.kt)
+    
+    /// Determina si un valor de altitud GPS es válido (descarta 0.0 por defecto o lecturas corruptas).
+    public static func hasValidAltitude(_ alt: Double) -> Bool {
+        return !alt.isNaN && !alt.isInfinite && abs(alt) > 0.1
+    }
+    
+    /// Calcula la diferencia de altitud redondeada en metros (destino - origen).
+    /// Retorna positivo si es subida, negativo si es bajada, 0 si es plano, o `nil` si falta altitud válida.
+    public static func calculateElevationDeltaMeters(fromAlt: Double?, toAlt: Double?) -> Int? {
+        guard let fromAlt = fromAlt, let toAlt = toAlt else { return nil }
+        guard hasValidAltitude(fromAlt), hasValidAltitude(toAlt) else { return nil }
+        let diff = toAlt - fromAlt
+        if abs(diff) > 3000.0 { return nil }
+        return Int(diff.rounded())
+    }
+    
+    /// Estima cuánto falta por subir o bajar hacia el punto objetivo durante el guiado activo.
+    /// Si existe un punto previo válido en la secuencia de guiado, interpola sobre el desnivel grabado
+    /// del tramo para evitar desfases de geoide/elipsoide entre distintos teléfonos.
+    public static func estimateRemainingElevationToTarget(
+        prevPoint: RoutePoint?,
+        targetPoint: RoutePoint,
+        currentLocation: CLLocation?,
+        remainingDistanceMeters: Double?
+    ) -> Int? {
+        guard hasValidAltitude(targetPoint.altitude) else { return nil }
+        
+        if let prevPoint = prevPoint, hasValidAltitude(prevPoint.altitude) {
+            let totalDelta = targetPoint.altitude - prevPoint.altitude
+            if abs(totalDelta) > 3000.0 { return nil }
+            let prevLoc = CLLocation(latitude: prevPoint.latitude, longitude: prevPoint.longitude)
+            let targetLoc = CLLocation(latitude: targetPoint.latitude, longitude: targetPoint.longitude)
+            let segDist = prevLoc.distance(from: targetLoc)
+            let ratio: Double
+            if let rem = remainingDistanceMeters, segDist > 1.0 {
+                ratio = min(max(rem / segDist, 0.0), 1.0)
+            } else {
+                ratio = 1.0
+            }
+            return Int((totalDelta * ratio).rounded())
+        }
+        
+        if let loc = currentLocation, loc.verticalAccuracy >= 0, hasValidAltitude(loc.altitude) {
+            return calculateElevationDeltaMeters(fromAlt: loc.altitude, toAlt: targetPoint.altitude)
+        }
+        
+        return nil
+    }
+    
+    public static func formatDistanceSpoken(_ distanceMeters: Double) -> String {
+        if distanceMeters >= 1000.0 {
+            return String(format: "%.1f kilómetros", distanceMeters / 1000.0)
+        } else {
+            let m = Int(distanceMeters)
+            return m == 1 ? "1 metro" : "\(m) metros"
+        }
+    }
+    
+    public static func formatDistanceShort(_ distanceMeters: Double) -> String {
+        if distanceMeters >= 1000.0 {
+            return String(format: "%.1f km", distanceMeters / 1000.0)
+        } else {
+            return "\(Int(distanceMeters)) m"
+        }
+    }
+    
+    public static func formatElevationSpokenPart(_ deltaMeters: Int?) -> String {
+        guard let deltaMeters = deltaMeters else { return "" }
+        if deltaMeters > 0 {
+            let unit = deltaMeters == 1 ? "metro" : "metros"
+            return "subida son \(deltaMeters) \(unit)"
+        } else if deltaMeters < 0 {
+            let b = abs(deltaMeters)
+            let unit = b == 1 ? "metro" : "metros"
+            return "bajada son \(b) \(unit)"
+        } else {
+            return "en terreno plano"
+        }
+    }
+    
+    public static func formatElevationSpeechSuffix(_ deltaMeters: Int?) -> String {
+        guard let deltaMeters = deltaMeters else { return "" }
+        if deltaMeters > 0 {
+            let unit = deltaMeters == 1 ? "metro" : "metros"
+            return ", subida de \(deltaMeters) \(unit)"
+        } else if deltaMeters < 0 {
+            let b = abs(deltaMeters)
+            let unit = b == 1 ? "metro" : "metros"
+            return ", bajada de \(b) \(unit)"
+        } else {
+            return ", sin desnivel"
+        }
+    }
+    
+    public static func formatNextPointSimulationSpeech(distanceMeters: Double, deltaMeters: Int?) -> String {
+        let distSpoken = formatDistanceSpoken(distanceMeters)
+        let elevPart = formatElevationSpokenPart(deltaMeters)
+        if !elevPart.isEmpty {
+            return "Distancia a caminar al siguiente punto es \(distSpoken), \(elevPart)."
+        } else {
+            return "Distancia a caminar al siguiente punto es \(distSpoken)."
+        }
+    }
+    
+    public static func formatNextPointCardPhrase(distanceMeters: Double, deltaMeters: Int?) -> String {
+        let distShort = formatDistanceShort(distanceMeters)
+        guard let deltaMeters = deltaMeters else {
+            return "Distancia a caminar al siguiente punto: \(distShort)"
+        }
+        if deltaMeters > 0 {
+            let unit = deltaMeters == 1 ? "metro" : "metros"
+            return "Distancia a caminar al siguiente punto: \(distShort), subida son \(deltaMeters) \(unit)"
+        } else if deltaMeters < 0 {
+            let b = abs(deltaMeters)
+            let unit = b == 1 ? "metro" : "metros"
+            return "Distancia a caminar al siguiente punto: \(distShort), bajada son \(b) \(unit)"
+        } else {
+            return "Distancia a caminar al siguiente punto: \(distShort), terreno plano"
+        }
+    }
+    
+    public static func formatElevationHeaderBadge(_ deltaMeters: Int?) -> String {
+        guard let deltaMeters = deltaMeters else { return "" }
+        if deltaMeters > 0 {
+            return "↑ Subida \(deltaMeters) m"
+        } else if deltaMeters < 0 {
+            return "↓ Bajada \(abs(deltaMeters)) m"
+        } else {
+            return "Plano"
+        }
+    }
+    
+    /// Construye la frase de distancia y subida/bajada desde `current` hacia `next` (o `nil` si no hay siguiente punto).
+    public static func nextPointPhrase(from current: RoutePoint, to next: RoutePoint?) -> String? {
+        guard let next = next else { return nil }
+        let loc1 = CLLocation(latitude: current.latitude, longitude: current.longitude)
+        let loc2 = CLLocation(latitude: next.latitude, longitude: next.longitude)
+        let dist = loc1.distance(from: loc2)
+        let delta = calculateElevationDeltaMeters(fromAlt: current.altitude, toAlt: next.altitude)
+        return formatNextPointCardPhrase(distanceMeters: dist, deltaMeters: delta)
+    }
 }

@@ -608,12 +608,31 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
              // Adaptive tracking: User skipped the current point and is heading to a point ahead
              val missingPointsCount = Math.abs(closestPointAheadIndex - currentIndex)
              val nextPoint = puntos[closestPointAheadIndex]
-             speakTts("Parece que tomaste un atajo o desvío. Redirigiendo al punto: ${nextPoint.descripcion}.")
+             val prevAheadIdx = if (forward) closestPointAheadIndex - 1 else closestPointAheadIndex + 1
+             val prevAheadPt = puntos.getOrNull(prevAheadIdx)
+             val nextDeltaAlt = com.gaspar.rutassendero.ui.RouteStatsCalculator.estimateRemainingElevationToTarget(
+                 prevPoint = prevAheadPt,
+                 targetPoint = nextPoint,
+                 currentLocation = userLoc,
+                 remainingDistanceMeters = minDistanceToPointAhead
+             )
+             val nextDistSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDistanceSpoken(minDistanceToPointAhead)
+             val nextElevSuffix = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatElevationSpeechSuffix(nextDeltaAlt)
+             speakTts("Parece que tomaste un atajo o desvío. Redirigiendo al punto: ${nextPoint.descripcion}, a $nextDistSpoken$nextElevSuffix.")
              _targetWaypoint.value = nextPoint
              return // Re-evaluate on next location update
         }
 
         val distance = distanceToCurrentTarget
+        val prevIdxForTarget = if (forward) currentIndex - 1 else currentIndex + 1
+        val prevPointForTarget = puntos.getOrNull(prevIdxForTarget)
+        val remDeltaAlt = com.gaspar.rutassendero.ui.RouteStatsCalculator.estimateRemainingElevationToTarget(
+            prevPoint = prevPointForTarget,
+            targetPoint = target,
+            currentLocation = userLoc,
+            remainingDistanceMeters = distance
+        )
+        val remElevSuffix = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatElevationSpeechSuffix(remDeltaAlt)
 
         // --- AVISOS DE PUNTOS ESPECIALES (50m y 20m) ---
         if (target.estado != 1) {
@@ -636,7 +655,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                         }
                         val descText = if (target.descripcion.isNotBlank()) ". A continuación: ${target.descripcion}" else ""
                         if (t == 50f) {
-                            speakTts("Atención a 50 metros, $stateName$descText", force = true)
+                            speakTts("Atención a 50 metros$remElevSuffix, $stateName$descText", force = true)
                         } else {
                             speakTts("Alerta, estás llegando a $stateName$descText", force = true)
                         }
@@ -705,7 +724,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             // Solo avisar por voz si se está alejando
             if (isMovingAway && now - lastTtsTime > 15000 && distance > tolerance) {
                 lastTtsTime = now
-                speakTts("A ${distance.toInt()} metros, $dirText")
+                speakTts("A ${distance.toInt()} metros$remElevSuffix, $dirText")
             } else if (!isMovingAway && now - lastTtsTime > 15000 && distance > tolerance) {
                 lastTtsTime = now
                 val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
@@ -722,7 +741,7 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             // Solo avisar por voz si se está alejando
             if (isMovingAway && now - lastTtsTime > 20000 && distance > tolerance) {
                 lastTtsTime = now
-                speakTts("Punto a ${distance.toInt()} metros.")
+                speakTts("Punto a ${distance.toInt()} metros$remElevSuffix.")
             } else if (!isMovingAway && now - lastTtsTime > 20000 && distance > tolerance) {
                 lastTtsTime = now
                 val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
@@ -774,9 +793,25 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             val nextIndex = if (_guideDirectionForward.value) index + 1 else index - 1
             if (nextIndex in puntos.indices) {
                 // Llegó a un punto intermedio
+                val nextPunto = puntos[nextIndex]
+                val fromLoc = _currentLocation.value ?: Location("").apply {
+                    latitude = punto.latitud
+                    longitude = punto.longitud
+                }
+                val nextLoc = Location("").apply {
+                    latitude = nextPunto.latitud
+                    longitude = nextPunto.longitud
+                }
+                val segDist = fromLoc.distanceTo(nextLoc)
+                val segDeltaAlt = com.gaspar.rutassendero.ui.RouteStatsCalculator.calculateElevationDeltaMeters(punto.altitud, nextPunto.altitud)
+                    ?: com.gaspar.rutassendero.ui.RouteStatsCalculator.estimateRemainingElevationToTarget(punto, nextPunto, _currentLocation.value, segDist)
+                val nextDistSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDistanceSpoken(segDist)
+                val nextElevSuffix = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatElevationSpeechSuffix(segDeltaAlt)
+                val nextTargetMsg = "Siguiente destino: ${nextPunto.descripcion}, distancia a caminar $nextDistSpoken$nextElevSuffix."
+
                 val isNormal = punto.estado == 1
                 if (isNormal) {
-                    speakTts("Llegaste a punto de ruta: ${punto.descripcion}")
+                    speakTts("Llegaste a punto de ruta: ${punto.descripcion}. $nextTargetMsg")
                 } else {
                     val stateName = when(punto.estado) {
                         2 -> "sitio de interés"
@@ -789,15 +824,14 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                         10 -> "comida"
                         else -> "punto especial"
                     }
-                    speakTts("$stateName. ${punto.descripcion}", force = true)
+                    val suffix = if (_isVoiceGuidanceEnabled.value) " $nextTargetMsg" else ""
+                    speakTts("$stateName. ${punto.descripcion}.$suffix", force = true)
                 }
                 
                 // Sonido de llegada normal
                 playSoundPattern(listOf(150 to 50, 150 to 50, 300 to 100))
                 
-                val nextPunto = puntos[nextIndex]
                 _targetWaypoint.value = nextPunto
-                speakTts("Siguiente destino a ${nextPunto.descripcion}")
             } else {
                 // LLEGADA AL DESTINO FINAL
                 speakTts("Felicidades. Has llegado a tu destino final, completando la ruta: ${punto.descripcion}")
@@ -936,9 +970,16 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             _isGuiding.value && _targetWaypoint.value != null -> {
                 val target = _targetWaypoint.value!!
                 val dist = _distanceToTarget.value ?: 0f
+                val pts = _selectedRoutePoints.value
+                val curIdx = pts.indexOfFirst { it.id == target.id }
+                val prevIdx = if (_guideDirectionForward.value) curIdx - 1 else curIdx + 1
+                val prevPt = if (curIdx != -1) pts.getOrNull(prevIdx) else null
+                val remElev = com.gaspar.rutassendero.ui.RouteStatsCalculator.estimateRemainingElevationToTarget(prevPt, target, location, dist)
+                val elevBadge = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatElevationHeaderBadge(remElev)
+                val elevPart = if (elevBadge.isNotEmpty()) " · $elevBadge" else ""
                 val speedKmh = if (location.hasSpeed()) location.speed * 3.6f else 0f
                 val speedStr = String.format(Locale.US, "%.1f km/h", speedKmh)
-                "Guía a: ${target.descripcion} (${dist.toInt()}m) · Vel: $speedStr"
+                "Guía a: ${target.descripcion} (${dist.toInt()}m$elevPart) · Vel: $speedStr"
             }
             route != null -> {
                 val puntos = _selectedRoutePoints.value.size
@@ -1821,7 +1862,23 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             }
 
             val destText = if (toStart) "el inicio" else "el final"
-            instance?.speakTts("Iniciando guía hacia $destText del sendero. Avance al punto: ${target?.descripcion ?: ""}")
+            val initialTargetMsg = if (target != null && userLoc != null) {
+                val tLoc = Location("").apply {
+                    latitude = target.latitud
+                    longitude = target.longitud
+                }
+                val d = userLoc.distanceTo(tLoc)
+                val curIdx = points.indexOfFirst { it.id == target.id }
+                val prevIdx = if (!toStart) curIdx - 1 else curIdx + 1
+                val prevPt = if (curIdx != -1) points.getOrNull(prevIdx) else null
+                val delta = com.gaspar.rutassendero.ui.RouteStatsCalculator.estimateRemainingElevationToTarget(prevPt, target, userLoc, d)
+                val dSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDistanceSpoken(d)
+                val eSuffix = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatElevationSpeechSuffix(delta)
+                "Avance al punto: ${target.descripcion}, distancia a caminar $dSpoken$eSuffix."
+            } else {
+                "Avance al punto: ${target?.descripcion ?: ""}"
+            }
+            instance?.speakTts("Iniciando guía hacia $destText del sendero. $initialTargetMsg")
         }
 
         fun stopGuiding() {
@@ -1848,8 +1905,21 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                         service.playSoundPatternInternal(listOf(150 to 50, 150 to 50, 300 to 100))
                         delay(1200) // Delay to let the sound finish before speaking next target
                         val nextPunto = puntos[nextIndex]
+                        val fromLoc = _currentLocation.value ?: Location("").apply {
+                            latitude = currentTarget.latitud
+                            longitude = currentTarget.longitud
+                        }
+                        val nextLoc = Location("").apply {
+                            latitude = nextPunto.latitud
+                            longitude = nextPunto.longitud
+                        }
+                        val segDist = fromLoc.distanceTo(nextLoc)
+                        val segDeltaAlt = com.gaspar.rutassendero.ui.RouteStatsCalculator.calculateElevationDeltaMeters(currentTarget.altitud, nextPunto.altitud)
+                            ?: com.gaspar.rutassendero.ui.RouteStatsCalculator.estimateRemainingElevationToTarget(currentTarget, nextPunto, _currentLocation.value, segDist)
+                        val nextDistSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDistanceSpoken(segDist)
+                        val nextElevSuffix = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatElevationSpeechSuffix(segDeltaAlt)
                         _targetWaypoint.value = nextPunto
-                        service.speakTts("Siguiente destino a ${nextPunto.descripcion}")
+                        service.speakTts("Siguiente destino a ${nextPunto.descripcion}, distancia a caminar $nextDistSpoken$nextElevSuffix.")
                     } else {
                         service.speakTts("Punto final ${currentTarget.descripcion} localizado manualmente. Guía finalizada.")
                         service.playSoundPatternInternal(listOf(150 to 50, 150 to 50, 150 to 50, 400 to 100, 200 to 50, 600 to 200))

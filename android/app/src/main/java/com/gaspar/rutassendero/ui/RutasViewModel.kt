@@ -52,7 +52,8 @@ import kotlinx.coroutines.delay
 
 data class PuntoRutaUIModel(
     val entity: PuntoRutaEntity,
-    val distanceMeters: Float? // Distance to waypoint
+    val distanceMeters: Float?, // Distance to waypoint
+    val nextPointPhrase: String? = null
 )
 
 data class CalendarEventData(
@@ -823,10 +824,29 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
         // Orden de la lista:
         // Por defecto, en modo guía el orden es inicial-final (reversed = false), en visor/trazar es final-inicial (reversed = true).
         // Las flechas arriba/abajo permiten al usuario cambiar este orden explícitamente.
-        if (reversed) {
+        val orderedList = if (reversed) {
             uiList.reversed()
         } else {
             uiList
+        }
+        orderedList.mapIndexed { idx, item ->
+            val nextItem = orderedList.getOrNull(idx + 1)
+            val phrase = if (nextItem != null) {
+                val locCur = Location("").apply {
+                    latitude = item.entity.latitud
+                    longitude = item.entity.longitud
+                }
+                val locNext = Location("").apply {
+                    latitude = nextItem.entity.latitud
+                    longitude = nextItem.entity.longitud
+                }
+                val nextDist = locCur.distanceTo(locNext)
+                val deltaAlt = RouteStatsCalculator.calculateElevationDeltaMeters(item.entity.altitud, nextItem.entity.altitud)
+                RouteStatsCalculator.formatNextPointCardPhrase(nextDist, deltaAlt)
+            } else {
+                null
+            }
+            item.copy(nextPointPhrase = phrase)
         }
     }.stateIn(
         scope = viewModelScope,

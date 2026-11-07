@@ -290,6 +290,13 @@ fun MainScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     val distText = if ((distanceToTarget ?: 0f) > 0f) "${String.format("%.1f", distanceToTarget ?: 0f)}m restantes" else "Llegando..."
+                    val dlgTargetIdx = selectedRoutePoints.indexOfFirst { it.id == targetWaypoint?.id }
+                    val dlgPrevIdx = if (guideDirectionForward) dlgTargetIdx - 1 else dlgTargetIdx + 1
+                    val dlgPrevPt = if (dlgTargetIdx != -1) selectedRoutePoints.getOrNull(dlgPrevIdx) else null
+                    val dlgRemElev = targetWaypoint?.let {
+                        RouteStatsCalculator.estimateRemainingElevationToTarget(dlgPrevPt, it, location, distanceToTarget)
+                    }
+                    val dlgElevBadge = RouteStatsCalculator.formatElevationHeaderBadge(dlgRemElev)
                     Text(
                         text = targetWaypoint?.descripcion ?: "Punto",
                         color = Color.Yellow,
@@ -304,6 +311,16 @@ fun MainScreen(
                         fontSize = 16.sp,
                         textAlign = TextAlign.Center
                     )
+                    if (dlgElevBadge.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = dlgElevBadge,
+                            color = ColorTekinsAccent,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                     Spacer(modifier = Modifier.height(20.dp))
                     Button(
                         onClick = { showWaypointDialog = false },
@@ -480,11 +497,12 @@ fun MainScreen(
         virtualTourFocusTrigger = Pair(currentPoint, if (markerOriginalIndex != -1) markerOriginalIndex else virtualTourIndex)
 
         val nextPoint = if (virtualTourIndex < tourPoints.size - 1) tourPoints[virtualTourIndex + 1] else null
-        val nextDistStr = if (nextPoint != null) {
+        val nextStepSpeech = if (nextPoint != null) {
             val loc1 = Location("").apply { latitude = currentPoint.latitud; longitude = currentPoint.longitud }
             val loc2 = Location("").apply { latitude = nextPoint.latitud; longitude = nextPoint.longitud }
             val d = loc1.distanceTo(loc2)
-            if (d >= 1000f) String.format(java.util.Locale.US, "%.1f kilómetros", d / 1000f) else "${d.toInt()} metros"
+            val deltaAlt = RouteStatsCalculator.calculateElevationDeltaMeters(currentPoint.altitud, nextPoint.altitud)
+            RouteStatsCalculator.formatNextPointSimulationSpeech(d, deltaAlt)
         } else null
 
         val estadoInfo = getEstadoPuntoInfo(currentPoint.estado, currentPoint.esFinRuta)
@@ -494,14 +512,11 @@ fun MainScreen(
             if (!isNormalPoint) {
                 append("Tipo: ${estadoInfo.first}. ")
             }
-            if (currentPoint.altitud > 0) {
-                append("Altitud: ${currentPoint.altitud.toInt()} metros. ")
-            }
             if (currentPoint.descripcion.isNotBlank()) {
                 append("Descripción: ${currentPoint.descripcion}. ")
             }
-            if (nextDistStr != null) {
-                append("Distancia a caminar al siguiente punto: $nextDistStr.")
+            if (nextStepSpeech != null) {
+                append(nextStepSpeech)
             } else {
                 append("Este es el último punto del recorrido.")
             }
@@ -569,7 +584,8 @@ fun MainScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(68.dp),
+                            .wrapContentHeight()
+                            .heightIn(min = 68.dp),
                         shape = RoundedCornerShape(bottomStart = 18.dp, bottomEnd = 18.dp),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEB3B)),
                         border = BorderStroke(1.dp, ColorTekinsAccent.copy(alpha = 0.4f)),
@@ -577,8 +593,8 @@ fun MainScreen(
                     ) {
                         Row(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .padding(horizontal = 14.dp)
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
                                 .pointerInput(Unit) {
                                     detectHorizontalDragGestures(
                                         onDragStart = { totalDragXMap = 0f },
@@ -618,7 +634,17 @@ fun MainScreen(
                             
                             if (isVirtualTourActive) {
                                 val currentTourPoint = tourPoints.getOrNull(virtualTourIndex)
+                                val nextTourHeaderPoint = tourPoints.getOrNull(virtualTourIndex + 1)
                                 val estadoInfo = currentTourPoint?.let { getEstadoPuntoInfo(it.estado, it.esFinRuta) }
+                                val simHeaderSubInfo = if (currentTourPoint != null && nextTourHeaderPoint != null) {
+                                    val l1 = Location("").apply { latitude = currentTourPoint.latitud; longitude = currentTourPoint.longitud }
+                                    val l2 = Location("").apply { latitude = nextTourHeaderPoint.latitud; longitude = nextTourHeaderPoint.longitud }
+                                    val d = l1.distanceTo(l2)
+                                    val dAlt = RouteStatsCalculator.calculateElevationDeltaMeters(currentTourPoint.altitud, nextTourHeaderPoint.altitud)
+                                    val badge = RouteStatsCalculator.formatElevationHeaderBadge(dAlt)
+                                    val dStr = RouteStatsCalculator.formatDistanceShort(d)
+                                    if (badge.isNotEmpty()) "Sig: $dStr · $badge" else "Sig: $dStr"
+                                } else null
                                 Column(
                                     modifier = Modifier
                                         .weight(1f)
@@ -647,12 +673,22 @@ fun MainScreen(
                                     }
                                     Text(
                                         text = currentTourPoint?.descripcion?.ifBlank { estadoInfo?.first } ?: selectedRoute?.nombre ?: "Ruta",
-                                        fontSize = 16.sp,
+                                        fontSize = 15.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = Color.Black,
                                         maxLines = 1,
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                     )
+                                    if (simHeaderSubInfo != null) {
+                                        Text(
+                                            text = simHeaderSubInfo,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF065F46),
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                    }
                                 }
 
                                 IconButton(
@@ -739,10 +775,25 @@ fun MainScreen(
                                         }
                                     }
                                     Spacer(modifier = Modifier.width(8.dp))
+                                    val isRevActive = if (isGuiding) !guideDirectionForward else isPointsListReversed
+                                    val nextPtInMap = if (ptIndex != -1) {
+                                        val nxtIdx = if (isRevActive) ptIndex - 1 else ptIndex + 1
+                                        selectedRoutePoints.getOrNull(nxtIdx)
+                                    } else null
+                                    val nextPtHeaderLine = if (nextPtInMap != null) {
+                                        val l1 = Location("").apply { latitude = punto.latitud; longitude = punto.longitud }
+                                        val l2 = Location("").apply { latitude = nextPtInMap.latitud; longitude = nextPtInMap.longitud }
+                                        val d = l1.distanceTo(l2)
+                                        val dAlt = RouteStatsCalculator.calculateElevationDeltaMeters(punto.altitud, nextPtInMap.altitud)
+                                        val badge = RouteStatsCalculator.formatElevationHeaderBadge(dAlt)
+                                        val dStr = RouteStatsCalculator.formatDistanceShort(d)
+                                        if (badge.isNotEmpty()) "Al sig. punto: $dStr · $badge" else "Al sig. punto: $dStr"
+                                    } else null
+
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = "#${ptIndex + 1} · ${punto.descripcion}",
-                                            fontSize = 15.sp,
+                                            fontSize = 14.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = Color.Black,
                                             maxLines = 1,
@@ -754,11 +805,21 @@ fun MainScreen(
                                                 if (ptIndex > 0) append(" · Tramo: $segText (va $accumText)")
                                                 if (punto.altitud > 0) append(" · ${punto.altitud.toInt()}m")
                                             },
-                                            fontSize = 11.sp,
+                                            fontSize = 10.5.sp,
                                             color = Color(0xFF334155),
                                             maxLines = 1,
                                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                         )
+                                        if (nextPtHeaderLine != null) {
+                                            Text(
+                                                text = nextPtHeaderLine,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = Color(0xFF065F46),
+                                                maxLines = 1,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
                                 }
 
@@ -778,20 +839,52 @@ fun MainScreen(
                                     )
                                 }
                             } else if (isGuiding && targetWaypoint != null) {
-                                val distText = if ((distanceToTarget ?: 0f) > 0f) " (${String.format("%.1f", distanceToTarget ?: 0f)}m)" else ""
+                                val targetIdxInHeader = selectedRoutePoints.indexOfFirst { it.id == targetWaypoint?.id }
+                                val prevIdxInHeader = if (guideDirectionForward) targetIdxInHeader - 1 else targetIdxInHeader + 1
+                                val prevGuidePt = if (targetIdxInHeader != -1) selectedRoutePoints.getOrNull(prevIdxInHeader) else null
+                                val headerRemElev = RouteStatsCalculator.estimateRemainingElevationToTarget(
+                                    prevPoint = prevGuidePt,
+                                    targetPoint = targetWaypoint!!,
+                                    currentLocation = location,
+                                    remainingDistanceMeters = distanceToTarget
+                                )
+                                val headerElevBadge = RouteStatsCalculator.formatElevationHeaderBadge(headerRemElev)
+                                val headerDistShort = distanceToTarget?.takeIf { it > 0f }?.let { RouteStatsCalculator.formatDistanceShort(it) }
+                                val nextStepHeaderLine = buildString {
+                                    if (headerDistShort != null) append("Al sig. punto: $headerDistShort")
+                                    if (headerElevBadge.isNotEmpty()) {
+                                        if (isNotEmpty()) append(" · ")
+                                        append(headerElevBadge)
+                                    }
+                                }
+                                val elevLineColor = when {
+                                    (headerRemElev ?: 0) > 0 -> Color(0xFF065F46) // Verde esmeralda oscuro (Subida)
+                                    (headerRemElev ?: 0) < 0 -> Color(0xFF1E40AF) // Azul rey oscuro (Bajada)
+                                    else -> Color(0xFF1E293B)
+                                }
                                 Column(
                                     modifier = Modifier
                                         .weight(1f)
                                         .clickable { showWaypointDialog = true }
                                 ) {
                                     Text(
-                                        text = "${targetWaypoint?.descripcion ?: "Punto"}$distText",
-                                        fontSize = 18.sp,
+                                        text = "🎯 ${targetWaypoint?.descripcion ?: "Punto"}",
+                                        fontSize = 15.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         color = Color.Black,
                                         maxLines = 1,
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                     )
+                                    if (nextStepHeaderLine.isNotEmpty()) {
+                                        Text(
+                                            text = nextStepHeaderLine,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = elevLineColor,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                    }
                                     // Cálculo de avance tridimensional
                                     val totalDist = remember(selectedRoutePoints) { RouteStatsCalculator.calculateBeaconDistance(selectedRoutePoints) }
                                     val passedPoints = remember(selectedRoutePoints, targetWaypoint) {
@@ -826,7 +919,7 @@ fun MainScreen(
 
                                     Text(
                                         text = "$currentDistStr de $totalDistStr ($percentage%) · Vel: $speedStr",
-                                        fontSize = 11.sp,
+                                        fontSize = 10.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = Color(0xFF0F172A), // Azul casi negro (Slate 900)
                                         maxLines = 1,
@@ -963,6 +1056,7 @@ fun MainScreen(
                             },
                             activePointId = activeMapPoint?.id,
                             focusPointTrigger = virtualTourFocusTrigger,
+                            isReversed = if (isGuiding) !guideDirectionForward else isPointsListReversed,
                             modifier = Modifier.fillMaxSize(),
                             routeStartLat = selectedRoute?.latitudOrig,
                             routeStartLng = selectedRoute?.longitudOrig
@@ -975,11 +1069,12 @@ fun MainScreen(
                         val estadoInfo = getEstadoPuntoInfo(currentTourPoint.estado, currentTourPoint.esFinRuta)
 
                         val nextPoint = if (virtualTourIndex < tourPoints.size - 1) tourPoints[virtualTourIndex + 1] else null
-                        val nextDistText = if (nextPoint != null) {
+                        val nextCardPhrase = if (nextPoint != null) {
                             val loc1 = Location("").apply { latitude = currentTourPoint.latitud; longitude = currentTourPoint.longitud }
                             val loc2 = Location("").apply { latitude = nextPoint.latitud; longitude = nextPoint.longitud }
                             val d = loc1.distanceTo(loc2)
-                            if (d >= 1000f) String.format(java.util.Locale.US, "%.1f km", d / 1000f) else "${d.toInt()} m"
+                            val dAlt = RouteStatsCalculator.calculateElevationDeltaMeters(currentTourPoint.altitud, nextPoint.altitud)
+                            RouteStatsCalculator.formatNextPointCardPhrase(d, dAlt)
                         } else null
 
                         AnimatedVisibility(
@@ -1085,9 +1180,9 @@ fun MainScreen(
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                     )
 
-                                    if (nextDistText != null) {
+                                    if (nextCardPhrase != null) {
                                         Text(
-                                            text = "Avanzar a pie hacia el siguiente punto: $nextDistText",
+                                            text = nextCardPhrase,
                                             color = ColorTekinsAccent,
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.SemiBold,
@@ -1204,14 +1299,26 @@ fun MainScreen(
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "#${virtualTourIndex + 1}: ${currentTourPoint.descripcion.ifBlank { estadoInfo.first }}",
-                                        color = ColorTextoPrincipal,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 13.sp,
-                                        maxLines = 1,
-                                        modifier = Modifier.widthIn(max = 160.dp)
-                                    )
+                                    Column(modifier = Modifier.widthIn(max = 200.dp)) {
+                                        Text(
+                                            text = "#${virtualTourIndex + 1}: ${currentTourPoint.descripcion.ifBlank { estadoInfo.first }}",
+                                            color = ColorTextoPrincipal,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                        if (nextCardPhrase != null) {
+                                            Text(
+                                                text = nextCardPhrase,
+                                                color = ColorTekinsAccent,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 10.sp,
+                                                maxLines = 1,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
                                     Spacer(modifier = Modifier.width(10.dp))
                                     IconButton(
                                         onClick = {
@@ -1636,8 +1743,26 @@ fun MainScreen(
                                         dist >= 1000f -> String.format(java.util.Locale.US, "%.2f km", dist / 1000f)
                                         else -> "${dist.toInt()} metros"
                                     }
+                                    val cardTargetIdx = selectedRoutePoints.indexOfFirst { it.id == targetWaypoint?.id }
+                                    val cardPrevIdx = if (guideDirectionForward) cardTargetIdx - 1 else cardTargetIdx + 1
+                                    val cardPrevPt = if (cardTargetIdx != -1) selectedRoutePoints.getOrNull(cardPrevIdx) else null
+                                    val cardRemElev = RouteStatsCalculator.estimateRemainingElevationToTarget(
+                                        prevPoint = cardPrevPt,
+                                        targetPoint = targetWaypoint!!,
+                                        currentLocation = location,
+                                        remainingDistanceMeters = dist
+                                    )
+                                    val cardElevBadge = RouteStatsCalculator.formatElevationHeaderBadge(cardRemElev)
                                     Text("Al punto:", fontSize = 11.sp, color = ColorTextoSecundario)
                                     Text(distStr, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = ColorTextoPrincipal)
+                                    if (cardElevBadge.isNotEmpty()) {
+                                        Text(
+                                            text = cardElevBadge,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = ColorTekinsAccent
+                                        )
+                                    }
                                 }
 
                                 val currentSpeedKmh = if (location != null && location!!.hasSpeed()) location!!.speed * 3.6f else 0f

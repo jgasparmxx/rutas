@@ -662,6 +662,17 @@ fun PuntoRutaItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (!model.nextPointPhrase.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = model.nextPointPhrase,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = ColorTekinsAccent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically
@@ -2591,6 +2602,7 @@ private class MapStateHolder {
     var points: List<PuntoRutaEntity> = emptyList() // Lista de coordenadas de la ruta
     var tracePoints: List<TrazaRutaEntity> = emptyList() // Lista de puntos de seguimiento continuo
     var currentLocation: Location? = null          // Ubicación GPS actual del usuario
+    var isReversed: Boolean = false                // Orden de recorrido activo (Ida vs Retorno)
 }
 
 // Limpia caracteres conflictivos del texto para no romper el motor de JavaScript
@@ -2696,6 +2708,7 @@ private fun updateWebViewData(
     resetView: Boolean,
     routeStartLat: Double? = null,
     routeStartLng: Double? = null,
+    isReversed: Boolean = false,
     coroutineScope: kotlinx.coroutines.CoroutineScope
 ) {
     android.util.Log.d("GoogleMapView", "updateWebViewData called: points size = ${points.size}, trace size = ${tracePoints.size}, resetView = $resetView, location = $currentLocation")
@@ -2717,7 +2730,18 @@ private fun updateWebViewData(
             val formattedAccum = if (accumDistance >= 1000f) String.format(java.util.Locale.US, "%.1f km", accumDistance / 1000f) else "${accumDistance.toInt()} m"
             Pair(formattedSeg, formattedAccum)
         }
-        """{"lat": ${pt.latitud}, "lng": ${pt.longitud}, "desc": "${idx + 1}. $safeDesc", "segDist": "$segDist", "accumDist": "$accumStr", "estado": ${pt.estado}, "esFinRuta": ${pt.esFinRuta}, "altitud": ${pt.altitud.toInt()}}"""
+        val nextIdx = if (isReversed) idx - 1 else idx + 1
+        val nextPhraseSafe = if (nextIdx in points.indices) {
+            val nextPt = points[nextIdx]
+            val locCur = Location("").apply { latitude = pt.latitud; longitude = pt.longitud }
+            val locNext = Location("").apply { latitude = nextPt.latitud; longitude = nextPt.longitud }
+            val nextDist = locCur.distanceTo(locNext)
+            val deltaAlt = com.gaspar.rutassendero.ui.RouteStatsCalculator.calculateElevationDeltaMeters(pt.altitud, nextPt.altitud)
+            cleanJsString(com.gaspar.rutassendero.ui.RouteStatsCalculator.formatNextPointCardPhrase(nextDist, deltaAlt))
+        } else {
+            ""
+        }
+        """{"lat": ${pt.latitud}, "lng": ${pt.longitud}, "desc": "${idx + 1}. $safeDesc", "segDist": "$segDist", "accumDist": "$accumStr", "nextPhrase": "$nextPhraseSafe", "estado": ${pt.estado}, "esFinRuta": ${pt.esFinRuta}, "altitud": ${pt.altitud.toInt()}}"""
     }.joinToString(",")
     val pointsJsonStr = "[$pointsJson]"
 
@@ -2786,7 +2810,8 @@ fun GoogleMapView(
     routeStartLng: Double? = null,
     onPointHover: ((PuntoRutaEntity?) -> Unit)? = null,
     activePointId: Int? = null,
-    focusPointTrigger: Pair<PuntoRutaEntity, Int>? = null
+    focusPointTrigger: Pair<PuntoRutaEntity, Int>? = null,
+    isReversed: Boolean = false
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -2887,6 +2912,7 @@ fun GoogleMapView(
                     this.points = points
                     this.tracePoints = tracePoints
                     this.currentLocation = currentLocation
+                    this.isReversed = isReversed
                 }
                 
                 // Configuración y permisos del WebView para permitir Javascript y archivos
@@ -2928,6 +2954,7 @@ fun GoogleMapView(
                                 resetView = true,
                                 routeStartLat = routeStartLat,
                                 routeStartLng = routeStartLng,
+                                isReversed = holder.isReversed,
                                 coroutineScope = coroutineScope
                             )
                         } else {
@@ -3259,7 +3286,7 @@ fun GoogleMapView(
                                 hasSetInitialBounds = false;
                             }
                             
-                            var currentPointsSig = points ? points.length + "_" + (points[0] ? points[0].lat + "_" + points[0].lng : "") : "";
+                            var currentPointsSig = points ? points.length + "_" + (points[0] ? points[0].lat + "_" + points[0].lng + "_" + (points[0].nextPhrase || "") : "") : "";
                             var pointsChanged = (currentPointsSig !== lastPointsSignature) || resetView;
                             var poiLatlngs = [];
                             
@@ -3294,6 +3321,9 @@ fun GoogleMapView(
                                             hintContent += " · " + pt.altitud + "m";
                                         }
                                         hintContent += "</div>";
+                                        if (pt.nextPhrase && pt.nextPhrase.length > 0) {
+                                            hintContent += "<div style='margin-top:3px; color:#5EEAD4; font-weight:700; font-size:11px;'>" + pt.nextPhrase + "</div>";
+                                        }
 
                                         marker.bindTooltip(hintContent, { 
                                             permanent: false, 
@@ -3480,10 +3510,12 @@ fun GoogleMapView(
             val pointsChanged = holder.points != points
             val traceChanged = holder.tracePoints != tracePoints
             val locationChanged = holder.currentLocation != currentLocation
+            val reversedChanged = holder.isReversed != isReversed
             
             holder.points = points
             holder.tracePoints = tracePoints
             holder.currentLocation = currentLocation
+            holder.isReversed = isReversed
             
             // Si la página del mapa ya terminó de cargarse en el WebView, inyectamos los datos actualizados
             if (holder.isLoaded) {
@@ -3493,7 +3525,7 @@ fun GoogleMapView(
                 } else if (activePointId == null) {
                     webView.evaluateJavascript("if (typeof window.clearPinnedMarker === 'function') window.clearPinnedMarker();", null)
                 }
-                if (pointsChanged || traceChanged || locationChanged || routeChanged) {
+                if (pointsChanged || traceChanged || locationChanged || routeChanged || reversedChanged) {
                     updateWebViewData(
                         webView = webView,
                         points = points,
@@ -3502,6 +3534,7 @@ fun GoogleMapView(
                         resetView = routeChanged,
                         routeStartLat = routeStartLat,
                         routeStartLng = routeStartLng,
+                        isReversed = isReversed,
                         coroutineScope = coroutineScope
                     )
                 }

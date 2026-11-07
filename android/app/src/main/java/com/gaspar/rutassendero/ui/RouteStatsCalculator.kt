@@ -185,4 +185,148 @@ object RouteStatsCalculator {
         val distanceKm = distanceMeters / 1000.0
         return pesoKg * distanceKm * 1.036
     }
+
+    /**
+     * Determina si un valor de altitud GPS es válido (descarta 0.0 por defecto o lecturas corruptas).
+     */
+    fun hasValidAltitude(alt: Double): Boolean {
+        return !alt.isNaN() && !alt.isInfinite() && abs(alt) > 0.1
+    }
+
+    /**
+     * Calcula la diferencia de altitud redondeada en metros (destino - origen).
+     * Retorna positivo si es subida, negativo si es bajada, 0 si es plano, o null si falta altitud válida.
+     */
+    fun calculateElevationDeltaMeters(fromAlt: Double?, toAlt: Double?): Int? {
+        if (fromAlt == null || toAlt == null) return null
+        if (!hasValidAltitude(fromAlt) || !hasValidAltitude(toAlt)) return null
+        val diff = toAlt - fromAlt
+        if (abs(diff) > 3000.0) return null
+        return kotlin.math.round(diff).toInt()
+    }
+
+    /**
+     * Estima cuánto falta por subir o bajar hacia el punto objetivo durante el guiado activo.
+     * Si existe un punto previo válido en la secuencia de guiado, interpola sobre el desnivel grabado
+     * del tramo para evitar desfases de geoide/elipsoide entre distintos teléfonos.
+     */
+    fun estimateRemainingElevationToTarget(
+        prevPoint: PuntoRutaEntity?,
+        targetPoint: PuntoRutaEntity,
+        currentLocation: Location?,
+        remainingDistanceMeters: Float?
+    ): Int? {
+        if (!hasValidAltitude(targetPoint.altitud)) return null
+
+        if (prevPoint != null && hasValidAltitude(prevPoint.altitud)) {
+            val totalDelta = targetPoint.altitud - prevPoint.altitud
+            if (abs(totalDelta) > 3000.0) return null
+            val prevLoc = Location("").apply {
+                latitude = prevPoint.latitud
+                longitude = prevPoint.longitud
+            }
+            val targetLoc = Location("").apply {
+                latitude = targetPoint.latitud
+                longitude = targetPoint.longitud
+            }
+            val segDist = prevLoc.distanceTo(targetLoc)
+            val ratio = if (remainingDistanceMeters != null && segDist > 1f) {
+                (remainingDistanceMeters / segDist).coerceIn(0f, 1f)
+            } else {
+                1f
+            }
+            return kotlin.math.round(totalDelta * ratio).toInt()
+        }
+
+        if (currentLocation != null && currentLocation.hasAltitude() && hasValidAltitude(currentLocation.altitude)) {
+            return calculateElevationDeltaMeters(currentLocation.altitude, targetPoint.altitud)
+        }
+
+        return null
+    }
+
+    fun formatDistanceSpoken(distanceMeters: Float): String {
+        return if (distanceMeters >= 1000f) {
+            String.format(java.util.Locale.US, "%.1f kilómetros", distanceMeters / 1000f)
+        } else {
+            val m = distanceMeters.toInt()
+            if (m == 1) "1 metro" else "$m metros"
+        }
+    }
+
+    fun formatDistanceShort(distanceMeters: Float): String {
+        return if (distanceMeters >= 1000f) {
+            String.format(java.util.Locale.US, "%.1f km", distanceMeters / 1000f)
+        } else {
+            "${distanceMeters.toInt()} m"
+        }
+    }
+
+    fun formatElevationSpokenPart(deltaMeters: Int?): String {
+        if (deltaMeters == null) return ""
+        return when {
+            deltaMeters > 0 -> {
+                val unit = if (deltaMeters == 1) "metro" else "metros"
+                "subida son $deltaMeters $unit"
+            }
+            deltaMeters < 0 -> {
+                val b = abs(deltaMeters)
+                val unit = if (b == 1) "metro" else "metros"
+                "bajada son $b $unit"
+            }
+            else -> "en terreno plano"
+        }
+    }
+
+    fun formatElevationSpeechSuffix(deltaMeters: Int?): String {
+        if (deltaMeters == null) return ""
+        return when {
+            deltaMeters > 0 -> {
+                val unit = if (deltaMeters == 1) "metro" else "metros"
+                ", subida de $deltaMeters $unit"
+            }
+            deltaMeters < 0 -> {
+                val b = abs(deltaMeters)
+                val unit = if (b == 1) "metro" else "metros"
+                ", bajada de $b $unit"
+            }
+            else -> ", sin desnivel"
+        }
+    }
+
+    fun formatNextPointSimulationSpeech(distanceMeters: Float, deltaMeters: Int?): String {
+        val distSpoken = formatDistanceSpoken(distanceMeters)
+        val elevPart = formatElevationSpokenPart(deltaMeters)
+        return if (elevPart.isNotEmpty()) {
+            "Distancia a caminar al siguiente punto es $distSpoken, $elevPart."
+        } else {
+            "Distancia a caminar al siguiente punto es $distSpoken."
+        }
+    }
+
+    fun formatNextPointCardPhrase(distanceMeters: Float, deltaMeters: Int?): String {
+        val distShort = formatDistanceShort(distanceMeters)
+        return when {
+            deltaMeters == null -> "Distancia a caminar al siguiente punto: $distShort"
+            deltaMeters > 0 -> {
+                val unit = if (deltaMeters == 1) "metro" else "metros"
+                "Distancia a caminar al siguiente punto: $distShort, subida son $deltaMeters $unit"
+            }
+            deltaMeters < 0 -> {
+                val b = abs(deltaMeters)
+                val unit = if (b == 1) "metro" else "metros"
+                "Distancia a caminar al siguiente punto: $distShort, bajada son $b $unit"
+            }
+            else -> "Distancia a caminar al siguiente punto: $distShort, terreno plano"
+        }
+    }
+
+    fun formatElevationHeaderBadge(deltaMeters: Int?): String {
+        if (deltaMeters == null) return ""
+        return when {
+            deltaMeters > 0 -> "↑ Subida ${deltaMeters} m"
+            deltaMeters < 0 -> "↓ Bajada ${abs(deltaMeters)} m"
+            else -> "Plano"
+        }
+    }
 }

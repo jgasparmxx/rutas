@@ -809,7 +809,7 @@ public final class MainViewModel: @unchecked Sendable {
         }
         let loc = locationOverride ?? locationTracker.currentLocation ?? CLLocation(latitude: 19.4326, longitude: -99.1332)
         let dfTime = DateFormatter()
-        dfTime.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        dfTime.dateFormat = "dd/MM/yyyy HH:mm:ss"
         dfTime.locale = Locale(identifier: "en_US_POSIX")
         let dateString = dfTime.string(from: Date())
         let routeId = activeRoute?.id ?? "temp"

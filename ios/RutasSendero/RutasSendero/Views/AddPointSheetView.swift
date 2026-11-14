@@ -159,11 +159,9 @@ public struct AddPointSheetView: View {
                         TextField("Descripción o hito (ej. Mirador La Peña)", text: $pointDescription)
                             .font(.system(size: 15))
                         
-                        // Botón de Dictado por Voz
-                        Button {
-                            if voiceService.isRecording {
-                                voiceService.stopDictation()
-                            } else {
+                        // Botón de Dictado por Voz (se oculta tras activarse para dejar solo Guardar o Cancelar)
+                        if !voiceService.isRecording {
+                            Button {
                                 Task {
                                     let hasPermission = await voiceService.requestPermissions()
                                     if hasPermission {
@@ -174,16 +172,16 @@ public struct AddPointSheetView: View {
                                         isShowingVoiceAlert = true
                                     }
                                 }
+                            } label: {
+                                Image(systemName: "mic.fill")
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 36, height: 36)
+                                    .background(Color(red: 76/255, green: 175/255, blue: 80/255))
+                                    .clipShape(Circle())
                             }
-                        } label: {
-                            Image(systemName: voiceService.isRecording ? "stop.circle.fill" : "mic.fill")
-                                .font(.system(size: 18, weight: .bold))
-                                .foregroundStyle(voiceService.isRecording ? AppTheme.alert : AppTheme.success)
-                                .frame(width: 36, height: 36)
-                                .background((voiceService.isRecording ? AppTheme.alert : AppTheme.success).opacity(0.15))
-                                .clipShape(Circle())
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                     
                     if voiceService.isRecording {
@@ -191,13 +189,10 @@ public struct AddPointSheetView: View {
                             Circle()
                                 .fill(AppTheme.alert)
                                 .frame(width: 8, height: 8)
-                            Text("Escuchando... hable con claridad")
+                            Text("Escuchando... al terminar presione Guardar o Cancelar")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(AppTheme.alert)
                             Spacer()
-                            Text("Toca parar al terminar")
-                                .font(.system(size: 11))
-                                .foregroundStyle(AppTheme.textSecondary)
                         }
                         .padding(.vertical, 2)
                     }

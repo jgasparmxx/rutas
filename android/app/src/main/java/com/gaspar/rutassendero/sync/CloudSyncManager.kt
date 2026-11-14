@@ -1006,6 +1006,7 @@ object CloudSyncManager {
         val tempPuntos = mutableListOf<TempPunto>()
         val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
         val sdfIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        val sdfSpaceIso = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
         for (i in 0 until pArray.length()) {
             val pObj = pArray.getJSONObject(i)
             val desc = pObj.optString("descripcion", "")
@@ -1016,19 +1017,13 @@ object CloudSyncManager {
 
             val originalId = pObj.optInt("id", i)
             val fechaHoraStr = pObj.optString("fecha_hora", "")
-            val millis = try {
-                if (fechaHoraStr.isNotEmpty()) {
-                    sdf.parse(fechaHoraStr)?.time
-                        ?: sdfIso.parse(fechaHoraStr.removeSuffix("Z"))?.time
-                        ?: 0L
-                } else 0L
-            } catch (e: Exception) {
+            val millis = listOf(sdf, sdfIso, sdfSpaceIso).firstNotNullOfOrNull { fmt ->
                 try {
-                    sdfIso.parse(fechaHoraStr.removeSuffix("Z"))?.time ?: 0L
-                } catch (e2: Exception) {
-                    0L
+                    if (fechaHoraStr.isNotEmpty()) fmt.parse(fechaHoraStr.removeSuffix("Z"))?.time else null
+                } catch (_: Exception) {
+                    null
                 }
-            }
+            } ?: 0L
             tempPuntos.add(TempPunto(millis, originalId, pObj))
         }
 
@@ -1143,6 +1138,7 @@ object CloudSyncManager {
         val updatedRouteNames = mutableListOf<String>()
         val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
         val sdfIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        val sdfSpaceIso = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
 
         try {
             val localRoutes = db.rutasDao().getAllRutas()
@@ -1175,19 +1171,13 @@ object CloudSyncManager {
 
                         val originalId = pObj.optInt("id", i)
                         val fechaHoraStr = pObj.optString("fecha_hora", "")
-                        val millis = try {
-                            if (fechaHoraStr.isNotEmpty()) {
-                                sdf.parse(fechaHoraStr)?.time
-                                    ?: sdfIso.parse(fechaHoraStr.removeSuffix("Z"))?.time
-                                    ?: 0L
-                            } else 0L
-                        } catch (e: Exception) {
+                        val millis = listOf(sdf, sdfIso, sdfSpaceIso).firstNotNullOfOrNull { fmt ->
                             try {
-                                sdfIso.parse(fechaHoraStr.removeSuffix("Z"))?.time ?: 0L
-                            } catch (e2: Exception) {
-                                0L
+                                if (fechaHoraStr.isNotEmpty()) fmt.parse(fechaHoraStr.removeSuffix("Z"))?.time else null
+                            } catch (_: Exception) {
+                                null
                             }
-                        }
+                        } ?: 0L
                         tempPuntos.add(TempCheckPunto(millis, originalId, pObj))
                     }
 

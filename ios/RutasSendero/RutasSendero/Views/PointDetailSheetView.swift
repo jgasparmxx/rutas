@@ -43,6 +43,7 @@ public struct PointDetailSheetView: View {
     @State private var editedDescription: String = ""
     @State private var editedEstado: Int = 1
     @State private var voiceService = VoiceDictationService.shared
+    @State private var hasActivatedDictation: Bool = false
     
     public init(viewModel: MainViewModel, point: RoutePoint) {
         self.viewModel = viewModel
@@ -233,33 +234,39 @@ public struct PointDetailSheetView: View {
                     .font(.system(size: 11, weight: .heavy))
                     .foregroundStyle(AppTheme.textSecondary)
                 Spacer()
-                if isEditable {
+                if isEditable && !hasActivatedDictation {
                     Button {
-                        if voiceService.isRecording {
-                            voiceService.stopDictation()
-                        } else {
-                            Task {
-                                let ok = await voiceService.requestPermissions()
-                                if ok {
-                                    voiceService.startDictation { transcribed in
-                                        editedDescription = transcribed
-                                    }
+                        Task {
+                            let ok = await voiceService.requestPermissions()
+                            if ok {
+                                hasActivatedDictation = true
+                                voiceService.startDictation { transcribed in
+                                    editedDescription = transcribed
                                 }
                             }
                         }
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: voiceService.isRecording ? "stop.circle.fill" : "mic.fill")
-                            Text(voiceService.isRecording ? "Detener" : "Dictar")
+                            Image(systemName: "mic.fill")
+                            Text("Dictar")
                         }
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(voiceService.isRecording ? .white : AppTheme.accent)
+                        .foregroundStyle(.white)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
-                        .background(voiceService.isRecording ? AppTheme.alert : AppTheme.accent.opacity(0.15))
+                        .background(Color(red: 76/255, green: 175/255, blue: 80/255))
                         .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                } else if isEditable && voiceService.isRecording {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(AppTheme.alert)
+                            .frame(width: 7, height: 7)
+                        Text("Escuchando...")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(AppTheme.alert)
+                    }
                 }
             }
             
@@ -296,6 +303,10 @@ public struct PointDetailSheetView: View {
             }
         }
         .onChange(of: point.id) { _, _ in
+            if voiceService.isRecording {
+                voiceService.stopDictation()
+            }
+            hasActivatedDictation = false
             editedDescription = point.descriptionText
             editedEstado = point.estado
         }

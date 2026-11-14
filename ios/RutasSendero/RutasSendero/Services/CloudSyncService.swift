@@ -1181,8 +1181,11 @@ public final class CloudSyncService: @unchecked Sendable {
         if let start = route.startTime { routeDict["fecha_hora_inicio"] = start }
         if let end = route.endTime { routeDict["fecha_hora_fin"] = end }
         
+        let isRouteFinalized = (route.endTime != nil && !(route.endTime ?? "").isEmpty) || points.contains(where: { $0.isRouteEnd })
         var pointsArray: [[String: Any]] = []
-        for p in points {
+        for (idx, p) in points.enumerated() {
+            let isLastPoint = (idx == points.count - 1)
+            let isEndFlag: Bool = p.isRouteEnd || (isRouteFinalized && isLastPoint && !points.contains(where: { $0.isRouteEnd }))
             var pDict: [String: Any] = [
                 "id": p.id,
                 "id_ruta": cloudRouteId,
@@ -1191,8 +1194,9 @@ public final class CloudSyncService: @unchecked Sendable {
                 "longitud": p.longitude,
                 "altitud": p.altitude,
                 "descripcion": p.descriptionText,
-                "es_fin_ruta": p.isRouteEnd ? 1 : 0,
-                "tiene_conectividad": p.hasConnectivity ? 1 : 0,
+                // IMPORTANTE: En Android (org.json.JSONObject), optBoolean("es_fin_ruta", false) exige Bool JSON (true/false), NO entero 1/0.
+                "es_fin_ruta": isEndFlag,
+                "tiene_conectividad": p.hasConnectivity,
                 "estado": p.estado
             ]
             if let f = p.photoUrl { pDict["foto_path"] = f }

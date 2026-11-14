@@ -14,6 +14,7 @@ public struct QuickDictateSheetView: View {
     @State private var voiceService = VoiceDictationService.shared
     @State private var dictatedText: String = ""
     @State private var isShowingAlert: Bool = false
+    @State private var hasActivatedDictation: Bool = false
     
     public init(viewModel: MainViewModel) {
         self.viewModel = viewModel
@@ -21,6 +22,24 @@ public struct QuickDictateSheetView: View {
     
     private var lastPoint: RoutePoint? {
         viewModel.recordedPoints.last
+    }
+    
+    private func saveDictationAndClose() {
+        if voiceService.isRecording {
+            voiceService.stopDictation()
+        }
+        let trimmed = dictatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            viewModel.appendVoiceToLastPoint(text: trimmed)
+        }
+        dismiss()
+    }
+    
+    private func cancelDictationAndClose() {
+        if voiceService.isRecording {
+            voiceService.stopDictation()
+        }
+        dismiss()
     }
     
     public var body: some View {
@@ -54,14 +73,13 @@ public struct QuickDictateSheetView: View {
                     }
                     .padding(.horizontal, 16)
                     
-                    // Botón de Micrófono
-                    Button {
-                        if voiceService.isRecording {
-                            voiceService.stopDictation()
-                        } else {
+                    // Al activar el dictado con el botón verde, se oculta para que solo queden Guardar y Cancelar
+                    if !hasActivatedDictation {
+                        Button {
                             Task {
                                 let ok = await voiceService.requestPermissions()
                                 if ok {
+                                    hasActivatedDictation = true
                                     voiceService.startDictation { transcribed in
                                         dictatedText = transcribed
                                     }
@@ -69,27 +87,72 @@ public struct QuickDictateSheetView: View {
                                     isShowingAlert = true
                                 }
                             }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "mic.fill")
+                                    .font(.system(size: 20, weight: .bold))
+                                Text("INICIAR DICTADO POR VOZ")
+                                    .font(.system(size: 14, weight: .heavy))
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 14)
+                            .background(Color(red: 76/255, green: 175/255, blue: 80/255))
+                            .clipShape(Capsule())
+                            .shadow(color: Color(red: 76/255, green: 175/255, blue: 80/255).opacity(0.4), radius: 8, y: 3)
                         }
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: voiceService.isRecording ? "stop.circle.fill" : "mic.fill")
-                                .font(.system(size: 20, weight: .bold))
-                            Text(voiceService.isRecording ? "DETENER DICTADO" : "INICIAR DICTADO POR VOZ")
-                                .font(.system(size: 14, weight: .heavy))
+                        .buttonStyle(.plain)
+                    } else {
+                        VStack(spacing: 14) {
+                            if voiceService.isRecording {
+                                HStack(spacing: 8) {
+                                    Circle()
+                                        .fill(AppTheme.alert)
+                                        .frame(width: 9, height: 9)
+                                    Text("Escuchando voz... hable claro y pausado.")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(AppTheme.alert)
+                                }
+                            }
+                            
+                            HStack(spacing: 12) {
+                                Button {
+                                    cancelDictationAndClose()
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 16, weight: .bold))
+                                        Text("Cancelar")
+                                            .font(.system(size: 14, weight: .bold))
+                                    }
+                                    .foregroundStyle(AppTheme.textSecondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 13)
+                                    .background(AppTheme.cardMuted)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                                .buttonStyle(.plain)
+                                
+                                Button {
+                                    saveDictationAndClose()
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.system(size: 16, weight: .bold))
+                                        Text("Guardar")
+                                            .font(.system(size: 14, weight: .heavy))
+                                    }
+                                    .foregroundStyle(Color(red: 15/255, green: 23/255, blue: 42/255))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 13)
+                                    .background(dictatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? AppTheme.accent.opacity(0.35) : AppTheme.accent)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(dictatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            }
+                            .padding(.horizontal, 16)
                         }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 14)
-                        .background(voiceService.isRecording ? AppTheme.alert : Color(red: 76/255, green: 175/255, blue: 80/255))
-                        .clipShape(Capsule())
-                        .shadow(color: (voiceService.isRecording ? AppTheme.alert : Color(red: 76/255, green: 175/255, blue: 80/255)).opacity(0.4), radius: 8, y: 3)
-                    }
-                    .buttonStyle(.plain)
-                    
-                    if voiceService.isRecording {
-                        Text("Escuchando voz... hable claro y pausado.")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(AppTheme.alert)
                     }
                     
                     Spacer()
@@ -106,21 +169,12 @@ public struct QuickDictateSheetView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancelar") {
-                        if voiceService.isRecording {
-                            voiceService.stopDictation()
-                        }
-                        dismiss()
+                        cancelDictationAndClose()
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Guardar") {
-                        if voiceService.isRecording {
-                            voiceService.stopDictation()
-                        }
-                        if !dictatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            viewModel.appendVoiceToLastPoint(text: dictatedText.trimmingCharacters(in: .whitespacesAndNewlines))
-                        }
-                        dismiss()
+                        saveDictationAndClose()
                     }
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(AppTheme.accent)

@@ -271,22 +271,19 @@ public struct HeaderBarView: View {
             .buttonStyle(.plain)
             .disabled(viewModel.activeRoute == nil)
             
-            // Botón contextual: Voz Guía en Mapa (1:1 Android MainScreen.kt:938)
-            if viewModel.showMapScreen && viewModel.activeRole == .guia && viewModel.isGuidingActive {
+            // Botón contextual: Voz Guía vs Pitidos Doppler (1:1 Android MainScreen.kt:938)
+            if viewModel.activeRole == .guia && viewModel.isGuidingActive {
                 Button {
-                    viewModel.isVoiceGuidanceEnabled.toggle()
-                    if !viewModel.isVoiceGuidanceEnabled {
-                        TextToSpeechService.shared.stop()
-                    }
+                    viewModel.toggleVoiceGuidance()
                 } label: {
                     ZStack {
                         Circle()
-                            .fill(AppTheme.cardMuted.opacity(0.8))
+                            .fill(viewModel.showMapScreen ? AppTheme.cardMuted.opacity(0.8) : Color.white.opacity(0.65))
                             .frame(width: 36, height: 36)
                         
                         Image(systemName: viewModel.isVoiceGuidanceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(viewModel.isVoiceGuidanceEnabled ? AppTheme.accent : AppTheme.textSecondary)
+                            .foregroundStyle(viewModel.isVoiceGuidanceEnabled ? AppTheme.accent : (viewModel.showMapScreen ? AppTheme.textSecondary : AppTheme.darkBackground.opacity(0.65)))
                     }
                 }
                 .buttonStyle(.plain)

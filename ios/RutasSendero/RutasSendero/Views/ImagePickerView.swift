@@ -16,15 +16,18 @@ public struct ImagePickerView: UIViewControllerRepresentable {
     @Environment(\.dismiss) private var dismiss
     
     public var preferredSourceType: UIImagePickerController.SourceType = .camera
+    public var onImageSaved: ((String) -> Void)? = nil
     
     public init(
         selectedImage: Binding<UIImage?>,
         imagePath: Binding<String?>,
-        preferredSourceType: UIImagePickerController.SourceType = .camera
+        preferredSourceType: UIImagePickerController.SourceType = .camera,
+        onImageSaved: ((String) -> Void)? = nil
     ) {
         self._selectedImage = selectedImage
         self._imagePath = imagePath
         self.preferredSourceType = preferredSourceType
+        self.onImageSaved = onImageSaved
     }
     
     public func makeCoordinator() -> Coordinator {
@@ -64,6 +67,7 @@ public struct ImagePickerView: UIViewControllerRepresentable {
                 // Guardar la foto localmente en Documents/fotos (1:1 Android filesDir/foto_*.jpg)
                 if let savedPath = ImageStorageHelper.saveImageLocally(uiImage) {
                     self.parent.imagePath = savedPath
+                    self.parent.onImageSaved?(savedPath)
                 }
             }
             parent.dismiss()

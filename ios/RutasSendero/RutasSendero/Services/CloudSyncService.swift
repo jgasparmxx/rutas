@@ -10,6 +10,7 @@
 
 import Foundation
 import CryptoKit
+import UIKit
 
 public struct CloudRouteSummary: Identifiable, Sendable {
     public let id: String
@@ -837,7 +838,132 @@ public final class CloudSyncService: @unchecked Sendable {
         return route
     }
     
-    // MARK: - 3. Subir Ruta Local Cifrada a la Nube (PostgREST)
+    // MARK: - Credenciales Cloudinary Ofuscadas (1:1 con Android SecureCredentialsManager.kt XOR 0x5A)
+    private let obfuscatedCloudinaryCloud: [UInt8] = [52, 46, 109, 63, 34, 109, 53, 56]
+    private let obfuscatedCloudinaryKey: [UInt8] = [110, 109, 105, 108, 107, 109, 109, 99, 111, 110, 107, 98, 105, 99, 104]
+    private let obfuscatedCloudinarySecret: [UInt8] = [35, 59, 51, 61, 110, 104, 45, 2, 107, 61, 22, 28, 119, 105, 46, 119, 54, 44, 107, 54, 104, 57, 43, 111, 23, 10, 27]
+    
+    private func deobfuscate(_ bytes: [UInt8]) -> String {
+        let decoded = bytes.map { $0 ^ 0x5A }
+        return String(bytes: decoded, encoding: .utf8) ?? ""
+    }
+    
+    /// Comprime y redimensiona la imagen local (máx 1080px, JPEG 80%) y la sube a Cloudinary (1:1 Android CloudSyncManager.kt)
+    private func uploadPhotoToCloudinary(filePath: String, publicId: String) async throws -> String {
+        guard let image = ImageStorageHelper.loadImage(from: filePath) else {
+            throw NSError(domain: "Cloudinary", code: 404, userInfo: [NSLocalizedDescriptionKey: "No se pudo leer la foto local: \(filePath)"])
+        }
+        
+        // Redimensionar proporcionalmente a máximo 1080px en su lado mayor (1:1 Android compressImage)
+        let maxDim: CGFloat = 1080.0
+        let size = image.size
+        let targetImage: UIImage
+        if size.width > maxDim || size.height > maxDim {
+            let ratio = min(maxDim / max(1, size.width), maxDim / max(1, size.height))
+            let newSize = CGSize(width: floor(size.width * ratio), height: floor(size.height * ratio))
+            let renderer = UIGraphicsImageRenderer(size: newSize)
+            targetImage = renderer.image { _ in
+                image.draw(in: CGRect(origin: .zero, size: newSize))
+            }
+        } else {
+            targetImage = image
+        }
+        
+        guard let jpegData = targetImage.jpegData(compressionQuality: 0.80) else {
+            throw NSError(domain: "Cloudinary", code: 500, userInfo: [NSLocalizedDescriptionKey: "No se pudo comprimir la foto en JPEG."])
+        }
+        
+        let cloudName = deobfuscate(obfuscatedCloudinaryCloud)
+        let apiKey = deobfuscate(obfuscatedCloudinaryKey)
+        let apiSecret = deobfuscate(obfuscatedCloudinarySecret)
+        let folder = "rutas_senderismo"
+        let overwrite = "true"
+        let timestamp = "\(Int(Date().timeIntervalSince1970))"
+        
+        // Firma SHA-1 exigida por el API REST firmado de Cloudinary (parámetros en orden alfabético + api_secret)
+        let toSign = "folder=\(folder)&overwrite=\(overwrite)&public_id=\(publicId)&timestamp=\(timestamp)\(apiSecret)"
+        let sha1Digest = Insecure.SHA1.hash(data: Data(toSign.utf8))
+        let signature = sha1Digest.map { String(format: "%02x", $0) }.joined()
+        
+        guard let uploadUrl = URL(string: "https://api.cloudinary.com/v1_1/\(cloudName)/image/upload") else {
+            throw URLError(.badURL)
+        }
+        
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: uploadUrl)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 45
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        var body = Data()
+        let textFields: [(String, String)] = [
+            ("api_key", apiKey),
+            ("timestamp", timestamp),
+            ("folder", folder),
+            ("public_id", publicId),
+            ("overwrite", overwrite),
+            ("signature", signature)
+        ]
+        for (key, val) in textFields {
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".utf8))
+            body.append(Data("\(val)\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(publicId).jpg\"\r\n".utf8))
+        body.append(Data("Content-Type: image/jpeg\r\n\r\n".utf8))
+        body.append(jpegData)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        
+        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let errText = String(data: data, encoding: .utf8) ?? "Error HTTP"
+            print("⚠️ [Cloudinary] Error subiendo imagen \(publicId): \(errText)")
+            throw NSError(domain: "Cloudinary", code: (response as? HTTPURLResponse)?.statusCode ?? 500, userInfo: [NSLocalizedDescriptionKey: "Error subiendo foto a Cloudinary"])
+        }
+        
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let secureUrl = json["secure_url"] as? String, !secureUrl.isEmpty else {
+            throw NSError(domain: "Cloudinary", code: 500, userInfo: [NSLocalizedDescriptionKey: "Respuesta de Cloudinary sin secure_url"])
+        }
+        
+        print("☁️ [Cloudinary] Foto subida exitosamente: \(secureUrl)")
+        return secureUrl
+    }
+    
+    private func normalizePostgresDate(_ rawDate: String) -> String {
+        let clean = rawDate.trimmingCharacters(in: .whitespacesAndNewlines)
+        for fmt in ["dd/MM/yyyy", "yyyy-MM-dd", "yyyy/MM/dd", "yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd'T'HH:mm:ss"] {
+            let dfIn = DateFormatter()
+            dfIn.dateFormat = fmt
+            dfIn.locale = Locale(identifier: "en_US_POSIX")
+            if let d = dfIn.date(from: clean) {
+                let dfOut = DateFormatter()
+                dfOut.dateFormat = "yyyy-MM-dd"
+                dfOut.locale = Locale(identifier: "en_US_POSIX")
+                return dfOut.string(from: d)
+            }
+        }
+        let iso = ISO8601DateFormatter()
+        if let d = iso.date(from: clean) {
+            let dfOut = DateFormatter()
+            dfOut.dateFormat = "yyyy-MM-dd"
+            dfOut.locale = Locale(identifier: "en_US_POSIX")
+            return dfOut.string(from: d)
+        }
+        if clean.count >= 10 {
+            let prefix10 = String(clean.prefix(10))
+            if prefix10.contains("-") {
+                return prefix10
+            }
+        }
+        let dfOut = DateFormatter()
+        dfOut.dateFormat = "yyyy-MM-dd"
+        dfOut.locale = Locale(identifier: "en_US_POSIX")
+        return dfOut.string(from: Date())
+    }
+    
+    // MARK: - 3. Subir Ruta Local Cifrada a la Nube (PostgREST + Cloudinary 1:1 Android)
     public func uploadRouteToCloud(
         routeId: String,
         from repository: RutasRepositoryProtocol,
@@ -847,17 +973,67 @@ public final class CloudSyncService: @unchecked Sendable {
             throw NSError(domain: "CloudSync", code: 404, userInfo: [NSLocalizedDescriptionKey: "No se encontró la ruta en el almacenamiento local."])
         }
         
-        let points = try await repository.getPoints(forRouteId: routeId)
+        // 0. Sincronizar primero al senderista creador para garantizar integridad referencial (FK email_creador en PostgreSQL)
+        try? await syncSenderista(profile: creator)
+        
+        var points = try await repository.getPoints(forRouteId: routeId)
         let trace = try await repository.getTrace(forRouteId: routeId)
         
-        // 1. Construir JSON idéntico a Android
+        // Normalizar ID de ruta y código corto (máx 10 caracteres para compatibilidad con rutas previas en iOS y esquema PostgreSQL)
+        let cloudRouteId: String = {
+            let clean = route.id.replacingOccurrences(of: "-", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return clean.count > 12 ? String(clean.prefix(10)).uppercased() : route.id
+        }()
+        let cloudAccessCode: String = {
+            let rawCode = route.accessCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !rawCode.isEmpty && rawCode.count <= 10 {
+                return rawCode.uppercased()
+            }
+            let clean = cloudRouteId.replacingOccurrences(of: "-", with: "")
+            return String(clean.suffix(6)).uppercased()
+        }()
+        
+        // 1. Subir fotos locales de los puntos a Cloudinary antes de cifrar el payload (1:1 Android CloudSyncManager.kt:728-771)
+        for idx in points.indices {
+            if let localPath = points[idx].photoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !localPath.isEmpty,
+               !localPath.lowercased().hasPrefix("http") {
+                let publicId = "\(cloudRouteId)_\(points[idx].id)"
+                do {
+                    let cloudUrl = try await uploadPhotoToCloudinary(filePath: localPath, publicId: publicId)
+                    points[idx].photoUrl = cloudUrl
+                    try? await repository.save(point: points[idx])
+                } catch {
+                    print("⚠️ [CloudSync] No se pudo subir la foto del punto #\(points[idx].id) a Cloudinary, continuando con la ruta: \(error.localizedDescription)")
+                }
+            }
+        }
+        
+        let conectividadPct: Double = {
+            if route.connectivity > 0 {
+                return route.connectivity
+            }
+            guard !points.isEmpty else { return 100.0 }
+            let connected = points.filter { $0.hasConnectivity }.count
+            return (Double(connected) / Double(points.count)) * 100.0
+        }()
+        
+        let formattedDate = normalizePostgresDate(route.date)
+        let effectiveDescription: String = {
+            let trimmed = route.descriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+            let distStr = String(format: "%.2f", route.gpsDistanceMeters / 1000.0)
+            return "autor ; \(creator.name)\n\(formattedDate) , \(distStr) Kms , Finalizada"
+        }()
+        
+        // 2. Construir JSON interno idéntico a Android (CloudSyncManager.kt:777-833)
         var routeDict: [String: Any] = [
-            "id": route.id,
+            "id": cloudRouteId,
             "nombre": route.name,
             "fecha": route.date,
             "latitud_orig": route.originLatitude,
             "longitud_orig": route.originLongitude,
-            "descripcion": route.descriptionText,
+            "descripcion": effectiveDescription,
             "distancia_gps": route.gpsDistanceMeters,
             "distancia_beacons": route.beaconDistanceMeters,
             "duracion_segundos": route.durationSeconds,
@@ -866,8 +1042,8 @@ public final class CloudSyncService: @unchecked Sendable {
             "contador_subidas": route.climbsCount,
             "contador_bajadas": route.descentsCount,
             "telefono": route.creatorPhone.isEmpty ? creator.phone : route.creatorPhone,
-            "conectividad": route.connectivity > 0 ? route.connectivity : (points.isEmpty ? 100.0 : (Double(points.filter { $0.hasConnectivity }.count) / Double(points.count)) * 100.0),
-            "codigo": route.accessCode.isEmpty ? route.id : route.accessCode,
+            "conectividad": conectividadPct,
+            "codigo": cloudAccessCode,
             "publico": route.isPublic
         ]
         if let start = route.startTime { routeDict["fecha_hora_inicio"] = start }
@@ -877,7 +1053,7 @@ public final class CloudSyncService: @unchecked Sendable {
         for p in points {
             var pDict: [String: Any] = [
                 "id": p.id,
-                "id_ruta": p.routeId,
+                "id_ruta": cloudRouteId,
                 "fecha_hora": p.timestamp,
                 "latitud": p.latitude,
                 "longitud": p.longitude,
@@ -895,7 +1071,7 @@ public final class CloudSyncService: @unchecked Sendable {
         for t in trace {
             let tDict: [String: Any] = [
                 "id": t.id,
-                "id_ruta": t.routeId,
+                "id_ruta": cloudRouteId,
                 "orden": t.order,
                 "latitud": t.latitude,
                 "longitud": t.longitude,
@@ -912,7 +1088,7 @@ public final class CloudSyncService: @unchecked Sendable {
         
         let jsonData = try JSONSerialization.data(withJSONObject: rootPayload)
         
-        // 2. Cifrar con AES-256 GCM (CryptoKit) y codificar a Base64
+        // 3. Cifrar con AES-256 GCM (CryptoKit) y codificar a Base64 (1:1 Android CryptoUtils)
         let symmetricKey = SymmetricKey(data: secretKeyBytes)
         let sealedBox = try AES.GCM.seal(jsonData, using: symmetricKey)
         guard let combinedData = sealedBox.combined else {
@@ -920,29 +1096,16 @@ public final class CloudSyncService: @unchecked Sendable {
         }
         let encryptedBase64 = combinedData.base64EncodedString()
         
-        // 3. Formatear fecha para PostgreSQL (yyyy-MM-dd)
-        var formattedDate = route.date
-        for fmt in ["dd/MM/yyyy", "yyyy-MM-dd", "yyyy/MM/dd"] {
-            let dfIn = DateFormatter()
-            dfIn.dateFormat = fmt
-            dfIn.locale = Locale(identifier: "en_US_POSIX")
-            if let d = dfIn.date(from: route.date) {
-                let dfOut = DateFormatter()
-                dfOut.dateFormat = "yyyy-MM-dd"
-                dfOut.locale = Locale(identifier: "en_US_POSIX")
-                formattedDate = dfOut.string(from: d)
-                break
-            }
-        }
-        
-        let rutaPayload: [String: Any] = [
-            "id": route.id,
+        // 4. Construir payload de PostgREST /rutas (1:1 Android CloudSyncManager.kt:842-867)
+        // IMPORTANTE: 'conectividad' es numérico (Float/Double) en PostgreSQL, nunca Bool.
+        var rutaPayload: [String: Any] = [
+            "id": cloudRouteId,
             "nombre": route.name,
             "fecha": formattedDate,
             "latitud_orig": route.originLatitude,
             "longitud_orig": route.originLongitude,
             "telefono_creador": route.creatorPhone.isEmpty ? creator.phone : route.creatorPhone,
-            "descripcion": route.descriptionText,
+            "descripcion": effectiveDescription,
             "distancia_gps": route.gpsDistanceMeters,
             "distancia_beacons": route.beaconDistanceMeters,
             "duracion_segundos": route.durationSeconds,
@@ -951,12 +1114,18 @@ public final class CloudSyncService: @unchecked Sendable {
             "contador_subidas": route.climbsCount,
             "contador_bajadas": route.descentsCount,
             "datos_encriptados": encryptedBase64,
-            "email_creador": creator.email,
-            "conectividad": true,
-            "codigo": route.id,
+            "email_creador": creator.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            "conectividad": conectividadPct,
+            "codigo": cloudAccessCode,
             "publico": route.isPublic,
-            "agrupacion": creator.idAgrupacion ?? "MH"
+            "agrupacion": (creator.idAgrupacion?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? creator.idAgrupacion! : "MH"
         ]
+        if let start = route.startTime, !start.isEmpty {
+            rutaPayload["fecha_hora_inicio"] = String(start.prefix(19))
+        }
+        if let end = route.endTime, !end.isEmpty {
+            rutaPayload["fecha_hora_fin"] = String(end.prefix(19))
+        }
         
         guard let url = URL(string: "\(baseUrl)/rutas") else {
             throw URLError(.badURL)
@@ -964,12 +1133,13 @@ public final class CloudSyncService: @unchecked Sendable {
         
         let token = generateJwtToken(email: creator.email, telefono: creator.phone, rol: creator.role, idAgrupacion: creator.idAgrupacion)
         let bodyData = try JSONSerialization.data(withJSONObject: rutaPayload)
-        let (_, httpResponse) = try await executePost(url: url, body: bodyData, prefer: "resolution=merge-duplicates", token: token)
+        let (respData, httpResponse) = try await executePost(url: url, body: bodyData, prefer: "resolution=merge-duplicates", token: token)
         guard (200...299).contains(httpResponse.statusCode) else {
-            print("⚠️ [CloudSync] Error subiendo ruta a PostgREST (HTTP \(httpResponse.statusCode))")
-            throw URLError(.badServerResponse)
+            let errBody = String(data: respData, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
+            print("⚠️ [CloudSync] Error subiendo ruta a PostgREST (HTTP \(httpResponse.statusCode)): \(errBody)")
+            throw NSError(domain: "CloudSync", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Servidor rechazó la subida (HTTP \(httpResponse.statusCode)): \(errBody)"])
         }
         
-        print("☁️ [CloudSync] Ruta '\(route.name)' (\(route.id)) subida exitosamente a la nube.")
+        print("☁️ [CloudSync] Ruta '\(route.name)' (\(cloudRouteId)) subida exitosamente a la nube.")
     }
 }

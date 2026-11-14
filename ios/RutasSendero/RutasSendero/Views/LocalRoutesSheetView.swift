@@ -207,9 +207,7 @@ public struct LocalRoutesSheetView: View {
                     activeRole: viewModel.activeRole,
                     isConsumptionOnly: selectedTab == 1,
                     onUpload: selectedTab == 0 ? {
-                        Task {
-                            _ = await viewModel.uploadRouteToCloud(route)
-                        }
+                        await viewModel.uploadRouteToCloud(route)
                     } : nil
                 ) {
                     // Respeta estrictamente el modo activo del senderista (Guía o Visor)
@@ -229,10 +227,11 @@ private struct LocalRouteRowView: View {
     let route: Route
     var activeRole: AppRole = .guia
     var isConsumptionOnly: Bool = false
-    var onUpload: (() -> Void)? = nil
+    var onUpload: (() async -> Bool)? = nil
     let onSelect: () -> Void
     @State private var isUploading: Bool = false
     @State private var uploadSuccess: Bool = false
+    @State private var uploadFailed: Bool = false
     
     var body: some View {
         let isGuia = (activeRole == .guia)
@@ -272,20 +271,24 @@ private struct LocalRouteRowView: View {
                 
                 Spacer()
                 
-                if !isConsumptionOnly && onUpload != nil {
+                if !isConsumptionOnly, let onUpload = onUpload {
                     Button {
                         isUploading = true
-                        onUpload?()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                            isUploading = false
-                            uploadSuccess = true
+                        uploadFailed = false
+                        Task {
+                            let ok = await onUpload()
+                            await MainActor.run {
+                                isUploading = false
+                                uploadSuccess = ok
+                                uploadFailed = !ok
+                            }
                         }
                     } label: {
-                        Image(systemName: uploadSuccess ? "checkmark.circle.fill" : (isUploading ? "arrow.triangle.2.circlepath" : "icloud.and.arrow.up"))
+                        Image(systemName: uploadSuccess ? "checkmark.circle.fill" : (uploadFailed ? "exclamationmark.icloud.fill" : (isUploading ? "arrow.triangle.2.circlepath" : "icloud.and.arrow.up")))
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(uploadSuccess ? AppTheme.accent : AppTheme.accentCyan)
+                            .foregroundStyle(uploadSuccess ? AppTheme.accent : (uploadFailed ? AppTheme.alert : AppTheme.accentCyan))
                             .padding(7)
-                            .background(AppTheme.accentCyan.opacity(0.12))
+                            .background((uploadFailed ? AppTheme.alert : AppTheme.accentCyan).opacity(0.12))
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)

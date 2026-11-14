@@ -27,6 +27,16 @@ public final class TextToSpeechService: NSObject, AVSpeechSynthesizerDelegate {
     }
     
     public func speak(_ text: String, onDone: (() -> Void)? = nil) {
+        #if os(iOS)
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [.duckOthers, .mixWithOthers])
+            try session.setActive(true)
+        } catch {
+            print("⚠️ [TextToSpeechService] Error configurando AVAudioSession para segundo plano: \(error.localizedDescription)")
+        }
+        #endif
+        
         // Detener cualquier locución previa
         synthesizer.stopSpeaking(at: .immediate)
         self.onDoneCallback = onDone

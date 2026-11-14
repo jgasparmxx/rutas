@@ -99,8 +99,79 @@ public struct MainScreen: View {
                     .zIndex(100)
             }
             
-            // 5. Banner flotante de orientación y estado (Toast 1:1 Android)
-            if let message = viewModel.saveStatusMessage {
+            // 5. Alerta Persistente de Auxilio 911 de Compañero Cercano con opción directa de Ver o Silenciar Alarma (1:1 Android)
+            if let emergencyPeer = viewModel.activeUnacknowledgedEmergencyPeer {
+                let peerId = emergencyPeer.beaconId.lowercased()
+                let peerName = viewModel.peerSenderistaProfiles[peerId]?.name ?? emergencyPeer.beaconId.uppercased()
+                VStack {
+                    Spacer().frame(height: 68)
+                    VStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 18, weight: .heavy))
+                                .foregroundStyle(.yellow)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("¡AUXILIO 911! \(peerName)")
+                                    .font(.system(size: 13, weight: .heavy))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text("Distancia estimada: ~\(Int(emergencyPeer.estimatedDistanceMeters)) m")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(Color.yellow)
+                            }
+                            Spacer()
+                        }
+                        
+                        HStack(spacing: 8) {
+                            Button {
+                                viewModel.isShowingNearbyPeersSheet = true
+                            } label: {
+                                Text("Ubicar en Mapa")
+                                    .font(.system(size: 12, weight: .heavy))
+                                    .foregroundStyle(AppTheme.alert)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(Color.white)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                            
+                            Button {
+                                viewModel.acknowledgePeerEmergency(beaconId: emergencyPeer.beaconId)
+                            } label: {
+                                Text("Silenciar Alarma")
+                                    .font(.system(size: 12, weight: .heavy))
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(Color.black.opacity(0.35))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(Color.white.opacity(0.75), lineWidth: 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(12)
+                    .background(AppTheme.alert)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(Color.yellow, lineWidth: 1.5)
+                    )
+                    .shadow(color: AppTheme.alert.opacity(0.55), radius: 10, y: 4)
+                    .padding(.horizontal, 14)
+                    
+                    Spacer()
+                }
+                .zIndex(160)
+            }
+            
+            // 6. Banner flotante de orientación y estado (Toast 1:1 Android)
+            if let message = viewModel.saveStatusMessage, viewModel.activeUnacknowledgedEmergencyPeer == nil {
                 VStack {
                     Spacer().frame(height: 70)
                     HStack(spacing: 8) {
@@ -233,6 +304,18 @@ public struct MainScreen: View {
                 }
             }
         }
+        // Cámara Directa en 1 Clic para Registrar Punto al Instante (1:1 Android MainScreen.kt:426-453)
+        .fullScreenCover(isPresented: $viewModel.isShowingQuickCameraForPoint) {
+            ImagePickerView(
+                selectedImage: .constant(nil),
+                imagePath: .constant(nil),
+                preferredSourceType: .camera,
+                onImageSaved: { savedPath in
+                    viewModel.completeQuickPointCapture(photoPath: savedPath)
+                }
+            )
+            .ignoresSafeArea()
+        }
         .alert("Acerca de RutasSendero", isPresented: $viewModel.isShowingAboutSheet) {
             Button("Aceptar", role: .cancel) {}
         } message: {
@@ -241,16 +324,22 @@ public struct MainScreen: View {
         // Alerta de confirmación para finalizar ruta
         .alert("Finalizar Ruta", isPresented: $viewModel.isShowingFinishRouteConfirm) {
             Button("Cancelar", role: .cancel) {}
-            Button("Finalizar y Guardar", role: .destructive) {
+            Button("Tomar Foto Fin y Guardar") {
+                viewModel.startQuickPointCapture(estado: 1, isFinRuta: true)
+            }
+            Button("Finalizar sin Foto", role: .destructive) {
                 viewModel.finishRoute(force: true)
             }
         } message: {
-            Text("¿Deseas dar por concluida la grabación de '\(viewModel.activeRoute?.name ?? "esta ruta")'? Se calcularán las estadísticas finales y se cerrará la traza.")
+            Text("¿Deseas dar por concluida la grabación de '\(viewModel.activeRoute?.name ?? "esta ruta")'? Puedes tomar la foto del punto final o guardar directamente.")
         }
         // Alerta de distancia mínima de sendero (< 4.0 km)
         .alert("Ruta Demasiado Corta", isPresented: $viewModel.isShowingRouteTooShortAlert) {
             Button("Continuar Caminando", role: .cancel) {}
-            Button("Finalizar de Todos Modos", role: .destructive) {
+            Button("Tomar Foto Fin y Guardar") {
+                viewModel.startQuickPointCapture(estado: 1, isFinRuta: true)
+            }
+            Button("Finalizar sin Foto", role: .destructive) {
                 viewModel.finishRoute(force: true)
             }
         } message: {

@@ -163,7 +163,11 @@ public final class MainViewModel: @unchecked Sendable {
     @ObservationIgnored
     private var acknowledgedEmergencyDates: [String: Date] = [:]
     @ObservationIgnored
-    private var lastDopplerBeepTime: Date = .distantPast
+    private var dopplerLoopTask: Task<Void, Never>? = nil
+    @ObservationIgnored
+    private var currentDopplerIntervalMs: Int = -1
+    @ObservationIgnored
+    private var peerEmergencyWatchdogTask: Task<Void, Never>? = nil
     
     @ObservationIgnored
     private var announcedGuideAlertKeys: Set<String> = []
@@ -173,6 +177,19 @@ public final class MainViewModel: @unchecked Sendable {
     private var lastGuideOffRouteWarningTime: Date = .distantPast
     @ObservationIgnored
     private var lastGuideDistanceToTarget: Double? = nil
+    
+    /// Compañero cercano activo con emergencia 911 sin silenciar (visto en los últimos 35s)
+    public var activeUnacknowledgedEmergencyPeer: PeerBeaconData? {
+        let now = Date()
+        return nearbyPeers.values
+            .filter { peer in
+                let cleanId = peer.beaconId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return peer.isEmergency
+                    && !acknowledgedEmergencies.contains(cleanId)
+                    && now.timeIntervalSince(peer.lastDetectedTimestamp) <= 35.0
+            }
+            .min(by: { $0.estimatedDistanceMeters < $1.estimatedDistanceMeters })
+    }
     
     public var distanceToTargetGuideWaypoint: Double? {
         guard let target = targetGuideWaypoint, let current = locationTracker.currentLocation else { return nil }
@@ -206,6 +223,27 @@ public final class MainViewModel: @unchecked Sendable {
         guidanceStatusMessage = nil
         announcedGuideAlertKeys.removeAll()
         lastGuideDistanceToTarget = nil
+        stopDopplerBeepLoop()
+        syncBackgroundNavigationMode()
+    }
+    
+    @MainActor
+    public func toggleVoiceGuidance() {
+        isVoiceGuidanceEnabled.toggle()
+        if !isVoiceGuidanceEnabled {
+            TextToSpeechService.shared.stop()
+        }
+        recalculateDopplerFromCurrentLocation()
+    }
+    
+    @MainActor
+    private func syncBackgroundNavigationMode() {
+        let needsActiveBackground = isGuidingActive || recordingState == .recording
+        locationTracker.setHighPrecisionNavigation(needsActiveBackground)
+        HikerWhistlePlayer.shared.setBackgroundNavigationActive(needsActiveBackground)
+        if !isGuidingActive {
+            stopDopplerBeepLoop()
+        }
     }
     
     /// Jerarquía de roles: 'G' (Guía), 'A' (Admin), 'O' (Dueño) pueden crear y mapear rutas
@@ -284,6 +322,12 @@ public final class MainViewModel: @unchecked Sendable {
     public var isShowingAboutSheet: Bool = false
     public var availableLocalRoutes: [Route] = []
     
+    // MARK: - Captura Rápida de Punto con Cámara en 1 Clic (1:1 Android MainScreen.kt:426-453)
+    public var isShowingQuickCameraForPoint: Bool = false
+    public var pendingPointEstado: Int = 1
+    public var pendingPointIsFinRuta: Bool = false
+    public var pendingPointLocationSnapshot: CLLocation? = nil
+    
     // MARK: - Timer Privado
     @ObservationIgnored
     private var timer: Timer? = nil
@@ -316,6 +360,20 @@ public final class MainViewModel: @unchecked Sendable {
             Task { @MainActor in
                 if self.isBeaconEmitting {
                     self.bleBroadcaster.updateCoordinates(latitude: lat, longitude: lon)
+                }
+            }
+        }
+        
+        // Mantener Modo Guía activo incluso cuando el iPhone va en el bolsillo con pantalla bloqueada (<= 90m)
+        self.locationTracker.onGuideLocationUpdate = { [weak self] location in
+            guard let self = self else { return }
+            Task { @MainActor in
+                if self.isGuidingActive && self.activeRole == .guia {
+                    self.evaluateGuideProgress(
+                        latitude: location.coordinate.latitude,
+                        longitude: location.coordinate.longitude,
+                        altitude: location.altitude
+                    )
                 }
             }
         }
@@ -394,11 +452,14 @@ public final class MainViewModel: @unchecked Sendable {
         ud.set(cleanKm, forKey: "tekins_rango_km_salidas")
         ud.set(enableBeeps, forKey: "tekins_enable_doppler_beeps")
         
+        recalculateDopplerFromCurrentLocation()
         self.saveStatusMessage = "Parámetros de senderismo actualizados."
     }
     
     deinit {
         timer?.invalidate()
+        dopplerLoopTask?.cancel()
+        peerEmergencyWatchdogTask?.cancel()
         bleBroadcaster.stopBroadcasting()
         bleScanner.stopScanning()
     }
@@ -456,7 +517,7 @@ public final class MainViewModel: @unchecked Sendable {
                     }
                 }
                 
-                // Si el compañero activó 911 (primera detección o tras cumplirse Espera 911), disparar alerta (1:1 Android)
+                // Si el compañero activó 911 (primera detección o tras cumplirse Espera 911), disparar voz + alarma acústica continua (1:1 Android)
                 let shouldTriggerEmergencyAlert = peer.isEmergency
                     && !self.acknowledgedEmergencies.contains(normalizedId)
                     && (!previousEmergency || self.acknowledgedEmergencyDates[normalizedId] == nil)
@@ -466,6 +527,8 @@ public final class MainViewModel: @unchecked Sendable {
                     TextToSpeechService.shared.speak("¡Alerta! Emergencia 911 detectada de compañero \(displayName) a \(Int(peer.estimatedDistanceMeters)) metros.")
                     self.saveStatusMessage = "¡EMERGENCIA 911 DE \(displayName)!"
                 }
+                
+                self.refreshPeerEmergencyAlarmState()
             }
         }
     }
@@ -473,6 +536,7 @@ public final class MainViewModel: @unchecked Sendable {
     @MainActor
     public func refreshBleScanning() {
         bleScanner.refreshScan()
+        refreshPeerEmergencyAlarmState()
     }
     
     @MainActor
@@ -480,8 +544,51 @@ public final class MainViewModel: @unchecked Sendable {
         let clean = beaconId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         acknowledgedEmergencies.insert(clean)
         acknowledgedEmergencyDates[clean] = Date()
+        TextToSpeechService.shared.stop()
+        refreshPeerEmergencyAlarmState()
         let name = peerSenderistaProfiles[clean]?.name ?? clean.uppercased()
         saveStatusMessage = "Alarma silenciada para \(name)"
+    }
+    
+    @MainActor
+    public func acknowledgeAllPeerEmergencies() {
+        let now = Date()
+        for peer in nearbyPeers.values where peer.isEmergency {
+            let clean = peer.beaconId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            acknowledgedEmergencies.insert(clean)
+            acknowledgedEmergencyDates[clean] = now
+        }
+        TextToSpeechService.shared.stop()
+        refreshPeerEmergencyAlarmState()
+        saveStatusMessage = "Alarma 911 silenciada"
+    }
+    
+    @MainActor
+    public func refreshPeerEmergencyAlarmState() {
+        if activeUnacknowledgedEmergencyPeer != nil {
+            HikerWhistlePlayer.shared.startPeerEmergency911Alarm()
+            startPeerEmergencyWatchdogIfNeeded()
+        } else {
+            HikerWhistlePlayer.shared.stopPeerEmergency911Alarm()
+            peerEmergencyWatchdogTask?.cancel()
+            peerEmergencyWatchdogTask = nil
+        }
+    }
+    
+    @MainActor
+    private func startPeerEmergencyWatchdogIfNeeded() {
+        guard peerEmergencyWatchdogTask == nil else { return }
+        peerEmergencyWatchdogTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard let self = self, !Task.isCancelled else { break }
+                if self.activeUnacknowledgedEmergencyPeer == nil {
+                    HikerWhistlePlayer.shared.stopPeerEmergency911Alarm()
+                    break
+                }
+            }
+            self?.peerEmergencyWatchdogTask = nil
+        }
     }
     
     @MainActor
@@ -489,11 +596,6 @@ public final class MainViewModel: @unchecked Sendable {
         // Si la baliza está transmitiendo, actualizar coordenadas emitidas
         if isBeaconEmitting {
             bleBroadcaster.updateCoordinates(latitude: latitude, longitude: longitude)
-        }
-        
-        // Si el Modo Guía está activo, evaluar avance, alertas y distancia + subida/bajada al siguiente punto
-        if isGuidingActive && activeRole == .guia {
-            evaluateGuideProgress(latitude: latitude, longitude: longitude, altitude: altitude)
         }
         
         guard recordingState == .recording else { return }
@@ -537,28 +639,61 @@ public final class MainViewModel: @unchecked Sendable {
     
     // MARK: - Ciclo de Vida de Grabación
     
+    /// Genera un ID alfanumérico de 10 caracteres (5 de prefijo + 5 aleatorios) 1:1 con Android RutaEntity.generateRouteId
+    public static func generateRouteId(name: String) -> String {
+        let allowed = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        let cleanName = name.uppercased().filter { allowed.contains($0) }
+        var prefix = String(cleanName.prefix(5))
+        while prefix.count < 5 {
+            prefix.append("X")
+        }
+        let randomPart = String((0..<5).compactMap { _ in allowed.randomElement() })
+        return prefix + randomPart
+    }
+    
+    public static func generateAccessCode() -> String {
+        let allowed = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        return String((0..<6).compactMap { _ in allowed.randomElement() })
+    }
+    
     @MainActor
     public func startRecording(name: String, description: String = "") {
-        let routeId = UUID().uuidString
-        let dateString = ISO8601DateFormatter().string(from: Date())
+        let effectiveName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Sendero \(Date().formatted(date: .abbreviated, time: .shortened))"
+            : name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let routeId = Self.generateRouteId(name: effectiveName)
+        let accessCode = Self.generateAccessCode()
+        
+        let dfDate = DateFormatter()
+        dfDate.dateFormat = "dd/MM/yyyy"
+        dfDate.locale = Locale(identifier: "en_US_POSIX")
+        let dateString = dfDate.string(from: Date())
+        
+        let dfIso = DateFormatter()
+        dfIso.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        dfIso.locale = Locale(identifier: "en_US_POSIX")
+        let startTimeIso = dfIso.string(from: Date())
+        
         let loc = locationTracker.currentLocation ?? CLLocation(latitude: 19.4326, longitude: -99.1332)
         
         let route = Route(
             id: routeId,
-            name: name.isEmpty ? "Sendero \(Date().formatted(date: .abbreviated, time: .shortened))" : name,
+            name: effectiveName,
             date: dateString,
             originLatitude: loc.coordinate.latitude,
             originLongitude: loc.coordinate.longitude,
             descriptionText: description,
             gpsDistanceMeters: 0.0,
             beaconDistanceMeters: 0.0,
-            startTime: dateString,
+            startTime: startTimeIso,
             endTime: nil,
             durationSeconds: 0,
             elevationGain: 0.0,
             elevationLoss: 0.0,
             climbsCount: 0,
             descentsCount: 0,
+            connectivity: 100.0,
+            accessCode: accessCode,
             isPublic: true,
             syncTimestamp: Int64(Date().timeIntervalSince1970 * 1000),
             creatorPhone: currentHikerProfile?.phone ?? "",
@@ -572,27 +707,12 @@ public final class MainViewModel: @unchecked Sendable {
         self.showMapScreen = false // Jamás abrir el mapa automáticamente (1:1 Android)
         self.recordedTrace = []
         self.recordedCoordinates = []
-        self.recordedPoints = []
+        self.recordedPoints = [] // 1:1 Android: Inicia en 0 puntos y el primer punto se registra al tomar la foto
         self.totalDistanceMeters = 0.0
         self.elevationStats = ElevationStats()
         self.caloriesBurned = 0.0
         self.elapsedSeconds = 0
         self.recordingState = .recording
-        
-        // 1:1 Android: Registrar primer punto automáticamente ("Punto Inicial")
-        let startPoint = RoutePoint(
-            id: 1,
-            routeId: routeId,
-            timestamp: dateString,
-            latitude: loc.coordinate.latitude,
-            longitude: loc.coordinate.longitude,
-            altitude: loc.altitude,
-            descriptionText: "Punto Inicial: Inicio del sendero",
-            photoUrl: nil,
-            isRouteEnd: false,
-            hasConnectivity: true
-        )
-        self.recordedPoints.append(startPoint)
         
         let firstTrace = RouteTrace(
             id: 1,
@@ -608,42 +728,96 @@ public final class MainViewModel: @unchecked Sendable {
         // Auto-guardar en SwiftData
         if let repo = rutasRepository {
             let r = route
-            let pt = startPoint
             let tr = firstTrace
             Task {
                 try? await repo.save(route: r)
-                try? await repo.save(point: pt)
                 try? await repo.save(traceBatch: [tr])
             }
         }
         
         startTimer()
+        syncBackgroundNavigationMode()
     }
     
     @MainActor
     public func pauseRecording() {
         recordingState = .paused
         stopTimer()
+        syncBackgroundNavigationMode()
     }
     
     @MainActor
     public func resumeRecording() {
         recordingState = .recording
         startTimer()
+        syncBackgroundNavigationMode()
+    }
+    
+    /// Inicia el registro directo de un punto en 1 clic abriendo la cámara (1:1 Android MainScreen.kt:2456-2592)
+    @MainActor
+    public func startQuickPointCapture(estado: Int = 1, isFinRuta: Bool = false) {
+        guard !isRouteConsumptionOnly else { return }
+        pendingPointLocationSnapshot = locationTracker.currentLocation
+        pendingPointEstado = estado
+        pendingPointIsFinRuta = isFinRuta
+        if activeSheet == .recordingDashboard {
+            activeSheet = nil
+        }
+        isShowingQuickCameraForPoint = true
+    }
+    
+    /// Se ejecuta automáticamente en cuanto el usuario toma la foto en la cámara, guardando el punto sin pedir más clics (1:1 Android MainScreen.kt:426-453)
+    @MainActor
+    public func completeQuickPointCapture(photoPath: String?) {
+        let pointNumber = recordedPoints.count + 1
+        let isFirstPoint = (pointNumber == 1)
+        let autoDesc: String = {
+            if pendingPointIsFinRuta {
+                return "Fin de Ruta"
+            } else if isFirstPoint && pendingPointEstado == 1 {
+                return "Inicio de Ruta"
+            } else if pendingPointEstado == 1 {
+                return "Faro #\(pointNumber)"
+            } else {
+                let stateName = PointStateInfo.forPoint(estado: pendingPointEstado, isRouteEnd: false, description: "").name
+                return "\(stateName) #\(pointNumber)"
+            }
+        }()
+        
+        addPoint(
+            description: autoDesc,
+            photoUrl: photoPath,
+            isFinRuta: pendingPointIsFinRuta,
+            estado: pendingPointEstado,
+            locationOverride: pendingPointLocationSnapshot
+        )
+        pendingPointLocationSnapshot = nil
+        saveStatusMessage = "Punto #\(pointNumber) registrado con éxito."
     }
     
     @MainActor
-    public func addPoint(description: String, photoUrl: String? = nil, isFinRuta: Bool = false, estado: Int = 1) {
+    public func addPoint(
+        description: String,
+        photoUrl: String? = nil,
+        isFinRuta: Bool = false,
+        estado: Int = 1,
+        locationOverride: CLLocation? = nil
+    ) {
         guard !isRouteConsumptionOnly else {
             print("⚠️ [RutasSendero] Ruta de solo lectura / consumo: no se pueden agregar puntos.")
             return
         }
-        let loc = locationTracker.currentLocation ?? CLLocation(latitude: 19.4326, longitude: -99.1332)
-        let dateString = ISO8601DateFormatter().string(from: Date())
+        let loc = locationOverride ?? locationTracker.currentLocation ?? CLLocation(latitude: 19.4326, longitude: -99.1332)
+        let dfTime = DateFormatter()
+        dfTime.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        dfTime.locale = Locale(identifier: "en_US_POSIX")
+        let dateString = dfTime.string(from: Date())
         let routeId = activeRoute?.id ?? "temp"
         let pointNumber = recordedPoints.count + 1
         
-        let pointDesc = description.isEmpty ? (isFinRuta ? "Fin de la Ruta" : "Punto de control #\(pointNumber)") : description
+        let pointDesc = description.isEmpty
+            ? (isFinRuta ? "Fin de Ruta" : (pointNumber == 1 ? "Inicio de Ruta" : "Faro #\(pointNumber)"))
+            : description
         
         let newPoint = RoutePoint(
             id: pointNumber,
@@ -661,6 +835,17 @@ public final class MainViewModel: @unchecked Sendable {
         
         recordedPoints.append(newPoint)
         
+        // Si es el primer punto registrado, actualizar coordenadas de origen de la ruta (1:1 Android RutasViewModel.kt:1098-1103)
+        if pointNumber == 1, var route = activeRoute {
+            route.originLatitude = loc.coordinate.latitude
+            route.originLongitude = loc.coordinate.longitude
+            self.activeRoute = route
+            if let repo = rutasRepository {
+                let r = route
+                Task { try? await repo.save(route: r) }
+            }
+        }
+        
         // Auto-guardar punto en SwiftData
         if let repo = rutasRepository {
             let pt = newPoint
@@ -672,6 +857,24 @@ public final class MainViewModel: @unchecked Sendable {
         if isFinRuta {
             finishRoute(force: true)
         }
+    }
+    
+    /// Permite editar la descripción o estado de cualquier punto después de tomar la foto (1:1 Android PuntoRutaDetailDialog)
+    @MainActor
+    public func updateRecordedPoint(_ updated: RoutePoint) {
+        guard !isRouteConsumptionOnly else { return }
+        if let idx = recordedPoints.firstIndex(where: { $0.id == updated.id }) {
+            recordedPoints[idx] = updated
+        }
+        if selectedPointForDetail?.id == updated.id {
+            selectedPointForDetail = updated
+        }
+        if let repo = rutasRepository {
+            Task {
+                try? await repo.save(point: updated)
+            }
+        }
+        saveStatusMessage = "Punto #\(updated.id) actualizado."
     }
     
     @MainActor
@@ -709,10 +912,13 @@ public final class MainViewModel: @unchecked Sendable {
         stopTimer()
         recordingState = .stopped
         self.activeRole = .visor
+        syncBackgroundNavigationMode()
         
         if var route = activeRoute {
-            let endTimeString = ISO8601DateFormatter().string(from: Date())
-            route.endTime = endTimeString
+            let dfIso = DateFormatter()
+            dfIso.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+            dfIso.locale = Locale(identifier: "en_US_POSIX")
+            route.endTime = dfIso.string(from: Date())
             route.durationSeconds = elapsedSeconds
             route.gpsDistanceMeters = totalDistanceMeters
             route.beaconDistanceMeters = RouteStatsCalculator.calculatePointsDistance(points: recordedPoints)
@@ -726,13 +932,22 @@ public final class MainViewModel: @unchecked Sendable {
             } else {
                 route.connectivity = 100.0
             }
+            if route.accessCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                route.accessCode = Self.generateAccessCode()
+            }
+            if route.descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let creatorName = currentHikerProfile?.name ?? "Senderista"
+                let distStr = String(format: "%.2f", totalDistanceMeters / 1000.0)
+                route.descriptionText = "autor ; \(creatorName)\n\(route.date) , \(distStr) Kms , Finalizada"
+            }
             self.activeRoute = route
             
-            // Persistir ruta completa, puntos y traza en SwiftData
+            // Persistir ruta completa, puntos y traza en SwiftData y subir automáticamente a la nube (1:1 Android)
             if let repo = rutasRepository {
                 let savedRoute = route
                 let pts = self.recordedPoints
                 let trs = self.recordedTrace
+                let profile = self.currentHikerProfile
                 Task {
                     do {
                         try await repo.save(route: savedRoute)
@@ -740,25 +955,30 @@ public final class MainViewModel: @unchecked Sendable {
                             try await repo.save(point: p)
                         }
                         try await repo.save(traceBatch: trs)
+                        await self.loadLocalRoutes()
                         await MainActor.run {
                             self.isSavedLocally = true
-                            self.saveStatusMessage = "Ruta guardada localmente en SwiftData"
+                            self.saveStatusMessage = "☁️ Ruta guardada localmente. Subiendo a la nube..."
                         }
                         print("✅ [SwiftData] Ruta '\(savedRoute.name)' persistida exitosamente (\(pts.count) puntos, \(trs.count) trazas)")
                         
-                        // Sincronización automática a la nube si el perfil está disponible (1:1 Android)
-                        if let profile = self.currentHikerProfile {
-                            Task.detached(priority: .background) {
-                                do {
-                                    try await CloudSyncService.shared.uploadRouteToCloud(
-                                        routeId: savedRoute.id,
-                                        from: repo,
-                                        creator: profile
-                                    )
-                                    print("☁️ [CloudSync] Ruta '\(savedRoute.name)' sincronizada automáticamente con la nube.")
-                                } catch {
-                                    print("⚠️ [CloudSync] Error sincronizando ruta con la nube: \(error.localizedDescription)")
+                        // Sincronización automática a la nube (PostgREST + Cloudinary 1:1 Android)
+                        if let profile = profile {
+                            do {
+                                try await CloudSyncService.shared.uploadRouteToCloud(
+                                    routeId: savedRoute.id,
+                                    from: repo,
+                                    creator: profile
+                                )
+                                await MainActor.run {
+                                    self.saveStatusMessage = "¡Ruta '\(savedRoute.name)' subida a la nube exitosamente!"
                                 }
+                                print("☁️ [CloudSync] Ruta '\(savedRoute.name)' sincronizada automáticamente con la nube.")
+                            } catch {
+                                await MainActor.run {
+                                    self.saveStatusMessage = "Ruta guardada en iPhone (pendiente subir a la nube: \(error.localizedDescription))"
+                                }
+                                print("⚠️ [CloudSync] Error sincronizando ruta con la nube: \(error.localizedDescription)")
                             }
                         }
                     } catch {
@@ -783,6 +1003,7 @@ public final class MainViewModel: @unchecked Sendable {
         recordedPoints = []
         totalDistanceMeters = 0.0
         elapsedSeconds = 0
+        syncBackgroundNavigationMode()
     }
     
     // MARK: - Manejo del Temporizador
@@ -1294,11 +1515,16 @@ public final class MainViewModel: @unchecked Sendable {
         let isVeryFarFromTrail = (minDistanceMeters > maxDistanceToStartGuideMeters && currentLoc != nil)
         let selectedInitialTarget: RoutePoint? = isVeryFarFromTrail ? orderedPts.first : (closestPoint ?? orderedPts.first)
         
+        // Si el senderista ya está en el sendero o cerca (<= 2km), seguir su ubicación en vivo en el mapa;
+        // si está lejos (> 2km), mantener el mapa posicionado en el Punto #1 de la ruta (1:1 Android)
+        self.isFollowingUser = !isVeryFarFromTrail
         self.targetGuideWaypoint = selectedInitialTarget
         self.isGuidingActive = true
         self.isShowingVisorOrderDialog = false
         self.pendingRouteForOrderSelection = nil
         self.showMapScreen = true
+        self.syncBackgroundNavigationMode()
+        self.recalculateDopplerFromCurrentLocation()
         
         let destText = toStart ? "el inicio (retorno)" : "el final (ida)"
         let destSpeech = toStart ? "el inicio" : "el final"
@@ -1364,6 +1590,7 @@ public final class MainViewModel: @unchecked Sendable {
             targetGuideWaypoint = nextPunto
             lastGuideDistanceToTarget = nil
             lastGuideTtsTime = Date()
+            HikerWhistlePlayer.shared.playWaypointChime(isFinal: false)
             
             let fromLoc = locationTracker.currentLocation ?? CLLocation(latitude: currentTarget.latitude, longitude: currentTarget.longitude)
             let nextLoc = CLLocation(latitude: nextPunto.latitude, longitude: nextPunto.longitude)
@@ -1380,12 +1607,79 @@ public final class MainViewModel: @unchecked Sendable {
             if isVoiceGuidanceEnabled {
                 TextToSpeechService.shared.speak("Punto \(currentTarget.name) localizado manualmente. Siguiente destino: \(nextPunto.name), distancia a caminar \(nextDistSpoken)\(nextElevSuffix).")
             }
+            recalculateDopplerFromCurrentLocation()
         } else {
+            HikerWhistlePlayer.shared.playWaypointChime(isFinal: true)
             if isVoiceGuidanceEnabled {
                 TextToSpeechService.shared.speak("Felicidades. Has llegado a tu destino final, completando la ruta: \(currentTarget.name).")
             }
             stopGuiding()
         }
+    }
+    
+    // MARK: - Bucle Continuo de Pitidos Doppler en Bolsillo / Pantalla Apagada (1:1 Android GpsTrackingService.kt:773-785, 862-879)
+    
+    @MainActor
+    private func recalculateDopplerFromCurrentLocation() {
+        guard isGuidingActive, activeRole == .guia, let dist = distanceToTargetGuideWaypoint else {
+            stopDopplerBeepLoop()
+            return
+        }
+        updateDopplerForDistance(dist)
+    }
+    
+    @MainActor
+    private func updateDopplerForDistance(_ distance: Double) {
+        guard isGuidingActive, activeRole == .guia, enableDopplerBeeps, !isVoiceGuidanceEnabled else {
+            stopDopplerBeepLoop()
+            return
+        }
+        let limitDistance = max(arrivalToleranceMeters + 5.0, Double(alertDistanceMeters))
+        if distance <= limitDistance && distance > arrivalToleranceMeters {
+            let denom = max(1.0, limitDistance - arrivalToleranceMeters)
+            let ratio = min(1.0, max(0.0, (limitDistance - distance) / denom))
+            // Modulación lineal de 1500ms (lejos) hasta 150ms (inminente), idéntica a Android
+            currentDopplerIntervalMs = Int(1500.0 - ratio * (1500.0 - 150.0))
+            startDopplerBeepLoopIfNeeded()
+        } else {
+            stopDopplerBeepLoop()
+        }
+    }
+    
+    @MainActor
+    private func startDopplerBeepLoopIfNeeded() {
+        guard dopplerLoopTask == nil else { return }
+        dopplerLoopTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self = self,
+                      self.isGuidingActive,
+                      self.activeRole == .guia,
+                      self.enableDopplerBeeps,
+                      !self.isVoiceGuidanceEnabled,
+                      self.currentDopplerIntervalMs > 0 else {
+                    break
+                }
+                HikerWhistlePlayer.shared.playDopplerPip()
+                var elapsedMs = 0
+                while !Task.isCancelled {
+                    let targetMs = max(140, self.currentDopplerIntervalMs)
+                    if self.currentDopplerIntervalMs <= 0 || elapsedMs >= targetMs {
+                        break
+                    }
+                    let slice = min(75, targetMs - elapsedMs)
+                    try? await Task.sleep(nanoseconds: UInt64(slice) * 1_000_000)
+                    elapsedMs += slice
+                }
+            }
+            self?.dopplerLoopTask = nil
+        }
+    }
+    
+    @MainActor
+    private func stopDopplerBeepLoop() {
+        currentDopplerIntervalMs = -1
+        dopplerLoopTask?.cancel()
+        dopplerLoopTask = nil
     }
     
     /// Motor en tiempo real de Modo Guía con avisos de distancia + subida/bajada (1:1 Android GpsTrackingService.kt:607-840)
@@ -1394,11 +1688,13 @@ public final class MainViewModel: @unchecked Sendable {
         guard isGuidingActive, let target = targetGuideWaypoint, !recordedPoints.isEmpty else { return }
         guard let currentIndex = recordedPoints.firstIndex(where: { $0.id == target.id }) else { return }
         
-        let userLoc = locationTracker.currentLocation ?? CLLocation(
+        let userLoc = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
             altitude: altitude,
-            horizontalAccuracy: 5.0,
+            horizontalAccuracy: max(5.0, locationTracker.horizontalAccuracy),
             verticalAccuracy: RouteStatsCalculator.hasValidAltitude(altitude) ? 10.0 : -1.0,
+            course: locationTracker.currentCourse,
+            speed: locationTracker.currentSpeedKmh / 3.6,
             timestamp: Date()
         )
         let targetLoc = CLLocation(latitude: target.latitude, longitude: target.longitude)
@@ -1444,6 +1740,7 @@ public final class MainViewModel: @unchecked Sendable {
             let nextElevSuffix = RouteStatsCalculator.formatElevationSpeechSuffix(nextDeltaAlt)
             targetGuideWaypoint = nextPoint
             lastGuideDistanceToTarget = minAheadDist
+            updateDopplerForDistance(minAheadDist)
             if isVoiceGuidanceEnabled {
                 TextToSpeechService.shared.speak("Parece que tomaste un atajo o desvío. Redirigiendo al punto: \(nextPoint.name), a \(nextDistSpoken)\(nextElevSuffix).")
             }
@@ -1482,22 +1779,18 @@ public final class MainViewModel: @unchecked Sendable {
             }
         }
         
-        // Pitidos Doppler de cercanía cuando están activos y la voz guía está silenciada (1:1 Android GpsTrackingService.kt:776)
-        if enableDopplerBeeps && !isVoiceGuidanceEnabled && distance <= Double(alertDistanceMeters) {
-            let interval = max(0.35, min(2.5, distance / 25.0))
-            if Date().timeIntervalSince(lastDopplerBeepTime) >= interval {
-                lastDopplerBeepTime = Date()
-                AudioServicesPlaySystemSound(1057)
-            }
-        }
+        // Pitidos Doppler continuos de cercanía cuando están activos y la voz guía está silenciada (1:1 Android GpsTrackingService.kt:773-785)
+        updateDopplerForDistance(distance)
         
-        // 2. Llegada al punto objetivo actual (<= tolerancia 25m)
+        // 2. Llegada al punto objetivo actual (<= tolerancia parametrizada)
         if distance <= arrivalToleranceMeters {
+            stopDopplerBeepLoop()
             let nextIndex = guideDirectionForward ? (currentIndex + 1) : (currentIndex - 1)
             let generator = UINotificationFeedbackGenerator()
             generator.notificationOccurred(.success)
             
             if nextIndex >= 0 && nextIndex < recordedPoints.count {
+                HikerWhistlePlayer.shared.playWaypointChime(isFinal: false)
                 let nextPunto = recordedPoints[nextIndex]
                 let nextLoc = CLLocation(latitude: nextPunto.latitude, longitude: nextPunto.longitude)
                 let segDist = userLoc.distance(from: nextLoc)
@@ -1525,7 +1818,9 @@ public final class MainViewModel: @unchecked Sendable {
                 targetGuideWaypoint = nextPunto
                 lastGuideDistanceToTarget = segDist
                 lastGuideTtsTime = Date()
+                updateDopplerForDistance(segDist)
             } else {
+                HikerWhistlePlayer.shared.playWaypointChime(isFinal: true)
                 TextToSpeechService.shared.speak("Felicidades. Has llegado a tu destino final, completando la ruta: \(target.name).")
                 saveStatusMessage = "¡Ruta completada! Destino final alcanzado."
                 stopGuiding()
@@ -1657,6 +1952,7 @@ public final class MainViewModel: @unchecked Sendable {
         self.totalDistanceMeters = 0.0
         self.elevationStats = ElevationStats()
         self.recordingState = .stopped
+        self.syncBackgroundNavigationMode()
     }
     
     // MARK: - Motor de Recorrido Virtual / Simulación (1:1 Android)

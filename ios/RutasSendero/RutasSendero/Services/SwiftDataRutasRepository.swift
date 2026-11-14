@@ -12,6 +12,18 @@ import SwiftData
 @ModelActor
 public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepositoryProtocol {
     
+    // MARK: - Clave compuesta determinista para evitar colisiones @Attribute(.unique) entre rutas
+    private static func compositeStorageId(routeId: String, localId: Int) -> Int {
+        var hash: UInt64 = 1469598103934665603
+        for byte in routeId.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        let routeHash = Int((hash & 0x3FFFFFFF) | 1) // 30 bits positivos no nulos
+        let cleanLocal = max(1, localId & 0xFFFFF)   // 20 bits (hasta 1,048,575 puntos/trazas por ruta)
+        return (routeHash << 20) | cleanLocal
+    }
+    
     // MARK: - RutasRepositoryProtocol
     
     public func getAllRoutes() async throws -> [Route] {
@@ -29,7 +41,7 @@ public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepo
     public func getPoints(forRouteId routeId: String) async throws -> [RoutePoint] {
         let descriptor = FetchDescriptor<SDCacheRuta>(predicate: #Predicate { $0.id == routeId })
         guard let sdRoute = try modelContext.fetch(descriptor).first else { return [] }
-        return sdRoute.puntos.sorted(by: { $0.id < $1.id }).map { $0.toDomain(routeId: routeId) }
+        return sdRoute.puntos.map { $0.toDomain(routeId: routeId) }.sorted(by: { $0.id < $1.id })
     }
     
     public func getTrace(forRouteId routeId: String) async throws -> [RouteTrace] {
@@ -93,9 +105,11 @@ public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepo
     public func save(point: RoutePoint) async throws {
         let routeDescriptor = FetchDescriptor<SDCacheRuta>(predicate: #Predicate { $0.id == point.routeId })
         let sdRoute = try modelContext.fetch(routeDescriptor).first
+        let storageId = Self.compositeStorageId(routeId: point.routeId, localId: point.id)
+        let cleanLocalId = max(1, point.id & 0xFFFFF)
         
-        let pointDescriptor = FetchDescriptor<SDPuntoRuta>(predicate: #Predicate { $0.id == point.id })
-        if let existing = try modelContext.fetch(pointDescriptor).first {
+        let pointDescriptor = FetchDescriptor<SDPuntoRuta>(predicate: #Predicate { $0.id == storageId })
+        if let existing = try modelContext.fetch(pointDescriptor).first ?? sdRoute?.puntos.first(where: { ($0.id > 0xFFFFF ? ($0.id & 0xFFFFF) : $0.id) == cleanLocalId }) {
             existing.fechaHora = point.timestamp
             existing.latitud = point.latitude
             existing.longitud = point.longitude
@@ -108,7 +122,7 @@ public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepo
             existing.ruta = sdRoute
         } else {
             let sdPoint = SDPuntoRuta(
-                id: point.id,
+                id: storageId,
                 fechaHora: point.timestamp,
                 latitud: point.latitude,
                 longitud: point.longitude,
@@ -131,7 +145,8 @@ public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepo
         let sdRoute = try modelContext.fetch(routeDescriptor).first
         
         for trace in traceBatch {
-            let traceDescriptor = FetchDescriptor<SDTrazaRuta>(predicate: #Predicate { $0.id == trace.id })
+            let storageId = Self.compositeStorageId(routeId: trace.routeId, localId: trace.order > 0 ? trace.order : trace.id)
+            let traceDescriptor = FetchDescriptor<SDTrazaRuta>(predicate: #Predicate { $0.id == storageId })
             if let existing = try modelContext.fetch(traceDescriptor).first {
                 existing.orden = trace.order
                 existing.latitud = trace.latitude
@@ -140,7 +155,7 @@ public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepo
                 existing.ruta = sdRoute
             } else {
                 let sdTrace = SDTrazaRuta(
-                    id: trace.id,
+                    id: storageId,
                     orden: trace.order,
                     latitud: trace.latitude,
                     longitud: trace.longitude,
@@ -302,8 +317,9 @@ extension SDPuntoRuta {
                 resolvedEstado = 2
             }
         }
+        let cleanId = self.id > 0xFFFFF ? (self.id & 0xFFFFF) : self.id
         return RoutePoint(
-            id: self.id,
+            id: cleanId,
             routeId: routeId,
             timestamp: self.fechaHora,
             latitude: self.latitud,
@@ -320,8 +336,9 @@ extension SDPuntoRuta {
 
 extension SDTrazaRuta {
     func toDomain(routeId: String) -> RouteTrace {
-        RouteTrace(
-            id: self.id,
+        let cleanId = self.id > 0xFFFFF ? (self.id & 0xFFFFF) : self.id
+        return RouteTrace(
+            id: cleanId,
             routeId: routeId,
             order: self.orden,
             latitude: self.latitud,

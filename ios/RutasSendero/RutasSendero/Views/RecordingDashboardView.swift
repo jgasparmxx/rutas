@@ -544,14 +544,44 @@ public struct RecordingDashboardView: View {
                 )
             }
             
+            // Selector rápido de punto de estado (1 clic + cámara 1:1 Android)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(QuickPointStateOption.specialOptions) { item in
+                        let info = item.info
+                        Button {
+                            viewModel.startQuickPointCapture(estado: item.id, isFinRuta: false)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: info.systemImage)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(info.color)
+                                Text(item.name)
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(AppTheme.textPrimary)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(info.backgroundColor)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(info.color.opacity(0.6), lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            
             // Botonera de Control de Grabación (Trazar)
             HStack(spacing: 10) {
-                // Botón REGISTRAR PUNTO (Safety Yellow de Alta Visibilidad)
+                // Botón REGISTRAR PUNTO con Cámara en 1 Clic (Safety Yellow de Alta Visibilidad)
                 Button {
-                    viewModel.isShowingAddPointSheet = true
+                    viewModel.startQuickPointCapture(estado: 1, isFinRuta: false)
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "mappin.and.ellipse")
+                        Image(systemName: "camera.fill")
                             .font(.system(size: 16, weight: .bold))
                         
                         Text("REGISTRAR PUNTO")

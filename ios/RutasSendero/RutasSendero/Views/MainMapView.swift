@@ -12,6 +12,7 @@ import MapKit
 
 public struct MainMapView: View {
     @Bindable var viewModel: MainViewModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var cameraPosition: MapCameraPosition = .automatic
     
     public init(viewModel: MainViewModel) {
@@ -30,6 +31,33 @@ public struct MainMapView: View {
                 if viewModel.recordedCoordinates.count >= 2 {
                     MapPolyline(coordinates: viewModel.recordedCoordinates)
                         .stroke(AppTheme.accent, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                }
+                
+                // Línea punteada de guía entre el senderista y el punto objetivo actual (1:1 Android Components.kt:3468-3477)
+                if viewModel.isGuidingActive,
+                   let userLoc = viewModel.locationTracker.currentLocation,
+                   let target = viewModel.targetGuideWaypoint,
+                   isHikerNearTrail {
+                    let targetCoord = CLLocationCoordinate2D(latitude: target.latitude, longitude: target.longitude)
+                    let dist = userLoc.distance(from: CLLocation(latitude: target.latitude, longitude: target.longitude))
+                    let linkColor: Color = {
+                        if dist <= 30.0 {
+                            return Color(red: 16/255, green: 185/255, blue: 129/255) // #10B981 Verde Cercanía
+                        } else if dist <= 100.0 {
+                            return Color(red: 245/255, green: 158/255, blue: 11/255) // #F59E0B Ámbar Media
+                        } else {
+                            return Color(red: 239/255, green: 68/255, blue: 68/255)  // #EF4444 Rojo Lejos
+                        }
+                    }()
+                    MapPolyline(coordinates: [userLoc.coordinate, targetCoord])
+                        .stroke(linkColor, style: StrokeStyle(lineWidth: 3.5, lineCap: .round, dash: [7, 6]))
+                }
+                
+                // Marcador de alta visibilidad del Senderista en Modo Guía para ubicarlo al instante al encender pantalla
+                if viewModel.isGuidingActive, let userLoc = viewModel.locationTracker.currentLocation {
+                    Annotation("Senderista", coordinate: userLoc.coordinate) {
+                        HikerGuideMarkerView(courseDegrees: viewModel.locationTracker.currentCourse)
+                    }
                 }
                 
                 // Marcadores de los puntos de control (Waypoints con foto y desnivel al siguiente punto)
@@ -140,10 +168,8 @@ public struct MainMapView: View {
                 
                 // Centrar en el Usuario (bajo demanda explícita)
                 Button {
-                    withAnimation(.easeInOut(duration: 0.5)) {
-                        cameraPosition = .userLocation(fallback: .automatic)
-                        viewModel.isFollowingUser = true
-                    }
+                    viewModel.isFollowingUser = true
+                    focusOnHikerPosition(animated: true)
                 } label: {
                     MapControlButton(
                         systemImage: "location.fill",
@@ -177,16 +203,40 @@ public struct MainMapView: View {
             }
         }
         .onChange(of: viewModel.isVisorReversed) { _, _ in
-            focusOnStartingPoint(animated: true)
+            if viewModel.isGuidingActive && isHikerNearTrail {
+                focusOnHikerPosition(animated: true)
+            } else {
+                focusOnStartingPoint(animated: true)
+            }
         }
         .onChange(of: viewModel.activeRoute?.id) { _, newId in
             if newId != nil {
-                focusOnStartingPoint(animated: true)
+                if viewModel.isGuidingActive && isHikerNearTrail {
+                    focusOnHikerPosition(animated: true)
+                } else {
+                    focusOnStartingPoint(animated: true)
+                }
             }
         }
         .onChange(of: viewModel.isGuidingActive) { _, isGuiding in
             if isGuiding {
-                focusOnStartingPoint(animated: true)
+                if isHikerNearTrail {
+                    viewModel.isFollowingUser = true
+                    focusOnHikerPosition(animated: true)
+                } else {
+                    focusOnStartingPoint(animated: true)
+                }
+            }
+        }
+        .onChange(of: viewModel.locationTracker.currentLocation?.timestamp) { _, _ in
+            if viewModel.isGuidingActive && viewModel.isFollowingUser && isHikerNearTrail {
+                focusOnHikerPosition(animated: true)
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active && viewModel.isGuidingActive && isHikerNearTrail {
+                viewModel.isFollowingUser = true
+                focusOnHikerPosition(animated: true)
             }
         }
         .onChange(of: viewModel.recordedPoints.count) { _, count in
@@ -195,26 +245,83 @@ public struct MainMapView: View {
             }
         }
         .onAppear {
-            viewModel.isFollowingUser = false
             if viewModel.isVirtualTourActive {
+                viewModel.isFollowingUser = false
                 focusOnTourPoint(index: viewModel.virtualTourIndex)
+            } else if viewModel.isGuidingActive && isHikerNearTrail {
+                viewModel.isFollowingUser = true
+                focusOnHikerPosition(animated: false)
             } else {
+                viewModel.isFollowingUser = false
                 focusOnStartingPoint(animated: false)
             }
-            // Re-aplicar tras el primer ciclo de render de MapKit para impedir que UserAnnotation mueva la cámara al usuario
+            // Re-aplicar tras el primer ciclo de render de MapKit
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(180))
-                guard !viewModel.isFollowingUser else { return }
                 if viewModel.isVirtualTourActive {
                     focusOnTourPoint(index: viewModel.virtualTourIndex)
-                } else {
+                } else if viewModel.isGuidingActive && viewModel.isFollowingUser && isHikerNearTrail {
+                    focusOnHikerPosition(animated: false)
+                } else if !viewModel.isFollowingUser {
                     focusOnStartingPoint(animated: false)
                 }
             }
         }
     }
     
-    // MARK: - Helpers de Estilo
+    // MARK: - Helpers de Estilo y Seguimiento del Senderista
+    
+    /// Determina si el senderista está en o cerca del sendero (<= 2.0 km) para centrar el mapa en su posición en Modo Guía
+    private var isHikerNearTrail: Bool {
+        guard let userLoc = viewModel.locationTracker.currentLocation else { return false }
+        var minDist = Double.greatestFiniteMagnitude
+        for pt in viewModel.recordedPoints {
+            let d = userLoc.distance(from: CLLocation(latitude: pt.latitude, longitude: pt.longitude))
+            if d < minDist { minDist = d }
+        }
+        if minDist == Double.greatestFiniteMagnitude, let route = viewModel.activeRoute {
+            minDist = userLoc.distance(from: CLLocation(latitude: route.originLatitude, longitude: route.originLongitude))
+        }
+        return minDist <= viewModel.maxDistanceToStartGuideMeters
+    }
+    
+    /// Centra la cámara en la posición real del senderista (y encuadra el siguiente punto objetivo si está cerca)
+    private func focusOnHikerPosition(animated: Bool) {
+        guard let userLoc = viewModel.locationTracker.currentLocation else {
+            if animated {
+                withAnimation(.easeInOut(duration: 0.5)) {
+                    cameraPosition = .userLocation(fallback: .automatic)
+                }
+            } else {
+                cameraPosition = .userLocation(fallback: .automatic)
+            }
+            return
+        }
+        
+        var latSpan = 0.0032
+        var lonSpan = 0.0032
+        if viewModel.isGuidingActive, let target = viewModel.targetGuideWaypoint {
+            let dist = userLoc.distance(from: CLLocation(latitude: target.latitude, longitude: target.longitude))
+            if dist >= 15.0 && dist <= 750.0 {
+                let dLat = abs(target.latitude - userLoc.coordinate.latitude) * 2.5
+                let dLon = abs(target.longitude - userLoc.coordinate.longitude) * 2.5
+                latSpan = max(0.0028, min(0.012, dLat))
+                lonSpan = max(0.0028, min(0.012, dLon))
+            }
+        }
+        
+        let region = MKCoordinateRegion(
+            center: userLoc.coordinate,
+            span: MKCoordinateSpan(latitudeDelta: latSpan, longitudeDelta: lonSpan)
+        )
+        if animated {
+            withAnimation(.easeInOut(duration: 0.45)) {
+                cameraPosition = .region(region)
+            }
+        } else {
+            cameraPosition = .region(region)
+        }
+    }
     
     private var currentMapKitStyle: MapStyle {
         switch viewModel.mapStyle {
@@ -625,5 +732,59 @@ public struct MapControlButton: View {
         }
     }
 }
+
+// MARK: - Marcador de Alta Visibilidad del Senderista en Modo Guía
+
+public struct HikerGuideMarkerView: View {
+    public var courseDegrees: Double = -1.0
+    @State private var isPulsing: Bool = false
+    
+    public var body: some View {
+        VStack(spacing: 2) {
+            ZStack {
+                Circle()
+                    .stroke(Color(red: 16/255, green: 185/255, blue: 129/255).opacity(0.65), lineWidth: 2.5)
+                    .frame(width: isPulsing ? 46 : 28, height: isPulsing ? 46 : 28)
+                    .scaleEffect(isPulsing ? 1.25 : 0.9)
+                    .opacity(isPulsing ? 0 : 0.9)
+                    .animation(.easeInOut(duration: 1.4).repeatForever(autoreverses: false), value: isPulsing)
+                
+                Circle()
+                    .fill(Color(red: 5/255, green: 150/255, blue: 105/255))
+                    .frame(width: 30, height: 30)
+                    .overlay(
+                        Circle().stroke(Color.white, lineWidth: 2.5)
+                    )
+                    .shadow(color: Color.black.opacity(0.55), radius: 4, x: 0, y: 2)
+                
+                if courseDegrees >= 0 {
+                    Image(systemName: "location.north.fill")
+                        .font(.system(size: 14, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .rotationEffect(.degrees(courseDegrees))
+                } else {
+                    Image(systemName: "figure.hiking")
+                        .font(.system(size: 14, weight: .heavy))
+                        .foregroundStyle(.white)
+                }
+            }
+            .onAppear {
+                isPulsing = true
+            }
+            
+            Text("TÚ")
+                .font(.system(size: 8, weight: .heavy, design: .rounded))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Color(red: 5/255, green: 150/255, blue: 105/255))
+                .overlay(
+                    Capsule().stroke(Color.white.opacity(0.85), lineWidth: 1)
+                )
+                .clipShape(Capsule())
+        }
+    }
+}
+
 
 

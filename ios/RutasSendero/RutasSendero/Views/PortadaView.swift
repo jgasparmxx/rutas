@@ -261,23 +261,16 @@ public struct PortadaView: View {
                 .background(AppTheme.cardBorder)
             
             // Mensaje contextual 1:1 con Android
-            if viewModel.recordedPoints.count <= 1 {
+            if viewModel.recordedPoints.isEmpty {
                 VStack(spacing: 6) {
-                    Text("¡Punto inicial registrado!")
+                    Text("¡Ruta iniciada! Toma la foto del Punto #1")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(AppTheme.accent)
                     
-                    Text("Por favor, registra el siguiente punto de la ruta utilizando el botón de abajo.")
+                    Text("Toca el botón amarillo o un estado especial para abrir la cámara y registrar el punto al instante.")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(AppTheme.textSecondary)
                         .multilineTextAlignment(.center)
-                    
-                    if let firstPt = viewModel.recordedPoints.first {
-                        Text("Hito: \(firstPt.descriptionText)")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(AppTheme.textSecondary.opacity(0.8))
-                            .padding(.top, 2)
-                    }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -287,7 +280,7 @@ public struct PortadaView: View {
                 HStack {
                     Image(systemName: "mappin.circle")
                         .foregroundStyle(AppTheme.accentCyan)
-                    Text("Último punto: \(lastPt.descriptionText)")
+                    Text("Último punto (#\(lastPt.id)): \(lastPt.descriptionText)")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(AppTheme.textPrimary)
                         .lineLimit(1)
@@ -297,54 +290,17 @@ public struct PortadaView: View {
                 .padding(.vertical, 8)
                 .background(AppTheme.cardMuted.opacity(0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            
-            // Botón para dictar descripción extra al último punto (1:1 Android)
-            if let lastPt = viewModel.recordedPoints.last, !lastPt.isRouteEnd {
-                Button {
-                    viewModel.isShowingDictateSheet = true
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 15, weight: .bold))
-                        Text("DICTAR DESCRIPCIÓN AL PUNTO")
-                            .font(.system(size: 13, weight: .heavy))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color(red: 76/255, green: 175/255, blue: 80/255))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .shadow(color: Color(red: 76/255, green: 175/255, blue: 80/255).opacity(0.35), radius: 6, y: 2)
+                .onTapGesture {
+                    viewModel.selectedPointForDetail = lastPt
                 }
-                .buttonStyle(.plain)
             }
             
-            // Botón para Abrir Modal / Panel de Grabar Ruta con Telemetría (1:1 requerimiento)
+            // Botón Principal: Registrar Punto con Cámara en 1 Clic (1:1 Android MainScreen.kt:2456)
             Button {
-                viewModel.isShowingRecordingDashboard = true
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "gauge.with.needle.fill")
-                        .font(.system(size: 15, weight: .bold))
-                    Text("ABRIR PANEL DE GRABACIÓN")
-                        .font(.system(size: 13, weight: .heavy))
-                }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background(AppTheme.primary)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .shadow(color: AppTheme.primary.opacity(0.35), radius: 6, y: 2)
-            }
-            .buttonStyle(.plain)
-            
-            // Botón Principal: Registrar Siguiente Punto (1:1 Android)
-            Button {
-                viewModel.isShowingAddPointSheet = true
+                viewModel.startQuickPointCapture(estado: 1, isFinRuta: false)
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "plus.circle.fill")
+                    Image(systemName: "camera.fill")
                         .font(.system(size: 18, weight: .bold))
                     Text(viewModel.recordedPoints.isEmpty ? "REGISTRAR PRIMER PUNTO" : "REGISTRAR SIGUIENTE PUNTO")
                         .font(.system(size: 14, weight: .heavy))
@@ -364,6 +320,82 @@ public struct PortadaView: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .shadow(color: Color(red: 250/255, green: 204/255, blue: 21/255).opacity(0.35), radius: 6, y: 3)
+            }
+            .buttonStyle(.plain)
+            
+            // Barra de Estados Rápidos: 1 Clic -> Abre Cámara y Registra con ese Estado (1:1 Android MainScreen.kt:2510-2592)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("O REGISTRAR PUNTO DE ESTADO (1 CLIC + FOTO):")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(AppTheme.textSecondary)
+                
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(QuickPointStateOption.specialOptions) { item in
+                            let info = item.info
+                            Button {
+                                viewModel.startQuickPointCapture(estado: item.id, isFinRuta: false)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: info.systemImage)
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundStyle(info.color)
+                                    Text(item.name)
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(AppTheme.textPrimary)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .background(info.backgroundColor)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .stroke(info.color.opacity(0.6), lineWidth: 1)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            
+            // Botón para dictar o agregar descripción extra al último punto (1:1 Android)
+            if let lastPt = viewModel.recordedPoints.last, !lastPt.isRouteEnd {
+                Button {
+                    viewModel.isShowingDictateSheet = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 15, weight: .bold))
+                        Text("DICTAR COMENTARIO AL PUNTO #\(lastPt.id)")
+                            .font(.system(size: 13, weight: .heavy))
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(Color(red: 76/255, green: 175/255, blue: 80/255))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .shadow(color: Color(red: 76/255, green: 175/255, blue: 80/255).opacity(0.35), radius: 6, y: 2)
+                }
+                .buttonStyle(.plain)
+            }
+            
+            // Botón para Abrir Modal / Panel de Grabar Ruta con Telemetría
+            Button {
+                viewModel.isShowingRecordingDashboard = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "gauge.with.needle.fill")
+                        .font(.system(size: 15, weight: .bold))
+                    Text("ABRIR PANEL DE GRABACIÓN")
+                        .font(.system(size: 13, weight: .heavy))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(AppTheme.primary)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .shadow(color: AppTheme.primary.opacity(0.35), radius: 6, y: 2)
             }
             .buttonStyle(.plain)
             
@@ -393,12 +425,16 @@ public struct PortadaView: View {
                 .buttonStyle(.plain)
             }
             
-            // Lista compacta desplegable de puntos registrados
+            // Lista compacta desplegable de puntos registrados (tocar cualquiera abre detalle/edición 1:1 Android)
             if isPointsListExpanded && !viewModel.recordedPoints.isEmpty {
                 ScrollView {
                     VStack(spacing: 6) {
                         ForEach(viewModel.recordedPoints) { pt in
                             RecordedPointRowView(point: pt)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    viewModel.selectedPointForDetail = pt
+                                }
                         }
                     }
                 }

@@ -19,7 +19,49 @@ final class HikerWhistlePlayer {
     private var activePlayer: AVAudioPlayer?
     private(set) var isRepeatingEmergency: Bool = false
     
-    private init() {}
+    // MARK: - Alarma 911 de Compañero BLE (1:1 Android GpsTrackingService.startEmergencyPatternInternal)
+    private var peerAlarmTask: Task<Void, Never>?
+    private var peerAlarmPlayer: AVAudioPlayer?
+    private(set) var isPeerEmergencyAlarmPlaying: Bool = false
+    
+    // MARK: - Pitido Doppler, Chimes de Llegada y Keep-Alive en Bolsillo
+    private var dopplerPlayer: AVAudioPlayer?
+    private var chimeTask: Task<Void, Never>?
+    private var chimePlayer: AVAudioPlayer?
+    private var silentKeepAlivePlayer: AVAudioPlayer?
+    private(set) var isBackgroundNavigationActive: Bool = false
+    
+    private lazy var dopplerPipWavData: Data? = Self.makePureToneWavData(durationMs: 55, frequencyHz: 1350.0)
+    private lazy var alarmShortWavData: Data? = Self.makeWhistleWavData(durationMs: 100, frequencyHz: 2900.0)
+    private lazy var alarmLongWavData: Data? = Self.makeWhistleWavData(durationMs: 400, frequencyHz: 2900.0)
+    private lazy var silentOneSecWavData: Data? = Self.makeSilentWavData(durationMs: 1000)
+    
+    private init() {
+        #if os(iOS)
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            guard let userInfo = notification.userInfo,
+                  let typeVal = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeVal) else {
+                return
+            }
+            if type == .ended {
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    if self.isBackgroundNavigationActive || self.isPeerEmergencyAlarmPlaying || self.isRepeatingEmergency {
+                        self.configureAudioSession()
+                    }
+                    if self.isBackgroundNavigationActive {
+                        self.ensureSilentKeepAlivePlaying()
+                    }
+                }
+            }
+        }
+        #endif
+    }
     
     /// Reproduce una secuencia única de `(duración Pitido ms, pausa ms)` (1:1 Android GpsTrackingService.playSoundPattern)
     func playOnce(pattern: [(toneMs: Int, pauseMs: Int)], frequencyHz: Double = 2750.0) {
@@ -56,11 +98,134 @@ final class HikerWhistlePlayer {
         isRepeatingEmergency = false
     }
     
+    /// Inicia el bucle de alarma acústica 911 cuando un compañero cercano solicita auxilio (1:1 Android: [(100,50),(100,50),(400,100)])
+    func startPeerEmergency911Alarm() {
+        guard !isPeerEmergencyAlarmPlaying else { return }
+        isPeerEmergencyAlarmPlaying = true
+        peerAlarmTask?.cancel()
+        peerAlarmTask = Task { @MainActor in
+            configureAudioSession()
+            let steps: [(data: Data?, toneMs: Int, pauseMs: Int)] = [
+                (self.alarmShortWavData, 100, 50),
+                (self.alarmShortWavData, 100, 50),
+                (self.alarmLongWavData, 400, 100)
+            ]
+            while !Task.isCancelled && self.isPeerEmergencyAlarmPlaying {
+                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+                for step in steps {
+                    guard !Task.isCancelled && self.isPeerEmergencyAlarmPlaying else { break }
+                    if let data = step.data, let player = try? AVAudioPlayer(data: data) {
+                        player.volume = 1.0
+                        player.prepareToPlay()
+                        self.peerAlarmPlayer = player
+                        player.play()
+                    } else {
+                        AudioServicesPlaySystemSound(1005)
+                    }
+                    try? await Task.sleep(nanoseconds: UInt64(step.toneMs) * 1_000_000)
+                    self.peerAlarmPlayer?.stop()
+                    self.peerAlarmPlayer = nil
+                    guard !Task.isCancelled && self.isPeerEmergencyAlarmPlaying else { break }
+                    if step.pauseMs > 0 {
+                        try? await Task.sleep(nanoseconds: UInt64(step.pauseMs) * 1_000_000)
+                    }
+                }
+                if Task.isCancelled || !self.isPeerEmergencyAlarmPlaying { break }
+                try? await Task.sleep(nanoseconds: 550_000_000)
+            }
+            self.peerAlarmPlayer?.stop()
+            self.peerAlarmPlayer = nil
+            self.isPeerEmergencyAlarmPlaying = false
+        }
+    }
+    
+    /// Silencia la alarma acústica 911 de compañeros cercanos
+    func stopPeerEmergency911Alarm() {
+        isPeerEmergencyAlarmPlaying = false
+        peerAlarmTask?.cancel()
+        peerAlarmTask = nil
+        peerAlarmPlayer?.stop()
+        peerAlarmPlayer = nil
+    }
+    
+    /// Pitido corto tipo sonar para proximidad Doppler en Modo Guía (funciona con pantalla apagada y switch de silencio activo)
+    func playDopplerPip() {
+        guard !isPeerEmergencyAlarmPlaying && !isRepeatingEmergency else { return }
+        configureAudioSession()
+        if let player = dopplerPlayer {
+            player.stop()
+            player.currentTime = 0
+            player.play()
+            return
+        }
+        if let data = dopplerPipWavData, let player = try? AVAudioPlayer(data: data) {
+            player.volume = 0.92
+            player.prepareToPlay()
+            self.dopplerPlayer = player
+            player.play()
+        }
+    }
+    
+    /// Fanfarria / chime acústico al llegar a un punto de control o destino final (1:1 Android GpsTrackingService.kt:832, 839)
+    func playWaypointChime(isFinal: Bool) {
+        guard !isPeerEmergencyAlarmPlaying && !isRepeatingEmergency else { return }
+        chimeTask?.cancel()
+        let pattern: [(toneMs: Int, pauseMs: Int)] = isFinal
+            ? [(150, 50), (150, 50), (150, 50), (400, 100), (200, 50), (600, 200)]
+            : [(150, 50), (150, 50), (300, 100)]
+        let baseFreq = isFinal ? 1760.0 : 1580.0
+        chimeTask = Task { @MainActor in
+            configureAudioSession()
+            for (idx, step) in pattern.enumerated() {
+                guard !Task.isCancelled else { return }
+                let freq = baseFreq + Double(idx * 90)
+                if let data = Self.makePureToneWavData(durationMs: step.toneMs, frequencyHz: freq),
+                   let player = try? AVAudioPlayer(data: data) {
+                    player.volume = 0.95
+                    player.prepareToPlay()
+                    self.chimePlayer = player
+                    player.play()
+                }
+                try? await Task.sleep(nanoseconds: UInt64(step.toneMs) * 1_000_000)
+                self.chimePlayer?.stop()
+                self.chimePlayer = nil
+                guard !Task.isCancelled else { return }
+                if step.pauseMs > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(step.pauseMs) * 1_000_000)
+                }
+            }
+        }
+    }
+    
+    /// Mantiene viva la sesión de audio y los temporizadores asíncronos (Doppler / TTS) mientras Modo Guía o Grabación están activos en el bolsillo
+    func setBackgroundNavigationActive(_ active: Bool) {
+        isBackgroundNavigationActive = active
+        if active {
+            configureAudioSession()
+            ensureSilentKeepAlivePlaying()
+        } else {
+            silentKeepAlivePlayer?.stop()
+            silentKeepAlivePlayer = nil
+        }
+    }
+    
+    private func ensureSilentKeepAlivePlaying() {
+        if let existing = silentKeepAlivePlayer, existing.isPlaying {
+            return
+        }
+        guard let data = silentOneSecWavData, let player = try? AVAudioPlayer(data: data) else { return }
+        player.numberOfLoops = -1
+        player.volume = 0.01
+        player.prepareToPlay()
+        self.silentKeepAlivePlayer = player
+        player.play()
+    }
+    
     private func configureAudioSession() {
         #if os(iOS)
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
+            try session.setCategory(.playback, mode: .default, options: [.duckOthers, .mixWithOthers])
             try session.setActive(true)
         } catch {
             print("⚠️ [HikerWhistlePlayer] Error configurando AVAudioSession: \(error.localizedDescription)")
@@ -133,6 +298,63 @@ final class HikerWhistlePlayer {
         header.append(uint32LE(16)) // PCM
         header.append(uint16LE(1))  // AudioFormat = 1
         header.append(uint16LE(1))  // NumChannels = 1 (Mono)
+        header.append(uint32LE(UInt32(sampleRate)))
+        header.append(uint32LE(byteRate))
+        header.append(uint16LE(blockAlign))
+        header.append(uint16LE(bitsPerSample))
+        header.append(contentsOf: Array("data".utf8))
+        header.append(uint32LE(dataSize))
+        header.append(pcm)
+        return header
+    }
+    
+    /// Genera un tono limpio tipo sonar para pitidos Doppler y chimes de llegada
+    private static func makePureToneWavData(durationMs: Int, frequencyHz: Double) -> Data? {
+        let sampleRate = 22050
+        let totalSamples = max(1, (sampleRate * durationMs) / 1000)
+        let fadeSamples = min(totalSamples / 4, 160)
+        
+        var pcm = Data(capacity: totalSamples * 2)
+        for i in 0..<totalSamples {
+            let t = Double(i) / Double(sampleRate)
+            let wave = sin(2.0 * .pi * frequencyHz * t) + 0.18 * sin(2.0 * .pi * (frequencyHz * 2.0) * t)
+            var envelope = 1.0
+            if i < fadeSamples {
+                envelope = Double(i) / Double(max(1, fadeSamples))
+            } else if i > totalSamples - fadeSamples {
+                envelope = Double(totalSamples - i) / Double(max(1, fadeSamples))
+            }
+            let normalized = (wave / 1.18) * envelope
+            let sample = Int16(max(-32767.0, min(32767.0, normalized * 28500.0)))
+            var leSample = sample.littleEndian
+            withUnsafeBytes(of: &leSample) { pcm.append(contentsOf: $0) }
+        }
+        return wrapPcmInWavHeader(pcm: pcm, sampleRate: sampleRate)
+    }
+    
+    /// Genera un buffer PCM silencioso ultraligero (8 kHz) para mantener activa la sesión de audio en bolsillo
+    private static func makeSilentWavData(durationMs: Int) -> Data? {
+        let sampleRate = 8000
+        let totalSamples = max(1, (sampleRate * durationMs) / 1000)
+        let pcm = Data(count: totalSamples * 2)
+        return wrapPcmInWavHeader(pcm: pcm, sampleRate: sampleRate)
+    }
+    
+    private static func wrapPcmInWavHeader(pcm: Data, sampleRate: Int) -> Data {
+        let dataSize = UInt32(pcm.count)
+        let chunkSize = UInt32(36) + dataSize
+        let byteRate = UInt32(sampleRate * 2)
+        let blockAlign: UInt16 = 2
+        let bitsPerSample: UInt16 = 16
+        
+        var header = Data(capacity: 44 + pcm.count)
+        header.append(contentsOf: Array("RIFF".utf8))
+        header.append(uint32LE(chunkSize))
+        header.append(contentsOf: Array("WAVE".utf8))
+        header.append(contentsOf: Array("fmt ".utf8))
+        header.append(uint32LE(16))
+        header.append(uint16LE(1))
+        header.append(uint16LE(1))
         header.append(uint32LE(UInt32(sampleRate)))
         header.append(uint32LE(byteRate))
         header.append(uint16LE(blockAlign))

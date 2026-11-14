@@ -35,6 +35,10 @@ public final class LocationTracker: NSObject, CLLocationManagerDelegate, Locatio
     @ObservationIgnored
     public var onBeaconLocationFix: (@Sendable (Double, Double) -> Void)?
     
+    /// Callback continuo para Modo Guía (acepta precisión de bolsillo/cañón <= 90m para no perder avisos con pantalla apagada)
+    @ObservationIgnored
+    public var onGuideLocationUpdate: (@Sendable (CLLocation) -> Void)?
+    
     // MARK: - Inicialización
     public override init() {
         super.init()
@@ -110,6 +114,20 @@ public final class LocationTracker: NSObject, CLLocationManagerDelegate, Locatio
         #endif
     }
     
+    /// Activa máxima precisión y entrega continua en segundo plano durante Modo Guía o Grabación de Ruta
+    public func setHighPrecisionNavigation(_ active: Bool) {
+        locationManager.desiredAccuracy = active ? kCLLocationAccuracyBestForNavigation : kCLLocationAccuracyBest
+        locationManager.distanceFilter = active ? 2.0 : 4.0
+        #if os(iOS)
+        locationManager.allowsBackgroundLocationUpdates = true
+        locationManager.showsBackgroundLocationIndicator = true
+        locationManager.pausesLocationUpdatesAutomatically = false
+        #endif
+        if isTracking {
+            locationManager.startUpdatingLocation()
+        }
+    }
+    
     // MARK: - CLLocationManagerDelegate
     
     public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -124,11 +142,19 @@ public final class LocationTracker: NSObject, CLLocationManagerDelegate, Locatio
         let course = location.course
         let accuracy = location.horizontalAccuracy
         
-        // Permitir ubicación general y de Faro BLE incluso en interiores (<= 200m),
-        // pero exigir precisión fina (<= 25m) para grabar trazas de sendero sin ruido GPS.
+        // Permitir ubicación en vivo y en bolsillo (<= 100m siempre refresca currentLocation,
+        // o hasta 200m si han pasado >= 4s desde el último fix) para que la posición en mapa
+        // y en Modo Guía jamás se congele al guardar el iPhone en el bolsillo.
         if accuracy <= 200.0 {
             Task { @MainActor in
-                if self.currentLocation == nil || accuracy <= 35.0 || accuracy <= (self.currentLocation?.horizontalAccuracy ?? 200.0) {
+                let isFreshAfterDelay: Bool = {
+                    guard let prev = self.currentLocation else { return true }
+                    return location.timestamp.timeIntervalSince(prev.timestamp) >= 4.0
+                }()
+                if self.currentLocation == nil
+                    || accuracy <= 100.0
+                    || accuracy <= (self.currentLocation?.horizontalAccuracy ?? 200.0)
+                    || isFreshAfterDelay {
                     self.currentLocation = location
                     self.currentAltitude = alt
                     self.currentSpeedKmh = speedKmh
@@ -144,9 +170,14 @@ public final class LocationTracker: NSObject, CLLocationManagerDelegate, Locatio
             }
         }
         
-        guard accuracy <= 25.0 else { return }
+        // Evaluar Modo Guía continuamente incluso con atenuación de bolsillo / arboleda (<= 90m)
+        if accuracy <= 90.0 {
+            onGuideLocationUpdate?(location)
+        }
         
-        // Invocar el callback de traza / guiado fino cuando la precisión horizontal es óptima
+        // Exigir precisión fina (<= 30m) únicamente para grabar polilíneas limpias de rutas nuevas
+        guard accuracy <= 30.0 else { return }
+        
         onUpdateCallback?(lat, lon, alt)
     }
     
@@ -155,7 +186,16 @@ public final class LocationTracker: NSObject, CLLocationManagerDelegate, Locatio
         Task { @MainActor in
             self.authorizationStatus = status
             #if os(iOS)
-            self.isGpsReady = (status == .authorizedWhenInUse || status == .authorizedAlways)
+            let authorized = (status == .authorizedWhenInUse || status == .authorizedAlways)
+            self.isGpsReady = authorized
+            if authorized {
+                manager.allowsBackgroundLocationUpdates = true
+                manager.showsBackgroundLocationIndicator = true
+                manager.pausesLocationUpdatesAutomatically = false
+                if self.isTracking {
+                    manager.startUpdatingLocation()
+                }
+            }
             if status == .authorizedWhenInUse && isTracking {
                 // Solicitar Always si ya tenemos WhenInUse para garantizar segundo plano
                 manager.requestAlwaysAuthorization()
@@ -191,6 +231,7 @@ public final class LocationTracker: NSObject, CLLocationManagerDelegate, Locatio
         self.currentAltitude = altitude
         self.horizontalAccuracy = 5.0
         self.isGpsReady = true
+        onGuideLocationUpdate?(loc)
         onUpdateCallback?(latitude, longitude, altitude)
     }
 }

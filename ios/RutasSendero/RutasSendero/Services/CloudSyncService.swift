@@ -728,8 +728,19 @@ public final class CloudSyncService: @unchecked Sendable {
         }()
         let codigoRuta = rJson["codigo"] as? String ?? ""
         let esPublico = rJson["publico"] as? Bool ?? true
-        let tel = rJson["telefono"] as? String ?? (rJson["telefono_creador"] as? String ?? "")
-        let importDate = Int64(Date().timeIntervalSince1970 * 1000)
+        let telFromRow = firstItem["telefono_creador"] as? String ?? ""
+        let tel = (rJson["telefono"] as? String ?? "").isEmpty
+            ? (telFromRow.isEmpty ? (rJson["telefono_creador"] as? String ?? "") : telFromRow)
+            : (rJson["telefono"] as? String ?? "")
+        
+        let existingRoute = try? await repository.getRoute(byId: id)
+        let existingPoints = (try? await repository.getPoints(forRouteId: id)) ?? []
+        let importDate: Int64? = {
+            if let existing = existingRoute {
+                return existing.importDate
+            }
+            return Int64(Date().timeIntervalSince1970 * 1000)
+        }()
         
         let route = Route(
             id: id,
@@ -751,25 +762,52 @@ public final class CloudSyncService: @unchecked Sendable {
             accessCode: codigoRuta,
             isPublic: esPublico,
             syncTimestamp: Int64(Date().timeIntervalSince1970 * 1000),
-            creatorPhone: tel,
+            creatorPhone: tel.isEmpty ? (existingRoute?.creatorPhone ?? "") : tel,
             importDate: importDate
         )
+        
+        // Limpiar puntos y traza previos para evitar duplicación o conservar puntos eliminados en el servidor (1:1 Android d5a3eac)
+        try await repository.deletePointsAndTrace(forRouteId: id)
         
         // Guardar Ruta en SwiftData
         try await repository.save(route: route)
         
-        // Mapear y Guardar Puntos
+        // Mapear, Filtrar, Deduplicar y Guardar Puntos (1:1 Android downloadRoute)
         if let pArray = root["puntos"] as? [[String: Any]] {
-            for (idx, pObj) in pArray.enumerated() {
-                let pId = pObj["id"] as? Int ?? (idx + 1)
+            var seenKeys = Set<String>()
+            var deduplicatedRaw: [[String: Any]] = []
+            for pObj in pArray {
+                let pDesc = pObj["descripcion"] as? String ?? ""
+                if pDesc == "Pausado por vehículo" || pDesc == "Reanudando a pie" {
+                    continue
+                }
+                let pTimestamp = pObj["fecha_hora"] as? String ?? ""
+                let pLat = pObj["latitud"] as? Double ?? 0.0
+                let pLon = pObj["longitud"] as? Double ?? 0.0
+                let dedupKey = "\(pTimestamp)_\(String(format: "%.6f", pLat))_\(String(format: "%.6f", pLon))"
+                if !seenKeys.contains(dedupKey) {
+                    seenKeys.insert(dedupKey)
+                    deduplicatedRaw.append(pObj)
+                }
+            }
+            
+            for (idx, pObj) in deduplicatedRaw.enumerated() {
+                let pId = idx + 1
                 let pTimestamp = pObj["fecha_hora"] as? String ?? ""
                 let pLat = pObj["latitud"] as? Double ?? 0.0
                 let pLon = pObj["longitud"] as? Double ?? 0.0
                 let pAlt = pObj["altitud"] as? Double ?? 0.0
                 let pDesc = pObj["descripcion"] as? String ?? ""
-                let pFoto = pObj["foto_path"] as? String
+                var pFoto = pObj["foto_path"] as? String
+                if (pFoto == nil || pFoto?.isEmpty == true),
+                   let matchedLocal = existingPoints.first(where: {
+                       abs($0.latitude - pLat) < 0.00005 && abs($0.longitude - pLon) < 0.00005
+                   }),
+                   let localPhoto = matchedLocal.photoUrl, !localPhoto.isEmpty {
+                    pFoto = localPhoto
+                }
                 let pFin = (pObj["es_fin_ruta"] as? Int ?? 0) != 0 || (pObj["es_fin_ruta"] as? Bool ?? false)
-                let pCon = (pObj["tiene_conectividad"] as? Int ?? 1) != 0
+                let pCon = (pObj["tiene_conectividad"] as? Int ?? 1) != 0 || (pObj["tiene_conectividad"] as? Bool ?? false)
                 var pEstado = (pObj["estado"] as? NSNumber)?.intValue ?? (pObj["estado"] as? Int ?? (Int(pObj["estado"] as? String ?? "") ?? 1))
                 if pEstado == 1 && !pDesc.isEmpty {
                     let lower = pDesc.lowercased()
@@ -813,7 +851,7 @@ public final class CloudSyncService: @unchecked Sendable {
         if let tArray = root["traza"] as? [[String: Any]] {
             var traceBatch: [RouteTrace] = []
             for (idx, tObj) in tArray.enumerated() {
-                let tId = tObj["id"] as? Int ?? (idx + 1)
+                let tId = idx + 1
                 let tOrder = tObj["orden"] as? Int ?? (idx + 1)
                 let tLat = tObj["latitud"] as? Double ?? 0.0
                 let tLon = tObj["longitud"] as? Double ?? 0.0
@@ -836,6 +874,100 @@ public final class CloudSyncService: @unchecked Sendable {
         }
         
         return route
+    }
+    
+    /// Revisa al iniciar la aplicación o al sincronizar manualmente si alguna ruta local fue modificada
+    /// en el servidor (ej. el administrador eliminó puntos, editó un punto o marcó es_fin_ruta = 1)
+    /// y la actualiza automáticamente reemplazando los puntos locales (1:1 Android syncUpdatedRoutesFromServer).
+    public func syncUpdatedRoutesFromServer(
+        localRoutes: [Route],
+        repository: RutasRepositoryProtocol
+    ) async -> [String] {
+        var updatedRouteNames: [String] = []
+        let symmetricKey = SymmetricKey(data: secretKeyBytes)
+        
+        for route in localRoutes {
+            do {
+                let localPoints = try await repository.getPoints(forRouteId: route.id)
+                guard !localPoints.isEmpty else { continue }
+                
+                guard let encodedId = route.id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                      let url = URL(string: "\(baseUrl)/rutas?id=eq.\(encodedId)&select=datos_encriptados,telefono_creador&limit=1") else {
+                    continue
+                }
+                
+                let (data, httpResponse) = try await executeGet(url: url)
+                guard (200...299).contains(httpResponse.statusCode),
+                      let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                      let firstItem = jsonArray.first,
+                      let encryptedBase64 = firstItem["datos_encriptados"] as? String,
+                      let encryptedData = Data(base64Encoded: encryptedBase64) else {
+                    continue
+                }
+                
+                let sealedBox = try AES.GCM.SealedBox(combined: encryptedData)
+                let decryptedData = try AES.GCM.open(sealedBox, using: symmetricKey)
+                guard let root = try JSONSerialization.jsonObject(with: decryptedData) as? [String: Any],
+                      let rJson = root["ruta"] as? [String: Any],
+                      let pArray = root["puntos"] as? [[String: Any]] else {
+                    continue
+                }
+                
+                var seenKeys = Set<String>()
+                var serverPoints: [[String: Any]] = []
+                for pObj in pArray {
+                    let pDesc = pObj["descripcion"] as? String ?? ""
+                    if pDesc == "Pausado por vehículo" || pDesc == "Reanudando a pie" {
+                        continue
+                    }
+                    let pTimestamp = pObj["fecha_hora"] as? String ?? ""
+                    let pLat = pObj["latitud"] as? Double ?? 0.0
+                    let pLon = pObj["longitud"] as? Double ?? 0.0
+                    let dedupKey = "\(pTimestamp)_\(String(format: "%.6f", pLat))_\(String(format: "%.6f", pLon))"
+                    if !seenKeys.contains(dedupKey) {
+                        seenKeys.insert(dedupKey)
+                        serverPoints.append(pObj)
+                    }
+                }
+                
+                guard !serverPoints.isEmpty else { continue }
+                
+                let serverName = rJson["nombre"] as? String ?? route.name
+                let serverDesc = rJson["descripcion"] as? String ?? route.descriptionText
+                let metadataChanged = (serverName != route.name) || (serverDesc != route.descriptionText)
+                let countChanged = serverPoints.count != localPoints.count
+                let pointsChanged: Bool = {
+                    guard !countChanged else { return true }
+                    for idx in serverPoints.indices {
+                        let sObj = serverPoints[idx]
+                        let lPt = localPoints[idx]
+                        let sFin = (sObj["es_fin_ruta"] as? Int ?? 0) != 0 || (sObj["es_fin_ruta"] as? Bool ?? false)
+                        let sDesc = sObj["descripcion"] as? String ?? ""
+                        let sEst = (sObj["estado"] as? NSNumber)?.intValue ?? (sObj["estado"] as? Int ?? 1)
+                        let sLat = sObj["latitud"] as? Double ?? 0.0
+                        let sLon = sObj["longitud"] as? Double ?? 0.0
+                        if sFin != lPt.isRouteEnd ||
+                            sDesc != lPt.descriptionText ||
+                            sEst != lPt.estado ||
+                            abs(sLat - lPt.latitude) > 0.00001 ||
+                            abs(sLon - lPt.longitude) > 0.00001 {
+                            return true
+                        }
+                    }
+                    return false
+                }()
+                
+                if metadataChanged || countChanged || pointsChanged {
+                    print("☁️ [CloudSync] Ruta '\(route.name)' (\(route.id)) modificada en el servidor (local=\(localPoints.count) pts vs servidor=\(serverPoints.count) pts). Actualizando...")
+                    _ = try await downloadAndSaveRoute(routeId: route.id, into: repository)
+                    updatedRouteNames.append(serverName)
+                }
+            } catch {
+                print("⚠️ [CloudSync] No se pudo verificar actualización de ruta \(route.id) en servidor: \(error.localizedDescription)")
+            }
+        }
+        
+        return updatedRouteNames
     }
     
     // MARK: - Credenciales Cloudinary Ofuscadas (1:1 con Android SecureCredentialsManager.kt XOR 0x5A)

@@ -99,6 +99,13 @@ public struct MainScreen: View {
                     .zIndex(100)
             }
             
+            // 4b. Diálogo de Confirmación para Finalizar Ruta (Riel Deslizante + Palabra Clave 1:1 Android d5a3eac)
+            if viewModel.isShowingFinishRouteConfirm {
+                ConfirmFinishRouteDialogView(viewModel: viewModel)
+                    .transition(.opacity)
+                    .zIndex(140)
+            }
+            
             // 5. Alerta Persistente de Auxilio 911 de Compañero Cercano con opción directa de Ver o Silenciar Alarma (1:1 Android)
             if let emergencyPeer = viewModel.activeUnacknowledgedEmergencyPeer {
                 let peerId = emergencyPeer.beaconId.lowercased()
@@ -321,30 +328,222 @@ public struct MainScreen: View {
         } message: {
             Text("RutasSendero v1.0 (iOS)\nSistema de Rastreo Satelital y Balizas BLE para Senderismo y Rescate.\nDesarrollado para Colima y Villa de Álvarez.")
         }
-        // Alerta de confirmación para finalizar ruta
-        .alert("Finalizar Ruta", isPresented: $viewModel.isShowingFinishRouteConfirm) {
-            Button("Cancelar", role: .cancel) {}
-            Button("Tomar Foto Fin y Guardar") {
-                viewModel.startQuickPointCapture(estado: 1, isFinRuta: true)
-            }
-            Button("Finalizar sin Foto", role: .destructive) {
-                viewModel.finishRoute(force: true)
-            }
-        } message: {
-            Text("¿Deseas dar por concluida la grabación de '\(viewModel.activeRoute?.name ?? "esta ruta")'? Puedes tomar la foto del punto final o guardar directamente.")
-        }
         // Alerta de distancia mínima de sendero (< 4.0 km)
         .alert("Ruta Demasiado Corta", isPresented: $viewModel.isShowingRouteTooShortAlert) {
-            Button("Continuar Caminando", role: .cancel) {}
-            Button("Tomar Foto Fin y Guardar") {
-                viewModel.startQuickPointCapture(estado: 1, isFinRuta: true)
-            }
-            Button("Finalizar sin Foto", role: .destructive) {
-                viewModel.finishRoute(force: true)
+            Button("Seguir Haciendo la Ruta", role: .cancel) {}
+            Button("Finalizar Ruta", role: .destructive) {
+                viewModel.isShowingFinishRouteConfirm = true
             }
         } message: {
             let currentKm = viewModel.totalDistanceMeters / 1000.0
             Text(String(format: "La distancia registrada (%.2f km) es menor a los %.1f km recomendados para senderismo oficial. ¿Deseas finalizar de todos modos?", currentKm, viewModel.minimumRouteDistanceKm))
+        }
+    }
+}
+
+// MARK: - Diálogo de Confirmación de Fin de Ruta (Riel Deslizante + Palabra Clave 1:1 Android MainScreen.kt:3301-3464)
+
+private struct ConfirmFinishRouteDialogView: View {
+    @Bindable var viewModel: MainViewModel
+    @State private var confirmText: String = ""
+    @State private var dragOffset: CGFloat = 0
+    @State private var trackWidth: CGFloat = 0
+    
+    private let thumbSize: CGFloat = 46
+    private let thumbPadding: CGFloat = 4
+    private let validCloseWords: Set<String> = ["correcto", "cerrar", "bye", "adios", "fin", "ok"]
+    
+    private var normalizedConfirm: String {
+        confirmText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .folding(options: .diacriticInsensitive, locale: .current)
+    }
+    
+    private var isKeywordValid: Bool {
+        validCloseWords.contains(normalizedConfirm)
+    }
+    
+    private func triggerFinalizeRouteWithCamera() {
+        viewModel.isShowingFinishRouteConfirm = false
+        viewModel.startQuickPointCapture(estado: 1, isFinRuta: true)
+    }
+    
+    private func triggerFinalizeRouteWithoutCamera() {
+        viewModel.isShowingFinishRouteConfirm = false
+        viewModel.finishRoute(force: true)
+    }
+    
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.68)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    viewModel.isShowingFinishRouteConfirm = false
+                }
+            
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Finalizar Ruta")
+                    .font(.system(size: 19, weight: .bold))
+                    .foregroundStyle(AppTheme.alert)
+                
+                Text("¿Estás seguro de que deseas finalizar la ruta? Se tomará una fotografía final y se guardará el recorrido.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AppTheme.textSecondary)
+                
+                // Opción 1: Riel de "Desliza para finalizar >>>" (a prueba de roces en el bolsillo, 1:1 Android)
+                GeometryReader { geo in
+                    let totalWidth = geo.size.width
+                    let thumbTotal = thumbSize + thumbPadding * 2
+                    let maxDrag = max(1, totalWidth - thumbTotal)
+                    let slideFraction = min(1, max(0, dragOffset / maxDrag))
+                    
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 27)
+                            .fill(AppTheme.cardMuted)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 27)
+                                    .stroke(AppTheme.alert.opacity(0.8), lineWidth: 1.5)
+                            )
+                        
+                        // Relleno de progreso conforme desliza
+                        RoundedRectangle(cornerRadius: 27)
+                            .fill(AppTheme.alert.opacity(0.4))
+                            .frame(width: totalWidth * slideFraction)
+                        
+                        Text("Desliza para finalizar  >>>")
+                            .font(.system(size: 13, weight: .heavy))
+                            .foregroundStyle(AppTheme.textPrimary.opacity(max(0.2, 1.0 - Double(slideFraction) * 0.7)))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.leading, 42)
+                            .padding(.trailing, 12)
+                        
+                        Circle()
+                            .fill(AppTheme.alert)
+                            .frame(width: thumbSize, height: thumbSize)
+                            .overlay(
+                                Image(systemName: "arrow.right")
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundStyle(.white)
+                            )
+                            .padding(thumbPadding)
+                            .offset(x: dragOffset)
+                            .gesture(
+                                DragGesture(minimumDistance: 0)
+                                    .onChanged { value in
+                                        let clamped = min(max(0, value.translation.width), maxDrag)
+                                        dragOffset = clamped
+                                    }
+                                    .onEnded { _ in
+                                        if dragOffset >= maxDrag * 0.85 {
+                                            dragOffset = maxDrag
+                                            #if os(iOS)
+                                            let generator = UIImpactFeedbackGenerator(style: .heavy)
+                                            generator.impactOccurred()
+                                            #endif
+                                            triggerFinalizeRouteWithCamera()
+                                        } else {
+                                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                                dragOffset = 0
+                                            }
+                                        }
+                                    }
+                            )
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 27))
+                    .onAppear {
+                        trackWidth = totalWidth
+                    }
+                }
+                .frame(height: 54)
+                
+                // Opción 2: Palabra clave de confirmación (1:1 Android)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("O escribe 'correcto', 'cerrar', 'fin', 'bye' o 'adios':")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(AppTheme.textSecondary)
+                    
+                    TextField("correcto / cerrar / fin / bye / adios", text: $confirmText)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(AppTheme.cardMuted)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(isKeywordValid ? AppTheme.alert : AppTheme.cardBorder, lineWidth: 1.5)
+                        )
+                }
+                
+                HStack(spacing: 10) {
+                    Button {
+                        viewModel.isShowingFinishRouteConfirm = false
+                    } label: {
+                        Text("Cancelar")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(AppTheme.textSecondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(AppTheme.cardMuted)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                    
+                    if isKeywordValid {
+                        Button {
+                            triggerFinalizeRouteWithoutCamera()
+                        } label: {
+                            Text("Cerrar sin foto")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 11)
+                                .background(AppTheme.cardMuted.opacity(0.9))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .stroke(AppTheme.alert.opacity(0.7), lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    Button {
+                        triggerFinalizeRouteWithCamera()
+                    } label: {
+                        Text("Sí, finalizar")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(isKeywordValid ? AppTheme.alert : AppTheme.alert.opacity(0.35))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!isKeywordValid)
+                }
+                .padding(.top, 4)
+            }
+            .padding(20)
+            .background(AppTheme.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(AppTheme.alert.opacity(0.5), lineWidth: 1.5)
+            )
+            .shadow(color: .black.opacity(0.45), radius: 14, y: 6)
+            .padding(.horizontal, 22)
+        }
+        .onAppear {
+            // Alerta sonora y vibración al abrir el diálogo de finalización (1:1 Android MainScreen.kt:3325-3335)
+            HikerWhistlePlayer.shared.playOnce(pattern: [(2000, 100)])
+            #if os(iOS)
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.warning)
+            #endif
         }
     }
 }

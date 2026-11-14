@@ -915,6 +915,12 @@ public final class MainViewModel: @unchecked Sendable {
         syncBackgroundNavigationMode()
         
         if var route = activeRoute {
+            // Garantizar que el último punto quede marcado como Fin de Ruta (es_fin_ruta = 1) al cerrar la ruta (1:1 Android)
+            if !recordedPoints.isEmpty && !recordedPoints.contains(where: { $0.isRouteEnd }) {
+                let lastIdx = recordedPoints.count - 1
+                recordedPoints[lastIdx].isRouteEnd = true
+            }
+            
             let dfIso = DateFormatter()
             dfIso.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
             dfIso.locale = Locale(identifier: "en_US_POSIX")
@@ -1288,6 +1294,11 @@ public final class MainViewModel: @unchecked Sendable {
                 }
                 await self.loadLocalRoutes()
                 print("✅ [checkSenderistaRegistration] Perfil existente: \(profile.name) (Rol: \(profile.role))")
+                
+                // Actualizar en segundo plano cualquier ruta local que haya sido modificada en el servidor (1:1 Android)
+                Task { @MainActor [weak self] in
+                    await self?.syncUpdatedRoutesFromCloud()
+                }
             } else {
                 // Primera vez: No existe perfil local en SwiftData -> Forzar Registro de Senderista
                 await MainActor.run {
@@ -1887,6 +1898,29 @@ public final class MainViewModel: @unchecked Sendable {
     
     // MARK: - Sincronización Manual con la Nube (1:1 Android)
     
+    /// Revisa contra PostgREST si alguna ruta local fue modificada en el servidor (ej. puntos borrados por el administrador
+    /// o cierre de ruta en el servidor) y actualiza la copia local en SwiftData (1:1 Android syncUpdatedRoutesFromServer).
+    @MainActor
+    public func syncUpdatedRoutesFromCloud() async -> [String] {
+        guard let repo = rutasRepository, recordingState == .stopped else { return [] }
+        let currentRoutes = (try? await repo.getAllRoutes()) ?? availableLocalRoutes
+        guard !currentRoutes.isEmpty else { return [] }
+        
+        let updatedNames = await CloudSyncService.shared.syncUpdatedRoutesFromServer(
+            localRoutes: currentRoutes,
+            repository: repo
+        )
+        if !updatedNames.isEmpty {
+            await loadLocalRoutes()
+            if let activeId = activeRoute?.id,
+               let refreshedRoute = try? await repo.getRoute(byId: activeId) {
+                await selectRouteForTracking(refreshedRoute, reversed: isVisorReversed, showMap: showMapScreen)
+            }
+            saveStatusMessage = "Rutas actualizadas desde el servidor: \(updatedNames.joined(separator: ", "))"
+        }
+        return updatedNames
+    }
+    
     @MainActor
     public func triggerManualCloudSync() async {
         isSyncingRoutes = true
@@ -1894,8 +1928,11 @@ public final class MainViewModel: @unchecked Sendable {
         
         await loadLocalRoutes()
         
+        // 1. Primero actualizar rutas locales que hayan sido modificadas por el administrador en el servidor
+        let updatedFromServer = await syncUpdatedRoutesFromCloud()
+        
         let userPhone = currentHikerProfile?.phone ?? ""
-        var syncedAny = false
+        var syncedAny = !updatedFromServer.isEmpty
         
         for route in availableLocalRoutes where route.isOwnRoute(userPhone: userPhone) {
             let ok = await uploadRouteToCloud(route)
@@ -1909,9 +1946,13 @@ public final class MainViewModel: @unchecked Sendable {
         
         await loadLocalRoutes()
         
-        self.saveStatusMessage = syncedAny
-            ? "¡Rutas sincronizadas exitosamente con la nube!"
-            : "Tus rutas locales ya están actualizadas con la nube."
+        if !updatedFromServer.isEmpty {
+            self.saveStatusMessage = "Rutas actualizadas desde el servidor: \(updatedFromServer.joined(separator: ", "))"
+        } else {
+            self.saveStatusMessage = syncedAny
+                ? "¡Rutas sincronizadas exitosamente con la nube!"
+                : "Tus rutas locales ya están actualizadas con la nube."
+        }
     }
     
     @MainActor

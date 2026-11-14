@@ -307,8 +307,9 @@ public struct HeaderBarView: View {
                 .buttonStyle(.plain)
             }
             
-            // Botón contextual: Emergencia 911 (Solo en Modo Guía con ruta activa o cuando hay emergencia activa)
-            if (viewModel.activeRole == .guia && viewModel.activeRoute != nil) || viewModel.isEmergency911Active {
+            // Botón contextual: Emergencia 911 (Solo en Modo Guía con ruta activa con información o cuando hay emergencia activa, 1:1 Android 6f224ff)
+            let hasActiveRouteWithInfo = viewModel.activeRoute != nil && (!viewModel.recordedPoints.isEmpty || !viewModel.recordedTrace.isEmpty)
+            if (viewModel.activeRole == .guia && hasActiveRouteWithInfo) || viewModel.isEmergency911Active {
                 Emergency911HeaderButton(viewModel: viewModel)
             }
             

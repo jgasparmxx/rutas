@@ -1130,6 +1130,119 @@ object CloudSyncManager {
     }
 
     /**
+     * Revisa las rutas almacenadas localmente contra el servidor PostgREST al iniciar la app
+     * o al sincronizar manualmente. Si una ruta fue modificada en el servidor (por ejemplo,
+     * el administrador eliminó puntos, editó descripciones o cerró un punto final),
+     * re-importa la versión actualizada del servidor reemplazando los puntos locales.
+     */
+    suspend fun syncUpdatedRoutesFromServer(
+        context: Context,
+        db: RutasDatabase,
+        userPhone: String
+    ): List<String> = withContext(Dispatchers.IO) {
+        val updatedRouteNames = mutableListOf<String>()
+        val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
+        val sdfIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+
+        try {
+            val localRoutes = db.rutasDao().getAllRutas()
+            for (ruta in localRoutes) {
+                try {
+                    val localPuntos = db.rutasDao().getPuntosForRuta(ruta.id)
+                    if (localPuntos.isEmpty()) continue
+
+                    val encodedId = URLEncoder.encode(ruta.id, "UTF-8")
+                    val jsonStr = executeGet("rutas?id=eq.$encodedId&select=datos_encriptados,telefono_creador&limit=1")
+                    val array = JSONArray(jsonStr)
+                    if (array.length() == 0) continue
+
+                    val routeObj = array.getJSONObject(0)
+                    val encryptedBase64 = if (routeObj.isNull("datos_encriptados")) null else routeObj.getString("datos_encriptados")
+                    if (encryptedBase64.isNullOrEmpty()) continue
+
+                    val encryptedBytes = Base64.decode(encryptedBase64, Base64.NO_WRAP)
+                    val decryptedJson = CryptoUtils.decrypt(encryptedBytes)
+                    val root = JSONObject(decryptedJson)
+                    val rJson = root.optJSONObject("ruta") ?: continue
+                    val pArray = root.optJSONArray("puntos") ?: continue
+
+                    data class TempCheckPunto(val fechaHoraMillis: Long, val originalId: Int, val pObj: JSONObject)
+                    val tempPuntos = mutableListOf<TempCheckPunto>()
+                    for (i in 0 until pArray.length()) {
+                        val pObj = pArray.getJSONObject(i)
+                        val desc = pObj.optString("descripcion", "")
+                        if (desc == "Pausado por vehículo" || desc == "Reanudando a pie") continue
+
+                        val originalId = pObj.optInt("id", i)
+                        val fechaHoraStr = pObj.optString("fecha_hora", "")
+                        val millis = try {
+                            if (fechaHoraStr.isNotEmpty()) {
+                                sdf.parse(fechaHoraStr)?.time
+                                    ?: sdfIso.parse(fechaHoraStr.removeSuffix("Z"))?.time
+                                    ?: 0L
+                            } else 0L
+                        } catch (e: Exception) {
+                            try {
+                                sdfIso.parse(fechaHoraStr.removeSuffix("Z"))?.time ?: 0L
+                            } catch (e2: Exception) {
+                                0L
+                            }
+                        }
+                        tempPuntos.add(TempCheckPunto(millis, originalId, pObj))
+                    }
+
+                    tempPuntos.sortWith(compareBy({ it.fechaHoraMillis }, { it.originalId }))
+                    val uniqueServerPuntos = tempPuntos.distinctBy {
+                        "${it.fechaHoraMillis}_${it.pObj.optDouble("latitud", 0.0)}_${it.pObj.optDouble("longitud", 0.0)}"
+                    }
+
+                    if (uniqueServerPuntos.isEmpty()) continue
+
+                    val serverNombre = rJson.optString("nombre", ruta.nombre)
+                    val serverDesc = rJson.optString("descripcion", ruta.descripcion)
+                    val metadataChanged = serverNombre != ruta.nombre || serverDesc != ruta.descripcion
+                    val countChanged = uniqueServerPuntos.size != localPuntos.size
+                    val pointsChanged = !countChanged && uniqueServerPuntos.indices.any { idx ->
+                        val sObj = uniqueServerPuntos[idx].pObj
+                        val lPt = localPuntos[idx]
+                        val sFin = sObj.optBoolean("es_fin_ruta", false) || sObj.optInt("es_fin_ruta", 0) != 0
+                        val sDesc = sObj.optString("descripcion", "")
+                        val sEst = sObj.optInt("estado", 1)
+                        val sLat = sObj.optDouble("latitud", 0.0)
+                        val sLon = sObj.optDouble("longitud", 0.0)
+                        sFin != lPt.esFinRuta ||
+                            sDesc != lPt.descripcion ||
+                            sEst != lPt.estado ||
+                            kotlin.math.abs(sLat - lPt.latitud) > 0.00001 ||
+                            kotlin.math.abs(sLon - lPt.longitud) > 0.00001
+                    }
+
+                    if (metadataChanged || countChanged || pointsChanged) {
+                        Log.i(
+                            TAG,
+                            "Ruta '${ruta.nombre}' (${ruta.id}) actualizada en el servidor " +
+                                "(local=${localPuntos.size} pts vs servidor=${uniqueServerPuntos.size} pts). Sincronizando..."
+                        )
+                        val targetPhone = if (ruta.fechaImportacion == null) {
+                            ruta.telefono.ifEmpty { userPhone }
+                        } else {
+                            null
+                        }
+                        downloadRoute(context, db, ruta.id, targetPhone = targetPhone) {}
+                        updatedRouteNames.add(serverNombre)
+                    }
+                } catch (routeEx: Exception) {
+                    Log.w(TAG, "No se pudo verificar actualización de ruta ${ruta.id} en servidor: ${routeEx.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error en syncUpdatedRoutesFromServer: ${e.message}", e)
+        }
+
+        updatedRouteNames
+    }
+
+    /**
      * Verifica si una ruta local está descargada correctamente, incluyendo sus fotos.
      */
     suspend fun verifyRouteDownloadedCorrectly(context: Context, db: RutasDatabase, routeId: String): Boolean = withContext(Dispatchers.IO) {

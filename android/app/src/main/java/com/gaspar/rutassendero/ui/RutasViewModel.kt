@@ -1989,6 +1989,27 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
+                // 1.5. Actualizar rutas locales que hayan sido modificadas en el servidor (ej. puntos borrados o editados por el administrador)
+                val updatedFromServer = com.gaspar.rutassendero.sync.CloudSyncManager.syncUpdatedRoutesFromServer(context, db, userPhone)
+                if (updatedFromServer.isNotEmpty()) {
+                    val activeId = GpsTrackingService.selectedRoute.value?.id
+                    if (activeId != null) {
+                        val refreshed = db.rutasDao().getRutaById(activeId)
+                        if (refreshed != null) {
+                            withContext(Dispatchers.Main) {
+                                GpsTrackingService.setSelectedRoute(refreshed)
+                            }
+                        }
+                    }
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            "Rutas actualizadas desde el servidor: ${updatedFromServer.joinToString(", ")}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+
                 // 2. Sincronizar participaciones de salidas pendientes
                 if (senderista != null) {
                     val pendingOutings = db.eventosDao().getInvitacionesAceptadas().filter { !it.sincronizadoConNube }
@@ -2075,6 +2096,27 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 if (!syncedAny) {
                     withContext(Dispatchers.Main) {
                         android.widget.Toast.makeText(context, "Todas tus rutas finalizadas ya están sincronizadas.", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+                // 1.5. Actualizar rutas locales que hayan sido modificadas en el servidor (ej. puntos borrados o editados por el administrador)
+                val updatedFromServer = com.gaspar.rutassendero.sync.CloudSyncManager.syncUpdatedRoutesFromServer(context, db, userPhone)
+                if (updatedFromServer.isNotEmpty()) {
+                    val activeId = GpsTrackingService.selectedRoute.value?.id
+                    if (activeId != null) {
+                        val refreshed = db.rutasDao().getRutaById(activeId)
+                        if (refreshed != null) {
+                            withContext(Dispatchers.Main) {
+                                GpsTrackingService.setSelectedRoute(refreshed)
+                            }
+                        }
+                    }
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            "Rutas actualizadas desde el servidor: ${updatedFromServer.joinToString(", ")}",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 }
 

@@ -344,6 +344,7 @@ public protocol RutasRepositoryProtocol: Sendable {
     func save(route: Route) async throws
     func save(point: RoutePoint) async throws
     func save(traceBatch: [RouteTrace]) async throws
+    func deletePointsAndTrace(forRouteId routeId: String) async throws
     func deleteRoute(byId id: String) async throws
 }
 

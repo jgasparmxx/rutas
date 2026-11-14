@@ -168,6 +168,22 @@ public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepo
         try modelContext.save()
     }
     
+    public func deletePointsAndTrace(forRouteId routeId: String) async throws {
+        let descriptor = FetchDescriptor<SDCacheRuta>(predicate: #Predicate { $0.id == routeId })
+        guard let sdRoute = try modelContext.fetch(descriptor).first else { return }
+        let oldPoints = Array(sdRoute.puntos)
+        let oldTraces = Array(sdRoute.trazas)
+        for pt in oldPoints {
+            modelContext.delete(pt)
+        }
+        for tr in oldTraces {
+            modelContext.delete(tr)
+        }
+        sdRoute.puntos.removeAll()
+        sdRoute.trazas.removeAll()
+        try modelContext.save()
+    }
+    
     public func deleteRoute(byId id: String) async throws {
         let descriptor = FetchDescriptor<SDCacheRuta>(predicate: #Predicate { $0.id == id })
         if let sdRoute = try modelContext.fetch(descriptor).first {

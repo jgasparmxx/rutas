@@ -971,20 +971,7 @@ fun MainScreen(
                                     )
                                 }
 
-                                if (currentAppRole == "visor" && selectedRoute != null && selectedRoutePoints.isNotEmpty() && !isVirtualTourActive) {
-                                    IconButton(onClick = {
-                                        isVirtualTourActive = true
-                                        isVirtualTourPaused = false
-                                        virtualTourIndex = 0
-                                        showVirtualTourPhotoCard = true
-                                    }) {
-                                        Icon(
-                                            imageVector = Icons.Default.PlayArrow,
-                                            contentDescription = "Iniciar Simulación",
-                                            tint = colorAzulCeleste
-                                        )
-                                    }
-                                }
+                                // Botón Play oculto en el header: se inicia desde el menú del sistema ("Iniciar Recorrido Virtual")
 
                                 IconButton(onClick = { mapForceRecomposeKey++ }) {
                                     Icon(
@@ -3808,8 +3795,9 @@ fun HeaderBar(
             }
 
             // Botón Derecho: Menú de Aplicación / Cerrar
+            val hasActiveRouteWithInfo = selectedRoute != null && (points.isNotEmpty() || tracePoints.isNotEmpty())
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (currentAppRole == "guia") {
+                if (currentAppRole == "guia" && (hasActiveRouteWithInfo || is911Active)) {
                     var clicks911 by remember { mutableStateOf(0) }
                     LaunchedEffect(clicks911) {
                         if (clicks911 > 0) {
@@ -3841,29 +3829,6 @@ fun HeaderBar(
                 }
                 
                 var isRightMenuExpanded by remember { mutableStateOf(false) }
-
-                // Botón Play de Recorrido Virtual estilo grabadora (en modo Visor cuando hay ruta con puntos)
-                if (currentAppRole == "visor" && selectedRoute != null && points.isNotEmpty()) {
-                    val colorAzulCeleste = Color(0xFF38BDF8)
-                    val colorAzulCelesteDark = Color(0xFF0284C7)
-                    IconButton(
-                        onClick = onVirtualTourClick,
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = if (isVirtualTourActive) colorAzulCelesteDark else ColorTekinsCardMuted,
-                            contentColor = if (isVirtualTourActive) Color.White else colorAzulCeleste
-                        ),
-                        modifier = Modifier
-                            .size(44.dp)
-                            .padding(end = 4.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (isVirtualTourActive) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (isVirtualTourActive) "Pausar Simulación" else "Iniciar Simulación",
-                            tint = if (isVirtualTourActive) Color.White else colorAzulCeleste,
-                            modifier = Modifier.size(26.dp)
-                        )
-                    }
-                }
 
                 // Ocultar botón de bolsillo cuando estés en la opción de visor
                 if (selectedRoute != null && currentAppRole != "visor") {

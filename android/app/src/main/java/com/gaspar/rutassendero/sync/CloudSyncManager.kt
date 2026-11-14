@@ -1005,6 +1005,7 @@ object CloudSyncManager {
         data class TempPunto(val fechaHoraMillis: Long, val originalId: Int, val pObj: JSONObject)
         val tempPuntos = mutableListOf<TempPunto>()
         val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
+        val sdfIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
         for (i in 0 until pArray.length()) {
             val pObj = pArray.getJSONObject(i)
             val desc = pObj.optString("descripcion", "")
@@ -1016,9 +1017,17 @@ object CloudSyncManager {
             val originalId = pObj.optInt("id", i)
             val fechaHoraStr = pObj.optString("fecha_hora", "")
             val millis = try {
-                if (fechaHoraStr.isNotEmpty()) sdf.parse(fechaHoraStr)?.time ?: 0L else 0L
+                if (fechaHoraStr.isNotEmpty()) {
+                    sdf.parse(fechaHoraStr)?.time
+                        ?: sdfIso.parse(fechaHoraStr.removeSuffix("Z"))?.time
+                        ?: 0L
+                } else 0L
             } catch (e: Exception) {
-                0L
+                try {
+                    sdfIso.parse(fechaHoraStr.removeSuffix("Z"))?.time ?: 0L
+                } catch (e2: Exception) {
+                    0L
+                }
             }
             tempPuntos.add(TempPunto(millis, originalId, pObj))
         }
@@ -1084,8 +1093,8 @@ object CloudSyncManager {
                 altitud = pObj.optDouble("altitud", 0.0),
                 descripcion = pObj.optString("descripcion", ""),
                 fotoPath = localPath,
-                esFinRuta = pObj.optBoolean("es_fin_ruta", false),
-                tieneConectividad = pObj.optBoolean("tiene_conectividad", false),
+                esFinRuta = pObj.optBoolean("es_fin_ruta", false) || pObj.optInt("es_fin_ruta", 0) != 0,
+                tieneConectividad = pObj.optBoolean("tiene_conectividad", false) || pObj.optInt("tiene_conectividad", 0) != 0,
                 estado = pObj.optInt("estado", 1)
             ))
         }
@@ -1104,12 +1113,10 @@ object CloudSyncManager {
             ))
         }
 
-        // Guardar transaccionalmente en Room
+        // Guardar transaccionalmente en Room (siempre limpiando puntos/traza previos para evitar duplicación por concurrencia)
         db.withTransaction {
-            if (existing != null) {
-                db.rutasDao().deletePuntosForRuta(routeId)
-                db.rutasDao().deleteTrazaForRuta(routeId)
-            }
+            db.rutasDao().deletePuntosForRuta(routeId)
+            db.rutasDao().deleteTrazaForRuta(routeId)
             db.rutasDao().insertRuta(rutaEntity)
             for (p in puntosList) {
                 db.rutasDao().insertPuntoRuta(p)

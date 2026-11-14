@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -3299,7 +3300,27 @@ fun MainScreen(
 
         if (showConfirmFinRutaDialog) {
             var confirmText by remember { mutableStateOf("") }
+            var trackWidthPx by remember { mutableFloatStateOf(0f) }
+            var dragOffsetPx by remember { mutableFloatStateOf(0f) }
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            val thumbSizeDp = 46.dp
+            val thumbPaddingDp = 4.dp
+            val thumbSizePx = with(density) { (thumbSizeDp + thumbPaddingDp * 2).toPx() }
             val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+
+            val triggerFinalizeRoute = {
+                showConfirmFinRutaDialog = false
+                if (location != null) {
+                    viewModel.clearCapturedPhoto()
+                    viewModel.isFinRutaPending = true
+                    viewModel.locationSnapshotForPoint = location
+                    viewModel.isCapturingPhotoForPoint = true
+                    val file = File(context.filesDir, "foto_${System.currentTimeMillis()}.jpg")
+                    onOpenCamera(file)
+                } else {
+                    Toast.makeText(context, "Se perdió la señal de GPS.", Toast.LENGTH_SHORT).show()
+                }
+            }
             
             LaunchedEffect(Unit) {
                 // Sonido de alerta
@@ -3322,14 +3343,93 @@ fun MainScreen(
                 text = { 
                     Column {
                         Text("¿Estás seguro de que deseas finalizar la ruta? Se tomará una fotografía final y se guardará el recorrido.")
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Escribe la palabra 'correcto' para confirmar:", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Opción 1: Riel de "Deslizar para finalizar" (a prueba de roces en el bolsillo)
+                        val maxDragPx = (trackWidthPx - thumbSizePx).coerceAtLeast(1f)
+                        val slideFraction = (dragOffsetPx / maxDragPx).coerceIn(0f, 1f)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(54.dp)
+                                .clip(RoundedCornerShape(27.dp))
+                                .background(ColorTekinsCardMuted)
+                                .border(1.5.dp, ColorTekinsAlert.copy(alpha = 0.8f), RoundedCornerShape(27.dp))
+                                .onSizeChanged { size ->
+                                    trackWidthPx = size.width.toFloat()
+                                }
+                                .pointerInput(trackWidthPx) {
+                                    detectHorizontalDragGestures(
+                                        onDragEnd = {
+                                            val maxD = (trackWidthPx - thumbSizePx).coerceAtLeast(1f)
+                                            if (dragOffsetPx >= maxD * 0.85f) {
+                                                dragOffsetPx = maxD
+                                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                                    vibrator?.vibrate(android.os.VibrationEffect.createOneShot(200, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                                                } else {
+                                                    @Suppress("DEPRECATION")
+                                                    vibrator?.vibrate(200)
+                                                }
+                                                triggerFinalizeRoute()
+                                            } else {
+                                                dragOffsetPx = 0f
+                                            }
+                                        },
+                                        onDragCancel = {
+                                            dragOffsetPx = 0f
+                                        },
+                                        onHorizontalDrag = { change, dragAmount ->
+                                            change.consume()
+                                            val maxD = (trackWidthPx - thumbSizePx).coerceAtLeast(1f)
+                                            dragOffsetPx = (dragOffsetPx + dragAmount).coerceIn(0f, maxD)
+                                        }
+                                    )
+                                },
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            // Relleno de progreso conforme desliza
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .fillMaxWidth(slideFraction)
+                                    .background(ColorTekinsAlert.copy(alpha = 0.4f))
+                            )
+                            Text(
+                                text = "Desliza para finalizar  >>>",
+                                color = ColorTextoPrincipal.copy(alpha = (1f - slideFraction * 0.7f).coerceIn(0.2f, 1f)),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 42.dp, end = 12.dp)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .padding(thumbPaddingDp)
+                                    .offset { androidx.compose.ui.unit.IntOffset(dragOffsetPx.toInt(), 0) }
+                                    .size(thumbSizeDp)
+                                    .clip(CircleShape)
+                                    .background(ColorTekinsAlert),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                    contentDescription = "Deslizar para finalizar",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text("O escribe 'correcto', 'cerrar', 'fin', 'bye' o 'adios':", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(6.dp))
                         OutlinedTextField(
                             value = confirmText,
                             onValueChange = { confirmText = it },
                             singleLine = true,
-                            label = { Text("Escribe 'correcto' para finalizar") },
+                            label = { Text("correcto / cerrar / fin / bye / adios") },
                             modifier = Modifier.fillMaxWidth(),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = ColorTekinsAlert,
@@ -3340,22 +3440,17 @@ fun MainScreen(
                     }
                 },
                 confirmButton = {
+                    val normalizedConfirm = confirmText.trim().lowercase()
+                        .replace("á", "a")
+                        .replace("é", "e")
+                        .replace("í", "i")
+                        .replace("ó", "o")
+                        .replace("ú", "u")
+                    val validCloseWords = setOf("correcto", "cerrar", "bye", "adios", "fin", "ok")
                     Button(
-                        onClick = {
-                            showConfirmFinRutaDialog = false
-                            if (location != null) {
-                                viewModel.clearCapturedPhoto()
-                                viewModel.isFinRutaPending = true
-                                viewModel.locationSnapshotForPoint = location
-                                viewModel.isCapturingPhotoForPoint = true
-                                val file = File(context.filesDir, "foto_${System.currentTimeMillis()}.jpg")
-                                onOpenCamera(file)
-                            } else {
-                                Toast.makeText(context, "Se perdió la señal de GPS.", Toast.LENGTH_SHORT).show()
-                            }
-                        },
+                        onClick = { triggerFinalizeRoute() },
                         colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAlert),
-                        enabled = confirmText.trim().equals("correcto", ignoreCase = true)
+                        enabled = normalizedConfirm in validCloseWords
                     ) {
                         Text("Sí, finalizar", color = Color.White)
                     }

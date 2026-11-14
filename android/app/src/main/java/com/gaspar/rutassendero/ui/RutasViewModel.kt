@@ -494,11 +494,14 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Limpieza automática en segundo plano de cualquier punto duplicado de traza acumulado anteriormente
+        // Limpieza automática en segundo plano de cualquier punto duplicado de traza o de ruta acumulado anteriormente
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 db.openHelper.writableDatabase.execSQL(
                     "DELETE FROM traza_ruta WHERE id NOT IN (SELECT MIN(id) FROM traza_ruta GROUP BY id_ruta, orden)"
+                )
+                db.openHelper.writableDatabase.execSQL(
+                    "DELETE FROM puntos_ruta WHERE id NOT IN (SELECT MIN(id) FROM puntos_ruta GROUP BY id_ruta, latitud, longitud, descripcion)"
                 )
                 val rutas = db.rutasDao().getAllRutas()
                 for (ruta in rutas) {
@@ -1239,9 +1242,10 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             db.rutasDao().insertPuntoRuta(punto)
-            // Si es fin de ruta, recalculamos estadísticas de la ruta
+            // Si es fin de ruta, recalculamos estadísticas de la ruta y forzamos resincronización con la nube
             if (punto.esFinRuta) {
                 calculateAndSaveRouteStats(punto.idRuta)
+                prefs.clearRouteSyncedToCloud(punto.idRuta)
                 triggerAutomaticCloudSync()
             }
         }

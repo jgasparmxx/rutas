@@ -9,6 +9,9 @@
 //
 
 import SwiftUI
+#if os(iOS)
+import SafariServices
+#endif
 
 public struct SenderistaProfileSheetView: View {
     @Bindable var viewModel: MainViewModel
@@ -54,6 +57,8 @@ public struct SenderistaProfileSheetView: View {
     // Consentimientos Legales
     @State private var acceptTerms: Bool = true
     @State private var acceptMedicalConsent: Bool = true
+    @State private var acceptGpsMediaConsent: Bool = true
+    @State private var isShowingTermsWeb: Bool = false
     
     // Auto-recuperación y Estado en Nube
     @State private var cloudRecovered: Bool = false
@@ -298,21 +303,6 @@ public struct SenderistaProfileSheetView: View {
                         }
                     }
                     
-                    // Baliza BLE
-                    HStack {
-                        Image(systemName: "antenna.radiowaves.left.and.right")
-                            .foregroundStyle(AppTheme.accentCyan)
-                            .frame(width: 24)
-                        TextField("ID Baliza BLE (12 hex)", text: $beaconId)
-                            .font(.system(.body, design: .monospaced))
-                            .autocorrectionDisabled()
-                        Button("Auto") {
-                            beaconId = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)).lowercased()
-                        }
-                        .buttonStyle(.bordered)
-                        .font(.caption)
-                    }
-                    
                     // Enfermedades Crónicas
                     Toggle("¿Tiene Enfermedad Crónica?", isOn: $hasChronicIllness)
                     
@@ -335,12 +325,36 @@ public struct SenderistaProfileSheetView: View {
                     TextField("Dirección o Ciudad de Origen (opcional)", text: $address)
                 }
                 
-                // 5. Consentimientos y Términos Legales
+                // 5. Consentimientos y Términos Legales (1:1 Android Components.kt:5810-5858)
                 Section("Consentimientos Legales") {
-                    Toggle("Acepto Términos de Servicio y Rastreo GPS de Emergencia *", isOn: $acceptTerms)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle(isOn: $acceptTerms) {
+                            Text("He leído y acepto los Términos de Uso y el Aviso de Privacidad Integral *")
+                                .font(.footnote)
+                        }
+                        
+                        Button {
+                            isShowingTermsWeb = true
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "doc.text.magnifyingglass")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text("Ver Términos de Uso y Aviso de Privacidad Integral")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .underline()
+                                Image(systemName: "arrow.up.right.square")
+                                    .font(.system(size: 11))
+                            }
+                            .foregroundStyle(AppTheme.accent)
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    Toggle("Consiento el tratamiento de mis datos médicos para rescate 911 *", isOn: $acceptMedicalConsent)
                         .font(.footnote)
                     
-                    Toggle("Consiento el tratamiento de mi Ficha Médica para rescate 911 *", isOn: $acceptMedicalConsent)
+                    Toggle("Autorizo el acceso a mi ubicación GPS (primer plano y segundo plano) y galería/cámara *", isOn: $acceptGpsMediaConsent)
                         .font(.footnote)
                     
                     if let error = errorMessage {
@@ -430,6 +444,9 @@ public struct SenderistaProfileSheetView: View {
                 }
             }
             .interactiveDismissDisabled(viewModel.isRegistrationMandatory)
+            .sheet(isPresented: $isShowingTermsWeb) {
+                TermsAndConditionsSheetView()
+            }
             .onAppear {
                 loadExistingProfile()
                 loadAgrupaciones()
@@ -487,6 +504,7 @@ public struct SenderistaProfileSheetView: View {
             self.healthInsurance = current.seguroMedico ?? ""
             self.acceptTerms = current.consentimientoTerminos
             self.acceptMedicalConsent = current.consentimientoFichaMedica
+            self.acceptGpsMediaConsent = current.consentimientoGpsMultimedia
         } else {
             if beaconId.isEmpty {
                 beaconId = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)).lowercased()
@@ -619,8 +637,8 @@ public struct SenderistaProfileSheetView: View {
             errorMessage = "El código de confianza debe tener al menos 3 caracteres."
             return
         }
-        guard acceptTerms else {
-            errorMessage = "Debes aceptar los términos y condiciones de senderismo."
+        guard acceptTerms && acceptGpsMediaConsent else {
+            errorMessage = "Debes aceptar los Términos de Uso y Permisos obligatorios."
             return
         }
         guard acceptMedicalConsent else {
@@ -658,7 +676,7 @@ public struct SenderistaProfileSheetView: View {
             seguroMedico: healthInsurance.isEmpty ? nil : healthInsurance.trimmingCharacters(in: .whitespacesAndNewlines),
             consentimientoTerminos: acceptTerms,
             consentimientoFichaMedica: acceptMedicalConsent,
-            consentimientoGpsMultimedia: acceptTerms
+            consentimientoGpsMultimedia: acceptGpsMediaConsent
         )
         
         Task {
@@ -667,3 +685,48 @@ public struct SenderistaProfileSheetView: View {
         }
     }
 }
+
+// MARK: - Visor Integrado de Condiciones de Uso y Aviso de Privacidad (1:1 Android Components.kt:5832)
+
+public struct TermsAndConditionsSheetView: View {
+    public static let termsURL = URL(string: "https://jgasparmxx.github.io/tkssenderismo-docs/")!
+    @Environment(\.dismiss) private var dismiss
+    
+    public init() {}
+    
+    public var body: some View {
+        #if os(iOS)
+        TermsSafariRepresentable(url: Self.termsURL)
+            .ignoresSafeArea()
+        #else
+        NavigationStack {
+            VStack(spacing: 16) {
+                Text("Términos de Uso y Aviso de Privacidad Integral")
+                    .font(.headline)
+                Link("Abrir documento oficial", destination: Self.termsURL)
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cerrar") { dismiss() }
+                }
+            }
+        }
+        #endif
+    }
+}
+
+#if os(iOS)
+private struct TermsSafariRepresentable: UIViewControllerRepresentable {
+    let url: URL
+    
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let config = SFSafariViewController.Configuration()
+        config.entersReaderIfAvailable = false
+        let vc = SFSafariViewController(url: url, configuration: config)
+        vc.preferredControlTintColor = UIColor(red: 45/255, green: 212/255, blue: 191/255, alpha: 1.0)
+        return vc
+    }
+    
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+}
+#endif

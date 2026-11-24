@@ -167,8 +167,11 @@ final class HikerWhistlePlayer {
     }
     
     /// Fanfarria / chime acústico al llegar a un punto de control o destino final (1:1 Android GpsTrackingService.kt:832, 839)
-    func playWaypointChime(isFinal: Bool) {
-        guard !isPeerEmergencyAlarmPlaying && !isRepeatingEmergency else { return }
+    func playWaypointChime(isFinal: Bool, onCompletion: (@MainActor () -> Void)? = nil) {
+        guard !isPeerEmergencyAlarmPlaying && !isRepeatingEmergency else {
+            onCompletion?()
+            return
+        }
         chimeTask?.cancel()
         let pattern: [(toneMs: Int, pauseMs: Int)] = isFinal
             ? [(150, 50), (150, 50), (150, 50), (400, 100), (200, 50), (600, 200)]
@@ -194,6 +197,78 @@ final class HikerWhistlePlayer {
                     try? await Task.sleep(nanoseconds: UInt64(step.pauseMs) * 1_000_000)
                 }
             }
+            onCompletion?()
+        }
+    }
+    
+    /// Fanfarria alegre al llegar temprano a un punto o meta (secuencia arpegiada Do-Mi-Sol-Do agudo con AVAudioPlayer)
+    func playEarlyArrivalFanfare(onCompletion: (@MainActor () -> Void)? = nil) {
+        guard !isPeerEmergencyAlarmPlaying && !isRepeatingEmergency else {
+            onCompletion?()
+            return
+        }
+        chimeTask?.cancel()
+        let notes: [(freq: Double, toneMs: Int, pauseMs: Int)] = [
+            (523.25, 120, 25), // Do4
+            (659.25, 120, 25), // Mi4
+            (783.99, 120, 25), // Sol4
+            (1046.50, 380, 0)  // Do5 agudo
+        ]
+        chimeTask = Task { @MainActor in
+            configureAudioSession()
+            for step in notes {
+                guard !Task.isCancelled else { return }
+                if let data = Self.makePureToneWavData(durationMs: step.toneMs, frequencyHz: step.freq),
+                   let player = try? AVAudioPlayer(data: data) {
+                    player.volume = 0.98
+                    player.prepareToPlay()
+                    self.chimePlayer = player
+                    player.play()
+                }
+                try? await Task.sleep(nanoseconds: UInt64(step.toneMs) * 1_000_000)
+                self.chimePlayer?.stop()
+                self.chimePlayer = nil
+                guard !Task.isCancelled else { return }
+                if step.pauseMs > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(step.pauseMs) * 1_000_000)
+                }
+            }
+            onCompletion?()
+        }
+    }
+    
+    /// Tono breve de advertencia acústica al llegar tarde con llamado de atención de velocidad
+    func playLateArrivalWarningTone(onCompletion: (@MainActor () -> Void)? = nil) {
+        guard !isPeerEmergencyAlarmPlaying && !isRepeatingEmergency else {
+            onCompletion?()
+            return
+        }
+        chimeTask?.cancel()
+        let tones: [(freq: Double, toneMs: Int, pauseMs: Int)] = [
+            (660.0, 160, 40),
+            (440.0, 280, 0)
+        ]
+        chimeTask = Task { @MainActor in
+            configureAudioSession()
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+            for step in tones {
+                guard !Task.isCancelled else { return }
+                if let data = Self.makePureToneWavData(durationMs: step.toneMs, frequencyHz: step.freq),
+                   let player = try? AVAudioPlayer(data: data) {
+                    player.volume = 1.0
+                    player.prepareToPlay()
+                    self.chimePlayer = player
+                    player.play()
+                }
+                try? await Task.sleep(nanoseconds: UInt64(step.toneMs) * 1_000_000)
+                self.chimePlayer?.stop()
+                self.chimePlayer = nil
+                guard !Task.isCancelled else { return }
+                if step.pauseMs > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(step.pauseMs) * 1_000_000)
+                }
+            }
+            onCompletion?()
         }
     }
     

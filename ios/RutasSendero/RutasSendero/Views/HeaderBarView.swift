@@ -58,23 +58,16 @@ public struct HeaderBarView: View {
                 Button {
                     Task {
                         await viewModel.loadLocalRoutes()
-                        viewModel.localRoutesInitialTab = 1
-                        viewModel.isShowingLocalRoutesSheet = true
+                        viewModel.isShowingCloudRoutesSheet = true
                     }
                 } label: {
-                    Label("2. Ver otras rutas", systemImage: "arrow.triangle.2.circlepath")
+                    Label("2. Ver otras rutas", systemImage: "icloud.and.arrow.down")
                 }
                 
                 Button {
-                    viewModel.isShowingCloudRoutesSheet = true
+                    viewModel.saveStatusMessage = "Planeación de salidas y eventos programados próximamente."
                 } label: {
-                    Label("3. Descargar de la nube", systemImage: "icloud.and.arrow.down")
-                }
-                
-                Button {
-                    viewModel.saveStatusMessage = "Salidas y eventos programados próximamente."
-                } label: {
-                    Label("4. Salidas", systemImage: "calendar")
+                    Label("3. Planeación Salidas", systemImage: "calendar")
                 }
                 
                 Divider()
@@ -203,18 +196,22 @@ public struct HeaderBarView: View {
                         return AppTheme.accent
                     }()
                     
-                    VStack(alignment: .center, spacing: 1) {
-                        Text("🎯 \(target.name)")
-                            .font(.system(size: 13, weight: .heavy))
-                            .foregroundStyle(AppTheme.textPrimary)
-                            .lineLimit(1)
-                        
-                        if !guideSubLine.isEmpty {
-                            Text(guideSubLine)
-                                .font(.system(size: 11, weight: .heavy, design: .rounded))
-                                .foregroundStyle(elevColor)
+                    VStack(alignment: .center, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Text("🎯 \(target.name)")
+                                .font(.system(size: 13, weight: .heavy))
+                                .foregroundStyle(AppTheme.textPrimary)
                                 .lineLimit(1)
+                            
+                            if !guideSubLine.isEmpty {
+                                Text("· \(guideSubLine)")
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                                    .foregroundStyle(elevColor)
+                                    .lineLimit(1)
+                            }
                         }
+                        
+                        GuideEtaBadgeView(viewModel: viewModel, style: .pill)
                     }
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
@@ -370,6 +367,12 @@ public struct HeaderBarView: View {
                 }
                 
                 Divider()
+                
+                Button {
+                    viewModel.isShowingTermsSheet = true
+                } label: {
+                    Label("Condiciones de Uso", systemImage: "doc.text.fill")
+                }
                 
                 Button {
                     viewModel.isShowingAboutSheet = true

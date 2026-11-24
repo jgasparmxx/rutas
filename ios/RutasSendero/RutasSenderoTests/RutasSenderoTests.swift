@@ -309,5 +309,146 @@ struct RutasSenderoTests {
         viewModel.localRoutesInitialTab = 0
         #expect(viewModel.localRoutesInitialTab == 0)
     }
+
+    // MARK: - 4. Pruebas de Ritmo de Caminata (EMA), ETAs y Evaluación de Puntualidad en Modo Guía
+    
+    @Test func testHikingPaceCalculatorSmoothingAndBounds() async throws {
+        let pace = HikingPaceCalculator()
+        pace.reset()
+        
+        // 1. Estado inicial detenido: velocidad efectiva debe ser 1.11 m/s (4.0 km/h)
+        #expect(pace.effectiveWalkingSpeedMps == HikingPaceCalculator.defaultWalkingSpeedMps)
+        #expect(abs(pace.effectiveWalkingSpeedKmh - 4.0) < 0.05)
+        
+        // 2. Reporte de velocidad en reposo (< 0.35 m/s): se mantiene la base efectiva
+        pace.updateSpeed(gpsSpeedMps: 0.1)
+        #expect(pace.effectiveWalkingSpeedMps == HikingPaceCalculator.defaultWalkingSpeedMps)
+        
+        // 3. Primer fix de caminata (1.2 m/s = 4.32 km/h): adopta el valor inicial
+        pace.updateSpeed(gpsSpeedMps: 1.2)
+        #expect(abs(pace.smoothedSpeedMps - 1.2) < 0.001)
+        
+        // 4. Segundo fix con EMA: nueva muestra 1.6 m/s
+        // EMA = 0.25 * 1.6 + 0.75 * 1.2 = 0.40 + 0.90 = 1.30 m/s
+        pace.updateSpeed(gpsSpeedMps: 1.6)
+        #expect(abs(pace.smoothedSpeedMps - 1.3) < 0.001)
+        
+        // 5. Pico anormal de velocidad (> 3.5 m/s, ej. auto o salto GPS 10.0 m/s): debe acotarse a 3.5 m/s
+        // EMA = 0.25 * 3.5 + 0.75 * 1.3 = 0.875 + 0.975 = 1.85 m/s
+        pace.updateSpeed(gpsSpeedMps: 10.0)
+        #expect(abs(pace.smoothedSpeedMps - 1.85) < 0.001)
+    }
+
+    @Test func testHikingGuideServiceEtasAndArrivalTiming() async throws {
+        let service = HikingGuideService()
+        
+        let p1 = RoutePoint(id: 1, routeId: "R_ETA", timestamp: "08:00", latitude: 19.2400, longitude: -103.7200, altitude: 500, descriptionText: "Inicio", photoUrl: nil, isRouteEnd: false, hasConnectivity: true)
+        let p2 = RoutePoint(id: 2, routeId: "R_ETA", timestamp: "08:15", latitude: 19.2450, longitude: -103.7200, altitude: 520, descriptionText: "Paso Intermedio", photoUrl: nil, isRouteEnd: false, hasConnectivity: true)
+        let p3 = RoutePoint(id: 3, routeId: "R_ETA", timestamp: "08:30", latitude: 19.2500, longitude: -103.7200, altitude: 550, descriptionText: "Meta Final", photoUrl: nil, isRouteEnd: true, hasConnectivity: true)
+        let points = [p1, p2, p3]
+        
+        let startLoc = CLLocation(latitude: 19.2400, longitude: -103.7200)
+        service.startGuidance(
+            currentLocation: startLoc,
+            target: p2,
+            targetIndex: 1,
+            points: points,
+            forward: true
+        )
+        
+        // 1. Verificación de cálculo de distancias y marcas esperadas
+        #expect(service.targetDistanceMeters > 0.0)
+        #expect(service.metaRemainingDistanceMeters > service.targetDistanceMeters)
+        #expect(service.targetExpectedArrivalTime != nil)
+        #expect(service.metaExpectedArrivalTime != nil)
+        #expect(service.targetExpectedSpeedKmh > 0.0)
+        
+        // 2. Evaluación de llegada a hito intermedio:
+        guard let targetExpected = service.targetExpectedArrivalTime else {
+            Issue.record("targetExpectedArrivalTime no debe ser nil")
+            return
+        }
+        
+        // A. Llegada TEMPRANA (15s o más de anticipación)
+        let earlyArrivalDate = targetExpected.addingTimeInterval(-20.0)
+        let earlyTiming = service.evaluateWaypointArrival(arrivalDate: earlyArrivalDate)
+        switch earlyTiming {
+        case .early(let secs, _):
+            #expect(abs(secs - 20.0) < 0.1)
+        default:
+            Issue.record("Se esperaba .early, se obtuvo \(earlyTiming)")
+        }
+        
+        // B. Llegada TARDE (30s o más de retraso)
+        let lateArrivalDate = targetExpected.addingTimeInterval(35.0)
+        let lateTiming = service.evaluateWaypointArrival(arrivalDate: lateArrivalDate)
+        switch lateTiming {
+        case .late(let secs, _):
+            #expect(abs(secs - 35.0) < 0.1)
+        default:
+            Issue.record("Se esperaba .late, se obtuvo \(lateTiming)")
+        }
+        
+        // C. Llegada A TIEMPO NORMAL (dentro del margen -15s a +30s)
+        let onTimeArrivalDate = targetExpected.addingTimeInterval(5.0)
+        let onTimeTiming = service.evaluateWaypointArrival(arrivalDate: onTimeArrivalDate)
+        switch onTimeTiming {
+        case .onTime(let diff):
+            #expect(abs(diff - 5.0) < 0.1)
+        default:
+            Issue.record("Se esperaba .onTime, se obtuvo \(onTimeTiming)")
+        }
+        
+        // 3. Evaluación de llegada a la META FINAL
+        guard let metaExpected = service.metaExpectedArrivalTime else {
+            Issue.record("metaExpectedArrivalTime no debe ser nil")
+            return
+        }
+        let earlyMeta = service.evaluateMetaArrival(arrivalDate: metaExpected.addingTimeInterval(-18.0))
+        #expect(earlyMeta != .onTime(diffSeconds: 0))
+        
+        let lateMeta = service.evaluateMetaArrival(arrivalDate: metaExpected.addingTimeInterval(45.0))
+        #expect(lateMeta != .onTime(diffSeconds: 0))
+        
+        // 4. Verificación de formato interactivo para Badge
+        let badgeText = service.interactiveBadgeText
+        #expect(badgeText.contains("Meta: ~"))
+        #expect(badgeText.contains("Sig: ~"))
+        #expect(badgeText.contains("km/h"))
+        
+        // 5. Verificación de informe de voz bajo demanda
+        let speechOnTime = service.generateInteractiveStatusSpeech(targetName: "Paso Intermedio", now: targetExpected.addingTimeInterval(-5.0))
+        #expect(speechOnTime.contains("Velocidad actual:"))
+        #expect(speechOnTime.contains("Paso Intermedio"))
+        #expect(speechOnTime.contains("¡Apura el paso!") == false)
+        
+        let speechLate = service.generateInteractiveStatusSpeech(targetName: "Paso Intermedio", now: targetExpected.addingTimeInterval(40.0))
+        #expect(speechLate.contains("retraso"))
+        #expect(speechLate.contains("¡Apura el paso!"))
+    }
+
+    @MainActor
+    @Test func testModoVisorIsStrictlyPassive() async throws {
+        let viewModel = MainViewModel()
+        viewModel.activeRole = .guia
+        viewModel.isGuidingActive = true
+        
+        // Al cambiar a Modo Visor:
+        viewModel.activeRole = .visor
+        
+        // Esperar ciclo de despacho asíncrono
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        
+        // 1. Debe detener la guía
+        #expect(viewModel.isGuidingActive == false)
+        #expect(viewModel.targetGuideWaypoint == nil)
+        
+        // 2. Debe reiniciar el servicio de guiado y ETAs
+        #expect(viewModel.guideService.targetExpectedArrivalTime == nil)
+        #expect(viewModel.guideService.metaExpectedArrivalTime == nil)
+        
+        // 3. No debe tener navegación de alta precisión en segundo plano
+        #expect(viewModel.locationTracker.isTracking == false)
+    }
 }
 

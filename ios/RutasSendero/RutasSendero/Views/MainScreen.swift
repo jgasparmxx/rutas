@@ -281,6 +281,8 @@ public struct MainScreen: View {
                 CloudRoutesSheetView(viewModel: viewModel)
             case .settings:
                 SettingsSheetView(viewModel: viewModel)
+            case .termsAndConditions:
+                TermsAndConditionsSheetView()
             case .recordingDashboard:
                 NavigationStack {
                     RecordingDashboardView(viewModel: viewModel)

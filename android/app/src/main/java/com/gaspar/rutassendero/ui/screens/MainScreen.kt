@@ -3741,7 +3741,7 @@ fun HeaderBar(
                             leadingIcon = { Icon(Icons.Default.CloudSync, contentDescription = null, tint = ColorTekinsPrimary) }
                         )
                         DropdownMenuItem(
-                            text = { Text("3. Salidas", color = ColorTekinsDarkBg) },
+                            text = { Text("3. Planeación Salidas", color = ColorTekinsDarkBg) },
                             onClick = {
                                 isMenuExpanded = false
                                 onSalidasClick()
@@ -4046,6 +4046,26 @@ fun HeaderBar(
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Default.Settings,
+                                contentDescription = null,
+                                tint = ColorTekinsPrimary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        text = { Text("Condiciones de Uso", color = ColorTekinsDarkBg) },
+                        onClick = {
+                            isRightMenuExpanded = false
+                            val intent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://jgasparmxx.github.io/tkssenderismo-docs/")
+                            )
+                            context.startActivity(intent)
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Description,
                                 contentDescription = null,
                                 tint = ColorTekinsPrimary,
                                 modifier = Modifier.size(24.dp)

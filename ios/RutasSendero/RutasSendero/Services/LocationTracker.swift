@@ -119,9 +119,9 @@ public final class LocationTracker: NSObject, CLLocationManagerDelegate, Locatio
         locationManager.desiredAccuracy = active ? kCLLocationAccuracyBestForNavigation : kCLLocationAccuracyBest
         locationManager.distanceFilter = active ? 2.0 : 4.0
         #if os(iOS)
-        locationManager.allowsBackgroundLocationUpdates = true
-        locationManager.showsBackgroundLocationIndicator = true
-        locationManager.pausesLocationUpdatesAutomatically = false
+        locationManager.allowsBackgroundLocationUpdates = active
+        locationManager.showsBackgroundLocationIndicator = active
+        locationManager.pausesLocationUpdatesAutomatically = !active
         #endif
         if isTracking {
             locationManager.startUpdatingLocation()

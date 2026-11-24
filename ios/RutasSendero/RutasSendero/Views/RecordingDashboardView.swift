@@ -351,6 +351,9 @@ public struct RecordingDashboardView: View {
                     .buttonStyle(.plain)
                 }
             }
+            
+            // Barra interactiva de tiempos estimados (ETA) y ritmo de caminata (Requisito 5)
+            GuideEtaBadgeView(viewModel: viewModel, style: .bar)
         }
         .padding(12)
         .background(AppTheme.cardMuted.opacity(0.7))

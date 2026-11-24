@@ -47,6 +47,7 @@ public enum ActiveSheet: Identifiable, Sendable {
     case cloudRoutes
     case recordingDashboard
     case settings
+    case termsAndConditions
     
     public var id: String {
         switch self {
@@ -61,6 +62,7 @@ public enum ActiveSheet: Identifiable, Sendable {
         case .cloudRoutes: return "cloudRoutes"
         case .recordingDashboard: return "recordingDashboard"
         case .settings: return "settings"
+        case .termsAndConditions: return "termsAndConditions"
         }
     }
 }
@@ -81,6 +83,7 @@ public final class MainViewModel: @unchecked Sendable {
     public let bleBroadcaster: BleBeaconBroadcaster
     public let bleScanner: BleBeaconScanner
     public var rutasRepository: SwiftDataRutasRepository?
+    public let guideService = HikingGuideService()
     
     // MARK: - Estado de Grabación
     public var recordingState: RecordingState = .stopped
@@ -110,7 +113,18 @@ public final class MainViewModel: @unchecked Sendable {
     public var saveStatusMessage: String? = nil
     
     // MARK: - Modos y Balizas
-    public var activeRole: AppRole = .visor
+    public var activeRole: AppRole = .visor {
+        didSet {
+            Task { @MainActor in
+                if self.activeRole == .visor {
+                    if self.isGuidingActive {
+                        self.stopGuiding()
+                    }
+                }
+                self.syncBackgroundNavigationMode()
+            }
+        }
+    }
     public var isBeaconEmitting: Bool = false
     public var isStartingBeacon: Bool = false
     public var isEmergency911Active: Bool = false
@@ -223,6 +237,7 @@ public final class MainViewModel: @unchecked Sendable {
         guidanceStatusMessage = nil
         announcedGuideAlertKeys.removeAll()
         lastGuideDistanceToTarget = nil
+        guideService.reset()
         stopDopplerBeepLoop()
         syncBackgroundNavigationMode()
     }
@@ -236,12 +251,25 @@ public final class MainViewModel: @unchecked Sendable {
         recalculateDopplerFromCurrentLocation()
     }
     
+    /// Locución bajo demanda al tocar el badge interactivo de Modo Guía
+    @MainActor
+    public func announceCurrentGuidePaceStatus() {
+        guard isGuidingActive, activeRole == .guia, let target = targetGuideWaypoint else { return }
+        let speech = guideService.generateInteractiveStatusSpeech(targetName: target.name)
+        TextToSpeechService.shared.speak(speech)
+        #if os(iOS)
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+        #endif
+    }
+    
     @MainActor
     private func syncBackgroundNavigationMode() {
-        let needsActiveBackground = isGuidingActive || recordingState == .recording
+        // En Modo Visor el guiado GPS en segundo plano y alertas audibles quedan estrictamente apagados
+        let needsActiveBackground = (isGuidingActive && activeRole == .guia) || recordingState == .recording
         locationTracker.setHighPrecisionNavigation(needsActiveBackground)
         HikerWhistlePlayer.shared.setBackgroundNavigationActive(needsActiveBackground)
-        if !isGuidingActive {
+        if !isGuidingActive || activeRole != .guia {
             stopDopplerBeepLoop()
         }
     }
@@ -309,6 +337,10 @@ public final class MainViewModel: @unchecked Sendable {
     public var isShowingSettingsSheet: Bool {
         get { activeSheet == .settings }
         set { activeSheet = newValue ? .settings : (activeSheet == .settings ? nil : activeSheet) }
+    }
+    public var isShowingTermsSheet: Bool {
+        get { activeSheet == .termsAndConditions }
+        set { activeSheet = newValue ? .termsAndConditions : (activeSheet == .termsAndConditions ? nil : activeSheet) }
     }
     
     public var agrupacionLogoImage: UIImage? = nil
@@ -1531,6 +1563,15 @@ public final class MainViewModel: @unchecked Sendable {
         self.isFollowingUser = !isVeryFarFromTrail
         self.targetGuideWaypoint = selectedInitialTarget
         self.isGuidingActive = true
+        if let target = selectedInitialTarget, let idx = pts.firstIndex(where: { $0.id == target.id }) {
+            self.guideService.startGuidance(
+                currentLocation: currentLoc,
+                target: target,
+                targetIndex: idx,
+                points: pts,
+                forward: !toStart
+            )
+        }
         self.isShowingVisorOrderDialog = false
         self.pendingRouteForOrderSelection = nil
         self.showMapScreen = true
@@ -1601,6 +1642,14 @@ public final class MainViewModel: @unchecked Sendable {
             targetGuideWaypoint = nextPunto
             lastGuideDistanceToTarget = nil
             lastGuideTtsTime = Date()
+            
+            guideService.advanceToNextWaypoint(
+                currentLocation: locationTracker.currentLocation,
+                newTarget: nextPunto,
+                newTargetIndex: nextIndex,
+                points: recordedPoints,
+                forward: guideDirectionForward
+            )
             HikerWhistlePlayer.shared.playWaypointChime(isFinal: false)
             
             let fromLoc = locationTracker.currentLocation ?? CLLocation(latitude: currentTarget.latitude, longitude: currentTarget.longitude)
@@ -1615,15 +1664,34 @@ public final class MainViewModel: @unchecked Sendable {
                 )
             let nextDistSpoken = RouteStatsCalculator.formatDistanceSpoken(segDist)
             let nextElevSuffix = RouteStatsCalculator.formatElevationSpeechSuffix(segDeltaAlt)
+            let nextEtaSpoken = HikingGuideService.formatSpokenDuration(guideService.targetEtaSeconds)
             if isVoiceGuidanceEnabled {
-                TextToSpeechService.shared.speak("Punto \(currentTarget.name) localizado manualmente. Siguiente destino: \(nextPunto.name), distancia a caminar \(nextDistSpoken)\(nextElevSuffix).")
+                TextToSpeechService.shared.speak("Punto \(currentTarget.name) localizado manualmente. Siguiente destino: \(nextPunto.name), distancia a caminar \(nextDistSpoken)\(nextElevSuffix). Llegarás en \(nextEtaSpoken).")
             }
             recalculateDopplerFromCurrentLocation()
         } else {
-            HikerWhistlePlayer.shared.playWaypointChime(isFinal: true)
-            if isVoiceGuidanceEnabled {
-                TextToSpeechService.shared.speak("Felicidades. Has llegado a tu destino final, completando la ruta: \(currentTarget.name).")
+            let metaTiming = guideService.evaluateMetaArrival()
+            let routeName = activeRoute?.name ?? currentTarget.name
+            switch metaTiming {
+            case .early(_, let formattedEarly):
+                HikerWhistlePlayer.shared.playEarlyArrivalFanfare()
+                if isVoiceGuidanceEnabled {
+                    TextToSpeechService.shared.speak("¡Felicidades! Has llegado a tu meta final \(formattedEarly) antes de lo estimado, completando la ruta: \(routeName). ¡Excelente ritmo de caminata!")
+                }
+            case .late(_, let formattedLate):
+                HikerWhistlePlayer.shared.playLateArrivalWarningTone()
+                let expKmh = String(format: "%.1f", guideService.metaExpectedSpeedKmh)
+                let curKmh = String(format: "%.1f", guideService.currentSpeedKmh)
+                if isVoiceGuidanceEnabled {
+                    TextToSpeechService.shared.speak("Has llegado a tu meta final con \(formattedLate) tarde completando la ruta: \(routeName). Se esperaba una velocidad de \(expKmh) kilómetros por hora y registraste \(curKmh) kilómetros por hora. ¡Buen esfuerzo, a mejorar el ritmo en la próxima!")
+                }
+            case .onTime:
+                HikerWhistlePlayer.shared.playWaypointChime(isFinal: true)
+                if isVoiceGuidanceEnabled {
+                    TextToSpeechService.shared.speak("Felicidades. Has llegado a tu destino final, completando la ruta: \(routeName).")
+                }
             }
+            saveStatusMessage = "¡Ruta completada! Destino final alcanzado."
             stopGuiding()
         }
     }
@@ -1696,7 +1764,7 @@ public final class MainViewModel: @unchecked Sendable {
     /// Motor en tiempo real de Modo Guía con avisos de distancia + subida/bajada (1:1 Android GpsTrackingService.kt:607-840)
     @MainActor
     private func evaluateGuideProgress(latitude: Double, longitude: Double, altitude: Double) {
-        guard isGuidingActive, let target = targetGuideWaypoint, !recordedPoints.isEmpty else { return }
+        guard isGuidingActive, activeRole == .guia, let target = targetGuideWaypoint, !recordedPoints.isEmpty else { return }
         guard let currentIndex = recordedPoints.firstIndex(where: { $0.id == target.id }) else { return }
         
         let userLoc = CLLocation(
@@ -1708,6 +1776,16 @@ public final class MainViewModel: @unchecked Sendable {
             speed: locationTracker.currentSpeedKmh / 3.6,
             timestamp: Date()
         )
+        
+        // Actualizar ritmo de caminata y proyecciones ETA en tiempo real
+        guideService.updateProgress(
+            location: userLoc,
+            target: target,
+            targetIndex: currentIndex,
+            points: recordedPoints,
+            forward: guideDirectionForward
+        )
+        
         let targetLoc = CLLocation(latitude: target.latitude, longitude: target.longitude)
         let distance = userLoc.distance(from: targetLoc)
         let isMovingAway: Bool = {
@@ -1801,10 +1879,12 @@ public final class MainViewModel: @unchecked Sendable {
             generator.notificationOccurred(.success)
             
             if nextIndex >= 0 && nextIndex < recordedPoints.count {
-                HikerWhistlePlayer.shared.playWaypointChime(isFinal: false)
+                let arrivalTiming = guideService.evaluateWaypointArrival()
                 let nextPunto = recordedPoints[nextIndex]
                 let nextLoc = CLLocation(latitude: nextPunto.latitude, longitude: nextPunto.longitude)
                 let segDist = userLoc.distance(from: nextLoc)
+                let segDistMeters = Int(segDist.rounded())
+                let segDistSpoken = RouteStatsCalculator.formatDistanceSpoken(segDist)
                 let segDeltaAlt = RouteStatsCalculator.calculateElevationDeltaMeters(fromAlt: target.altitude, toAlt: nextPunto.altitude)
                     ?? RouteStatsCalculator.estimateRemainingElevationToTarget(
                         prevPoint: target,
@@ -1812,18 +1892,49 @@ public final class MainViewModel: @unchecked Sendable {
                         currentLocation: userLoc,
                         remainingDistanceMeters: segDist
                     )
-                let nextDistSpoken = RouteStatsCalculator.formatDistanceSpoken(segDist)
                 let nextElevSuffix = RouteStatsCalculator.formatElevationSpeechSuffix(segDeltaAlt)
-                let nextTargetMsg = "Siguiente destino: \(nextPunto.name), distancia a caminar \(nextDistSpoken)\(nextElevSuffix)."
                 
-                if target.estado == 1 {
+                // Registrar tramo del nuevo hito objetivo
+                guideService.advanceToNextWaypoint(
+                    currentLocation: userLoc,
+                    newTarget: nextPunto,
+                    newTargetIndex: nextIndex,
+                    points: recordedPoints,
+                    forward: guideDirectionForward
+                )
+                
+                let nextEtaSpoken = HikingGuideService.formatSpokenDuration(guideService.targetEtaSeconds)
+                let metaEtaSpoken = HikingGuideService.formatSpokenDuration(guideService.metaEtaSeconds)
+                let expKmh = String(format: "%.1f", guideService.targetExpectedSpeedKmh)
+                let curKmh = String(format: "%.1f", guideService.currentSpeedKmh)
+                
+                switch arrivalTiming {
+                case .early(_, let formattedEarly):
+                    // Requisito 3A: Llegada TEMPRANA (anticipación >= 15 seg) -> Fanfarria Do-Mi-Sol-Do + Felicitación
+                    HikerWhistlePlayer.shared.playEarlyArrivalFanfare()
                     if isVoiceGuidanceEnabled {
-                        TextToSpeechService.shared.speak("Llegaste a punto de ruta: \(target.name). \(nextTargetMsg)")
+                        let msg = "¡Llegaste \(formattedEarly) antes al punto \(target.name), felicidades! Siguiente destino: \(nextPunto.name), distancia \(segDistMeters) metros. Llegarás en \(nextEtaSpoken). Tiempo a la meta: \(metaEtaSpoken)."
+                        TextToSpeechService.shared.speak(msg)
                     }
-                } else {
-                    let stateInfo = PointStateInfo.forPoint(estado: target.estado, isRouteEnd: target.isRouteEnd, description: target.descriptionText)
-                    let suffix = isVoiceGuidanceEnabled ? " \(nextTargetMsg)" : ""
-                    TextToSpeechService.shared.speak("\(stateInfo.name). \(target.name).\(suffix)")
+                case .late(_, let formattedLate):
+                    // Requisito 3B: Llegada TARDÍA (retraso >= 30 seg) -> Tono breve de advertencia + llamado de velocidad
+                    HikerWhistlePlayer.shared.playLateArrivalWarningTone()
+                    if isVoiceGuidanceEnabled {
+                        let msg = "Llegaste \(formattedLate) tarde al punto \(target.name). Se esperaba una velocidad de \(expKmh) kilómetros por hora y traes una velocidad de \(curKmh) kilómetros por hora. ¡Apura el paso! Siguiente destino: \(nextPunto.name), distancia \(segDistMeters) metros. Llegarás en \(nextEtaSpoken). Tiempo a la meta: \(metaEtaSpoken)."
+                        TextToSpeechService.shared.speak(msg)
+                    }
+                case .onTime:
+                    // Requisito 3C: Llegada A TIEMPO NORMAL -> Chime estándar de llegada
+                    HikerWhistlePlayer.shared.playWaypointChime(isFinal: false)
+                    if isVoiceGuidanceEnabled {
+                        let nextTargetMsg = "Siguiente destino: \(nextPunto.name), distancia a caminar \(segDistSpoken)\(nextElevSuffix). Llegarás en \(nextEtaSpoken). Tiempo a la meta: \(metaEtaSpoken)."
+                        if target.estado == 1 {
+                            TextToSpeechService.shared.speak("Llegaste a punto de ruta: \(target.name). \(nextTargetMsg)")
+                        } else {
+                            let stateInfo = PointStateInfo.forPoint(estado: target.estado, isRouteEnd: target.isRouteEnd, description: target.descriptionText)
+                            TextToSpeechService.shared.speak("\(stateInfo.name). \(target.name). \(nextTargetMsg)")
+                        }
+                    }
                 }
                 
                 targetGuideWaypoint = nextPunto
@@ -1831,8 +1942,32 @@ public final class MainViewModel: @unchecked Sendable {
                 lastGuideTtsTime = Date()
                 updateDopplerForDistance(segDist)
             } else {
-                HikerWhistlePlayer.shared.playWaypointChime(isFinal: true)
-                TextToSpeechService.shared.speak("Felicidades. Has llegado a tu destino final, completando la ruta: \(target.name).")
+                // Requisito 4: Llegada a la META FINAL de la ruta
+                let metaTiming = guideService.evaluateMetaArrival()
+                let routeName = activeRoute?.name ?? target.name
+                let expKmh = String(format: "%.1f", guideService.metaExpectedSpeedKmh)
+                let curKmh = String(format: "%.1f", guideService.currentSpeedKmh)
+                
+                switch metaTiming {
+                case .early(_, let formattedEarly):
+                    // Requisito 4A: Meta anticipada (>= 15s) -> Fanfarria alegre + felicitación
+                    HikerWhistlePlayer.shared.playEarlyArrivalFanfare()
+                    if isVoiceGuidanceEnabled {
+                        TextToSpeechService.shared.speak("¡Felicidades! Has llegado a tu meta final \(formattedEarly) antes de lo estimado, completando la ruta: \(routeName). ¡Excelente ritmo de caminata!")
+                    }
+                case .late(_, let formattedLate):
+                    // Requisito 4B: Meta tardía (>= 30s) -> Tono de aviso + llamada de atención
+                    HikerWhistlePlayer.shared.playLateArrivalWarningTone()
+                    if isVoiceGuidanceEnabled {
+                        TextToSpeechService.shared.speak("Has llegado a tu meta final con \(formattedLate) tarde completando la ruta: \(routeName). Se esperaba una velocidad de \(expKmh) kilómetros por hora y registraste \(curKmh) kilómetros por hora. ¡Buen esfuerzo, a mejorar el ritmo en la próxima!")
+                    }
+                case .onTime:
+                    // Requisito 4C: Meta a tiempo regular
+                    HikerWhistlePlayer.shared.playWaypointChime(isFinal: true)
+                    if isVoiceGuidanceEnabled {
+                        TextToSpeechService.shared.speak("Felicidades. Has llegado a tu meta final completando la ruta: \(routeName). ¡Excelente recorrido!")
+                    }
+                }
                 saveStatusMessage = "¡Ruta completada! Destino final alcanzado."
                 stopGuiding()
             }

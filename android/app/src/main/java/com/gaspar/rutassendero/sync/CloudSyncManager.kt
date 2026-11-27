@@ -1376,6 +1376,7 @@ object CloudSyncManager {
                 map["telefono"] = inv.optString("telefono", "")
 
                 val salidaRaw = inv.optString("fecha_hora_salida", "")
+                if (!com.gaspar.rutassendero.utils.OutingDateUtils.isFutureOrCurrent(salidaRaw)) continue
                 map["fecha_hora_salida"] = formatIsoToDisplay(salidaRaw, sdfDisplay)
 
                 map["punto_reunion"] = inv.optString("punto_reunion", "")
@@ -1421,6 +1422,7 @@ object CloudSyncManager {
                     map["telefono"] = ev.optString("telefono", ev.optString("telefono_creador", ""))
 
                     val salidaRaw = ev.optString("fecha_hora_salida", "")
+                    if (!com.gaspar.rutassendero.utils.OutingDateUtils.isFutureOrCurrent(salidaRaw)) continue
                     map["fecha_hora_salida"] = formatIsoToDisplay(salidaRaw, sdfDisplay)
 
                     map["punto_reunion"] = ev.optString("punto_reunion", "")
@@ -1437,6 +1439,20 @@ object CloudSyncManager {
                     map["tipo_ruta"] = "E"
                     map["comentario"] = ev.optString("comentario", "")
                     map["ruta_nombre"] = ev.optString("id_ruta", ev.optString("nombre_agrupacion", "Evento"))
+
+                    val esPublico = when {
+                        ev.has("es_publico") && !ev.isNull("es_publico") -> ev.optBoolean("es_publico", true)
+                        ev.has("publico") && !ev.isNull("publico") -> ev.optBoolean("publico", true)
+                        else -> true
+                    }
+                    val idAgrup = when {
+                        ev.has("id_agrupacion") && !ev.isNull("id_agrupacion") -> ev.optString("id_agrupacion", "")
+                        ev.has("nombre_agrupacion") && !ev.isNull("nombre_agrupacion") -> ev.optString("nombre_agrupacion", "")
+                        ev.has("agrupacion") && !ev.isNull("agrupacion") -> ev.optString("agrupacion", "")
+                        else -> ""
+                    }.trim()
+                    map["es_publico"] = esPublico
+                    map["id_agrupacion"] = idAgrup
 
                     map["conectividad"] = 0.0f
                     map["distancia_gps"] = 0.0
@@ -1721,7 +1737,18 @@ object CloudSyncManager {
                         fechaCooperacionRealizada = null,
                         sincronizadoConNube = true,
                         fupdate = fupdateMillis,
-                        comentario = obj.optString("comentario").takeIf { it.isNotBlank() }
+                        comentario = obj.optString("comentario").takeIf { it.isNotBlank() },
+                        esPublico = when {
+                            obj.has("es_publico") && !obj.isNull("es_publico") -> obj.optBoolean("es_publico", true)
+                            obj.has("publico") && !obj.isNull("publico") -> obj.optBoolean("publico", true)
+                            else -> true
+                        },
+                        idAgrupacion = when {
+                            obj.has("id_agrupacion") && !obj.isNull("id_agrupacion") -> obj.optString("id_agrupacion", "")
+                            obj.has("nombre_agrupacion") && !obj.isNull("nombre_agrupacion") -> obj.optString("nombre_agrupacion", "")
+                            obj.has("agrupacion") && !obj.isNull("agrupacion") -> obj.optString("agrupacion", "")
+                            else -> ""
+                        }.trim().takeIf { it.isNotBlank() }
                     )
                     db.eventosDao().insertEvento(evento)
                 }

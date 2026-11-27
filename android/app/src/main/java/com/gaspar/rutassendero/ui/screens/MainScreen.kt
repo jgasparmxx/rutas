@@ -140,6 +140,9 @@ fun MainScreen(
     val relativeDirection by viewModel.relativeDirection.collectAsState()
     val isGuiding by viewModel.isGuiding.collectAsState()
     val guideDirectionForward by viewModel.guideDirectionForward.collectAsState()
+    val etaToTargetSeconds by viewModel.etaToTargetSeconds.collectAsState()
+    val etaToMetaSeconds by viewModel.etaToMetaSeconds.collectAsState()
+    val walkingSpeedKmh by viewModel.walkingSpeedKmh.collectAsState()
     val capturedPhotoPath by viewModel.capturedPhotoPath.collectAsState()
     val dictatedText by viewModel.dictatedText.collectAsState()
     val selectedRoutePoints by viewModel.selectedRoutePoints.collectAsState()
@@ -265,6 +268,7 @@ fun MainScreen(
     var showSalidasDialog by remember { mutableStateOf(false) }
     var showUpcomingOutingWarningDialog by remember { mutableStateOf<com.gaspar.rutassendero.data.InvitacionAceptadaEntity?>(null) }
     var showAboutDialog by remember { mutableStateOf(false) }
+    var showTermsDialog by remember { mutableStateOf(false) }
 
 
     LaunchedEffect(senderistaUiState) {
@@ -915,14 +919,30 @@ fun MainScreen(
                                     val currentDistStr = if (currentProgressDist >= 1000f) String.format(java.util.Locale.US, "%.2f km", currentProgressDist / 1000f) else "${currentProgressDist.toInt()} m"
                                     val percentage = if (totalDist > 0) ((currentProgressDist / totalDist) * 100).toInt().coerceIn(0, 100) else 0
                                     
-                                    val currentSpeedKmh = if (location != null && location!!.hasSpeed()) (location!!.speed * 3.6f) else 0f
-                                    val speedStr = String.format(java.util.Locale.US, "%.1f km/h", currentSpeedKmh)
+                                    val effectiveSpeedKmh = walkingSpeedKmh ?: (if (location != null && location!!.hasSpeed()) (location!!.speed * 3.6f) else 0f)
+                                    val speedStr = String.format(java.util.Locale.US, "%.1f km/h", effectiveSpeedKmh)
+                                    val etaMetaStr = etaToMetaSeconds?.let { RouteStatsCalculator.formatDurationShort(it) } ?: "--"
+                                    val etaTargetStr = etaToTargetSeconds?.let { RouteStatsCalculator.formatDurationShort(it) } ?: "--"
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.clickable { viewModel.announceEtaStatus() }
+                                    ) {
+                                        Text(
+                                            text = "⏱️ Meta: ~$etaMetaStr · Sig: ~$etaTargetStr · $speedStr",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF0F766E), // Teal 700 legible y llamativo
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                    }
 
                                     Text(
-                                        text = "$currentDistStr de $totalDistStr ($percentage%) · Vel: $speedStr",
-                                        fontSize = 10.sp,
+                                        text = "$currentDistStr de $totalDistStr ($percentage%)",
+                                        fontSize = 9.5.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFF0F172A), // Azul casi negro (Slate 900)
+                                        color = Color(0xFF334155), // Slate 700
                                         maxLines = 1,
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                     )
@@ -1345,6 +1365,11 @@ fun MainScreen(
                         isGuideMode = currentAppRole != "registrar",
                         currentAppRole = currentAppRole,
                         senderistaRol = senderista?.rol ?: "S",
+                        isGuiding = isGuiding,
+                        etaMetaText = etaToMetaSeconds?.let { RouteStatsCalculator.formatDurationShort(it) },
+                        etaTargetText = etaToTargetSeconds?.let { RouteStatsCalculator.formatDurationShort(it) },
+                        speedText = walkingSpeedKmh?.let { String.format(java.util.Locale.US, "%.1f km/h", it) } ?: (location?.takeIf { it.hasSpeed() }?.let { String.format(java.util.Locale.US, "%.1f km/h", it.speed * 3.6f) }),
+                        onEtaClick = { viewModel.announceEtaStatus() },
                         onSelectRutaClick = {
                             coroutineScope.launch {
                                 val activeRoute = viewModel.getActiveRoute()
@@ -1407,6 +1432,7 @@ fun MainScreen(
                         },
                         onSettingsClick = { showSettings = true },
                         onAboutClick = { showAboutDialog = true },
+                        onTermsClick = { showTermsDialog = true },
                         onLockClick = { isPocketLockActive = true },
                         isVirtualTourActive = isVirtualTourActive,
                         onVirtualTourClick = {
@@ -3154,6 +3180,12 @@ fun MainScreen(
             )
         }
 
+        if (showTermsDialog) {
+            TermsAndConditionsDialog(
+                onDismiss = { showTermsDialog = false }
+            )
+        }
+
         if (showSalidasDialog) {
             SalidasDialog(
                 viewModel = viewModel,
@@ -3584,11 +3616,17 @@ fun HeaderBar(
     onPointsOrderChange: (Boolean) -> Unit = {},
     onSettingsClick: () -> Unit = {},
     onAboutClick: () -> Unit = {},
+    onTermsClick: () -> Unit = {},
     onLockClick: () -> Unit = {},
     is911Active: Boolean = false,
     on911Click: () -> Unit = {},
     isVirtualTourActive: Boolean = false,
-    onVirtualTourClick: () -> Unit = {}
+    onVirtualTourClick: () -> Unit = {},
+    isGuiding: Boolean = false,
+    etaMetaText: String? = null,
+    etaTargetText: String? = null,
+    speedText: String? = null,
+    onEtaClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -3613,6 +3651,11 @@ fun HeaderBar(
     val finalDistance = maxOf(totalTraceDistance ?: 0f, totalDistance ?: 0f)
 
     val (statusText, statusTextColor) = when {
+        isGuiding && etaMetaText != null -> {
+            val sText = speedText ?: ""
+            val speedPart = if (sText.isNotEmpty()) " · $sText" else ""
+            "Meta: ~$etaMetaText · Sig: ~${etaTargetText ?: "--"}$speedPart" to activeColor
+        }
         selectedRoute != null && (finalDistance > 0f || tracePoints.isNotEmpty() || points.isNotEmpty()) -> {
             val distStr = if (finalDistance >= 1000f) {
                 String.format(java.util.Locale.US, "Distancia total: %.2f km", finalDistance / 1000f)
@@ -3827,7 +3870,9 @@ fun HeaderBar(
                     .pointerInput(selectedRoute) {
                         detectTapGestures(
                             onTap = {
-                                if (selectedRoute != null) {
+                                if (isGuiding && etaMetaText != null) {
+                                    onEtaClick()
+                                } else if (selectedRoute != null) {
                                     onHeaderClick()
                                 }
                             },
@@ -4082,6 +4127,22 @@ fun HeaderBar(
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = ColorTekinsPrimary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        text = { Text("Términos y condiciones", color = ColorTekinsDarkBg) },
+                        onClick = {
+                            isRightMenuExpanded = false
+                            onTermsClick()
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Description,
                                 contentDescription = null,
                                 tint = ColorTekinsPrimary,
                                 modifier = Modifier.size(24.dp)

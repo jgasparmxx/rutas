@@ -11,6 +11,9 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.os.PowerManager
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -91,6 +94,17 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
     private var lastWarningTime = 0L
     private var lastProximityAnnouncementTime = 0L
     private var lastProximityAnnouncementDistance = Float.MAX_VALUE
+
+    // Variables de velocidad de marcha y estimación de tiempo (ETA)
+    private var smoothedWalkingSpeedMps = 0f
+    private val targetExpectedArrivalTimeMs = mutableMapOf<Int, Long>()
+    private val targetInitialEstimatedSec = mutableMapOf<Int, Long>()
+    private val targetExpectedSpeedKmh = mutableMapOf<Int, Float>()
+    private var metaExpectedArrivalTimeMs = 0L
+    private var metaInitialEstimatedSec = 0L
+    private var metaExpectedSpeedKmh = 4.0f
+    private var metaTargetRouteId: String? = null
+    private var lastEtaAnnouncementTime = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -494,6 +508,9 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             _distanceToTarget.value = null
             _relativeBearing.value = null
             _relativeDirection.value = null
+            _etaToTargetSeconds.value = null
+            _etaToMetaSeconds.value = null
+            _walkingSpeedKmh.value = null
             lastEvaluatedTargetId = null
             minDistanceToTarget = Float.MAX_VALUE
             lastProximityAnnouncementDistance = Float.MAX_VALUE
@@ -506,6 +523,9 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             _distanceToTarget.value = null
             _relativeBearing.value = null
             _relativeDirection.value = null
+            _etaToTargetSeconds.value = null
+            _etaToMetaSeconds.value = null
+            _walkingSpeedKmh.value = null
             lastEvaluatedTargetId = null
             minDistanceToTarget = Float.MAX_VALUE
             lastProximityAnnouncementDistance = Float.MAX_VALUE
@@ -524,15 +544,6 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
         val radioPeligroMetros = 100f.coerceAtLeast(limitDistance * 1.5f)
         val now = System.currentTimeMillis()
 
-        // Si el waypoint de destino cambia, reiniciamos las variables de seguimiento
-        if (lastEvaluatedTargetId != target.id) {
-            lastEvaluatedTargetId = target.id
-            minDistanceToTarget = Float.MAX_VALUE
-            lastProximityAnnouncementDistance = Float.MAX_VALUE
-            lastWarningTime = 0L
-            lastProximityAnnouncementTime = 0L
-        }
-
         // --- Comportamiento Normal de Seguimiento hacia el target actual ---
         
         val targetLoc = Location("").apply {
@@ -542,6 +553,56 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
 
         val distanceToCurrentTarget = userLoc.distanceTo(targetLoc)
         _distanceToTarget.value = distanceToCurrentTarget
+
+        // Estimación y suavizado de velocidad del senderista caminando (EMA)
+        if (userLoc.hasSpeed() && userLoc.speed >= 0.35f && userLoc.speed <= 3.5f) {
+            smoothedWalkingSpeedMps = if (smoothedWalkingSpeedMps <= 0f) {
+                userLoc.speed
+            } else {
+                (smoothedWalkingSpeedMps * 0.75f + userLoc.speed * 0.25f)
+            }
+        }
+        val effectiveSpeedMps = if (smoothedWalkingSpeedMps >= 0.35f) smoothedWalkingSpeedMps else 1.11f // 1.11 m/s = 4.0 km/h (velocidad típica senderista)
+        val currentSpeedKmh = if (userLoc.hasSpeed() && userLoc.speed >= 0.35f) userLoc.speed * 3.6f else (effectiveSpeedMps * 3.6f)
+        _walkingSpeedKmh.value = currentSpeedKmh
+
+        // Tiempo estimado al siguiente punto
+        val secondsToNext = (distanceToCurrentTarget / effectiveSpeedMps).toLong().coerceAtLeast(0L)
+        _etaToTargetSeconds.value = secondsToNext
+
+        // Distancia y tiempo restante a la meta final
+        val remDistToMeta = com.gaspar.rutassendero.ui.RouteStatsCalculator.calculateRemainingDistanceToMeta(userLoc, target, puntos, forward)
+        val secondsToMeta = (remDistToMeta / effectiveSpeedMps).toLong().coerceAtLeast(0L)
+        _etaToMetaSeconds.value = secondsToMeta
+
+        // Si el waypoint de destino cambia, reiniciamos las variables de seguimiento y guardamos expectativa de llegada
+        if (lastEvaluatedTargetId != target.id) {
+            lastEvaluatedTargetId = target.id
+            minDistanceToTarget = Float.MAX_VALUE
+            lastProximityAnnouncementDistance = Float.MAX_VALUE
+            lastWarningTime = 0L
+            lastProximityAnnouncementTime = 0L
+
+            targetExpectedArrivalTimeMs[target.id] = now + (secondsToNext * 1000L)
+            targetInitialEstimatedSec[target.id] = secondsToNext
+            targetExpectedSpeedKmh[target.id] = if (currentSpeedKmh >= 3.0f) currentSpeedKmh else 4.0f
+        }
+
+        if (metaTargetRouteId != _selectedRoute.value?.id || metaExpectedArrivalTimeMs == 0L) {
+            metaTargetRouteId = _selectedRoute.value?.id
+            metaExpectedArrivalTimeMs = now + (secondsToMeta * 1000L)
+            metaInitialEstimatedSec = secondsToMeta
+            metaExpectedSpeedKmh = if (currentSpeedKmh >= 3.0f) currentSpeedKmh else 4.0f
+        }
+
+        // Anuncio periódico de ETA cada 3 minutos si va caminando
+        if (userLoc.speed >= 0.4f && now - lastEtaAnnouncementTime > 180_000L && now - lastTtsTime > 30_000L) {
+            lastEtaAnnouncementTime = now
+            val speedSpoken = String.format(Locale.US, "%.1f", currentSpeedKmh)
+            val nextSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(secondsToNext)
+            val metaSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(secondsToMeta)
+            speakTts("Velocidad: $speedSpoken kilómetros por hora. Llegarás al siguiente punto en $nextSpoken y a la meta en $metaSpoken.")
+        }
 
         // Actualizar la distancia mínima alcanzada para este punto
         if (distanceToCurrentTarget < minDistanceToTarget) {
@@ -786,10 +847,25 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
     }
 
     private suspend fun handleWaypointReached(punto: PuntoRutaEntity) {
-        // Avanzar o retroceder de forma automática
+        val now = System.currentTimeMillis()
         val puntos = _selectedRoutePoints.value
         val index = puntos.indexOfFirst { it.id == punto.id }
         if (index != -1) {
+            // Verificar si el senderista llegó antes o tarde respecto al cálculo estimado
+            val expectedArrival = targetExpectedArrivalTimeMs[punto.id]
+            val timeSavedMs = if (expectedArrival != null && expectedArrival > now) (expectedArrival - now) else 0L
+            val arrivedEarly = timeSavedMs >= 15_000L // Al menos 15 segundos antes
+            val earlyTimeSpoken = if (arrivedEarly) com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(timeSavedMs / 1000L) else ""
+
+            val timeLateMs = if (expectedArrival != null && now > expectedArrival) (now - expectedArrival) else 0L
+            val arrivedLate = timeLateMs >= 30_000L // Al menos 30 segundos tarde
+            val lateTimeSpoken = if (arrivedLate) com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(timeLateMs / 1000L) else ""
+
+            val expSpeed = targetExpectedSpeedKmh[punto.id] ?: 4.0f
+            val actSpeed = _walkingSpeedKmh.value ?: (if (smoothedWalkingSpeedMps >= 0.35f) smoothedWalkingSpeedMps * 3.6f else 4.0f)
+            val expSpeedStr = String.format(Locale.US, "%.1f", expSpeed)
+            val actSpeedStr = String.format(Locale.US, "%.1f", actSpeed)
+
             val nextIndex = if (_guideDirectionForward.value) index + 1 else index - 1
             if (nextIndex in puntos.indices) {
                 // Llegó a un punto intermedio
@@ -807,39 +883,91 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                     ?: com.gaspar.rutassendero.ui.RouteStatsCalculator.estimateRemainingElevationToTarget(punto, nextPunto, _currentLocation.value, segDist)
                 val nextDistSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDistanceSpoken(segDist)
                 val nextElevSuffix = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatElevationSpeechSuffix(segDeltaAlt)
-                val nextTargetMsg = "Siguiente destino: ${nextPunto.descripcion}, distancia a caminar $nextDistSpoken$nextElevSuffix."
-
-                val isNormal = punto.estado == 1
-                if (isNormal) {
-                    speakTts("Llegaste a punto de ruta: ${punto.descripcion}. $nextTargetMsg")
-                } else {
-                    val stateName = when(punto.estado) {
-                        2 -> "sitio de interés"
-                        3 -> "bifurcación"
-                        4 -> "suelo flojo"
-                        5 -> "cuidado"
-                        6 -> "peligro"
-                        8 -> "vehículo"
-                        9 -> "refugio"
-                        10 -> "comida"
-                        else -> "punto especial"
-                    }
-                    val suffix = if (_isVoiceGuidanceEnabled.value) " $nextTargetMsg" else ""
-                    speakTts("$stateName. ${punto.descripcion}.$suffix", force = true)
-                }
                 
-                // Sonido de llegada normal
-                playSoundPattern(listOf(150 to 50, 150 to 50, 300 to 100))
+                val effectiveSpeed = if (smoothedWalkingSpeedMps >= 0.35f) smoothedWalkingSpeedMps else 1.11f
+                val nextSec = (segDist / effectiveSpeed).toLong().coerceAtLeast(0L)
+                val nextEtaSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(nextSec)
+                val remMetaDist = com.gaspar.rutassendero.ui.RouteStatsCalculator.calculateRemainingDistanceToMeta(nextLoc, nextPunto, puntos, _guideDirectionForward.value)
+                val metaSec = (remMetaDist / effectiveSpeed).toLong().coerceAtLeast(0L)
+                val metaEtaSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(metaSec)
+
+                // Guardar la expectativa para el siguiente punto
+                targetExpectedArrivalTimeMs[nextPunto.id] = now + (nextSec * 1000L)
+                targetInitialEstimatedSec[nextPunto.id] = nextSec
+                targetExpectedSpeedKmh[nextPunto.id] = if (effectiveSpeed * 3.6f >= 3.0f) effectiveSpeed * 3.6f else 4.0f
+
+                val nextTargetMsg = "Siguiente destino: ${nextPunto.descripcion}, distancia a caminar $nextDistSpoken$nextElevSuffix. Llegarás en $nextEtaSpoken. Tiempo a la meta: $metaEtaSpoken."
+
+                if (arrivedEarly) {
+                    playJoyfulFanfareInternal()
+                    delay(1300) // Dejar sonar la fanfarria alegre de felicitación
+                    speakTts("¡Llegaste $earlyTimeSpoken antes al punto ${punto.descripcion}, felicidades! $nextTargetMsg", force = true)
+                } else if (arrivedLate) {
+                    playSoundPattern(listOf(300 to 150, 200 to 250))
+                    delay(400)
+                    speakTts("Llegaste $lateTimeSpoken tarde al punto ${punto.descripcion}. Se esperaba una velocidad de $expSpeedStr kilómetros por hora y traes una velocidad de $actSpeedStr kilómetros por hora. ¡Apura el paso! $nextTargetMsg", force = true)
+                } else {
+                    val isNormal = punto.estado == 1
+                    if (isNormal) {
+                        speakTts("Llegaste a punto de ruta: ${punto.descripcion}. $nextTargetMsg")
+                    } else {
+                        val stateName = when(punto.estado) {
+                            2 -> "sitio de interés"
+                            3 -> "bifurcación"
+                            4 -> "suelo flojo"
+                            5 -> "cuidado"
+                            6 -> "peligro"
+                            8 -> "vehículo"
+                            9 -> "refugio"
+                            10 -> "comida"
+                            else -> "punto especial"
+                        }
+                        val suffix = if (_isVoiceGuidanceEnabled.value) " $nextTargetMsg" else ""
+                        speakTts("$stateName. ${punto.descripcion}.$suffix", force = true)
+                    }
+                    // Sonido de llegada normal
+                    playSoundPattern(listOf(150 to 50, 150 to 50, 300 to 100))
+                }
                 
                 _targetWaypoint.value = nextPunto
             } else {
-                // LLEGADA AL DESTINO FINAL
-                speakTts("Felicidades. Has llegado a tu destino final, completando la ruta: ${punto.descripcion}")
-                // Sonido de llegada triunfal / festivo
-                playSoundPattern(listOf(150 to 50, 150 to 50, 150 to 50, 400 to 100, 200 to 50, 600 to 200))
+                // LLEGADA AL DESTINO FINAL (META)
+                val metaSavedMs = if (metaExpectedArrivalTimeMs > now) (metaExpectedArrivalTimeMs - now) else 0L
+                val arrivedMetaEarly = metaSavedMs >= 20_000L || arrivedEarly
+                val effectiveSavedMs = if (metaSavedMs >= 20_000L) metaSavedMs else timeSavedMs
+                val earlyMetaSpoken = if (effectiveSavedMs >= 15_000L) com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(effectiveSavedMs / 1000L) else ""
+
+                val metaLateMs = if (metaExpectedArrivalTimeMs > 0L && now > metaExpectedArrivalTimeMs) (now - metaExpectedArrivalTimeMs) else 0L
+                val arrivedMetaLate = metaLateMs >= 30_000L || (!arrivedMetaEarly && timeLateMs >= 30_000L)
+                val effectiveLateMs = if (metaLateMs >= 30_000L) metaLateMs else timeLateMs
+                val lateMetaSpoken = if (arrivedMetaLate && effectiveLateMs >= 20_000L) com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(effectiveLateMs / 1000L) else ""
+
+                val expMetaSpeedStr = String.format(Locale.US, "%.1f", metaExpectedSpeedKmh)
+                val actMetaSpeedStr = String.format(Locale.US, "%.1f", actSpeed)
+
+                if (earlyMetaSpoken.isNotEmpty()) {
+                    playJoyfulFanfareInternal()
+                    delay(1500)
+                    speakTts("¡Felicidades! Has llegado a tu meta final $earlyMetaSpoken antes de lo estimado, completando la ruta: ${punto.descripcion}. ¡Excelente ritmo de caminata!", force = true)
+                } else if (lateMetaSpoken.isNotEmpty()) {
+                    playSoundPattern(listOf(300 to 150, 200 to 250))
+                    delay(400)
+                    speakTts("Has llegado a tu meta final con $lateMetaSpoken tarde completando la ruta: ${punto.descripcion}. Se esperaba una velocidad de $expMetaSpeedStr kilómetros por hora y registraste $actMetaSpeedStr kilómetros por hora. ¡Buen esfuerzo, a mejorar el ritmo en la próxima!", force = true)
+                } else {
+                    speakTts("Felicidades. Has llegado a tu destino final, completando la ruta: ${punto.descripcion}")
+                    // Sonido de llegada triunfal / festivo
+                    playSoundPattern(listOf(150 to 50, 150 to 50, 150 to 50, 400 to 100, 200 to 50, 600 to 200))
+                }
                 
                 _isGuiding.value = false
                 _targetWaypoint.value = null
+                _etaToTargetSeconds.value = null
+                _etaToMetaSeconds.value = null
+                _walkingSpeedKmh.value = null
+                metaExpectedArrivalTimeMs = 0L
+                targetExpectedArrivalTimeMs.clear()
+                targetInitialEstimatedSec.clear()
+                targetExpectedSpeedKmh.clear()
             }
         }
     }
@@ -933,6 +1061,110 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
         emergencyJob = null
     }
 
+    /**
+     * Reproduce una fanfarria alegre de felicitación mediante síntesis de audio PCM (AudioTrack)
+     * emulando una alegre melodía triunfal de trompeta/metales (Do - Mi - Sol - Do agudo).
+     * En caso de incompatibilidad de hardware o excepción, conmuta a patrón melódico de tonos.
+     */
+    fun playJoyfulFanfareInternal() {
+        serviceScope.launch(Dispatchers.Default) {
+            try {
+                maximizeVolume()
+                val sampleRate = 22050
+                // Secuencia musical de Fanfarria alegre (Arpegio triunfal en Do Mayor: C5, E5, G5, C6)
+                val notes = listOf(
+                    Pair(523.25, 130), // Do 5 (C5)
+                    Pair(659.25, 130), // Mi 5 (E5)
+                    Pair(783.99, 130), // Sol 5 (G5)
+                    Pair(1046.50, 300), // Do 6 (C6 agudo triunfal)
+                    Pair(0.0, 70),      // Silencio
+                    Pair(783.99, 120),  // Sol 5 (G5)
+                    Pair(1046.50, 500)  // Do 6 (C6 sostenido festivo)
+                )
+                val totalSamples = notes.sumOf { (it.second * sampleRate) / 1000 }
+                val audioData = ShortArray(totalSamples)
+                var currentSample = 0
+
+                for ((freq, durationMs) in notes) {
+                    val noteSamples = (durationMs * sampleRate) / 1000
+                    for (i in 0 until noteSamples) {
+                        if (freq <= 0.0) {
+                            if (currentSample < audioData.size) audioData[currentSample++] = 0
+                        } else {
+                            val t = i.toDouble() / sampleRate
+                            val envelope = when {
+                                i < (sampleRate * 0.02) -> i / (sampleRate * 0.02)
+                                i > noteSamples - (sampleRate * 0.04) -> (noteSamples - i) / (sampleRate * 0.04)
+                                else -> 1.0
+                            }
+                            val sampleVal = (
+                                0.60 * kotlin.math.sin(2.0 * Math.PI * freq * t) +
+                                0.28 * kotlin.math.sin(2.0 * Math.PI * (freq * 2.0) * t) +
+                                0.12 * kotlin.math.sin(2.0 * Math.PI * (freq * 3.0) * t)
+                            ) * envelope
+                            if (currentSample < audioData.size) {
+                                audioData[currentSample++] = (sampleVal * 32767.0).toInt().coerceIn(-32768, 32767).toShort()
+                            }
+                        }
+                    }
+                }
+
+                val track = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(audioData.size * 2)
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .build()
+
+                track.write(audioData, 0, audioData.size)
+                track.play()
+                delay(1600)
+                track.stop()
+                track.release()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error tocando fanfarria AudioTrack: ${e.message}")
+                playSoundPatternInternal(listOf(120 to 30, 120 to 30, 120 to 30, 300 to 50, 150 to 30, 500 to 100))
+            }
+        }
+    }
+
+    /**
+     * Anuncia por voz el estado actual de velocidad y tiempos estimados hacia el siguiente punto y la meta.
+     */
+    fun announceEtaStatusInternal() {
+        val speedKmh = _walkingSpeedKmh.value ?: 0f
+        val etaNext = _etaToTargetSeconds.value
+        val etaMeta = _etaToMetaSeconds.value
+        val target = _targetWaypoint.value
+
+        if (target != null && etaNext != null && etaMeta != null) {
+            val speedStr = String.format(Locale.US, "%.1f", speedKmh)
+            val nextSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(etaNext)
+            val metaSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(etaMeta)
+            val now = System.currentTimeMillis()
+            val expArrival = targetExpectedArrivalTimeMs[target.id]
+            val lateSuffix = if (expArrival != null && now > expArrival && (now - expArrival) >= 30_000L) {
+                val lateTime = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken((now - expArrival) / 1000L)
+                val expSpeed = String.format(Locale.US, "%.1f", targetExpectedSpeedKmh[target.id] ?: 4.0f)
+                " Atención: llevas $lateTime de retraso para este punto. Se esperaba velocidad de $expSpeed y traes $speedStr kilómetros por hora. ¡Apura el paso!"
+            } else ""
+            speakTts("Velocidad de caminata: $speedStr kilómetros por hora. Llegarás al punto ${target.descripcion} en $nextSpoken, y a la meta final en $metaSpoken.$lateSuffix")
+        } else {
+            speakTts("Calculando estimaciones de tiempo de caminata hacia el sendero...")
+        }
+    }
+
 
 
     // --- NOTIFICACIÃ“N DING ---
@@ -977,13 +1209,15 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                 val remElev = com.gaspar.rutassendero.ui.RouteStatsCalculator.estimateRemainingElevationToTarget(prevPt, target, location, dist)
                 val elevBadge = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatElevationHeaderBadge(remElev)
                 val elevPart = if (elevBadge.isNotEmpty()) " · $elevBadge" else ""
-                val speedKmh = if (location.hasSpeed()) location.speed * 3.6f else 0f
+                val speedKmh = _walkingSpeedKmh.value ?: (if (location.hasSpeed()) location.speed * 3.6f else 0f)
                 val speedStr = String.format(Locale.US, "%.1f km/h", speedKmh)
-                "Guía a: ${target.descripcion} (${dist.toInt()}m$elevPart) · Vel: $speedStr"
+                val etaTargetStr = _etaToTargetSeconds.value?.let { com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationShort(it) } ?: "--"
+                val etaMetaStr = _etaToMetaSeconds.value?.let { com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationShort(it) } ?: "--"
+                "Guía a: ${target.descripcion} (${dist.toInt()}m$elevPart) · Sig: ~$etaTargetStr · Meta: ~$etaMetaStr · $speedStr"
             }
             route != null -> {
                 val puntos = _selectedRoutePoints.value.size
-                "Ruta: ${route.nombre} | ${puntos} pts | GPS Â±${String.format("%.1f", location.accuracy)}m"
+                "Ruta: ${route.nombre} | ${puntos} pts | GPS ±${String.format("%.1f", location.accuracy)}m"
             }
             else -> {
                 "GPS Conectado | Esperando selección de ruta..."
@@ -1763,6 +1997,15 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
         private val _relativeDirection = MutableStateFlow<String?>(null)
         val relativeDirection = _relativeDirection.asStateFlow()
 
+        private val _etaToTargetSeconds = MutableStateFlow<Long?>(null)
+        val etaToTargetSeconds = _etaToTargetSeconds.asStateFlow()
+
+        private val _etaToMetaSeconds = MutableStateFlow<Long?>(null)
+        val etaToMetaSeconds = _etaToMetaSeconds.asStateFlow()
+
+        private val _walkingSpeedKmh = MutableStateFlow<Float?>(null)
+        val walkingSpeedKmh = _walkingSpeedKmh.asStateFlow()
+
         private val _isGuiding = MutableStateFlow(false)
         val isGuiding = _isGuiding.asStateFlow()
 
@@ -1783,6 +2026,14 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
         private val announcedAlertsThresholds = mutableSetOf<String>()
 
 
+
+        fun playJoyfulFanfare() {
+            instance?.playJoyfulFanfareInternal()
+        }
+
+        fun announceEtaStatus() {
+            instance?.announceEtaStatusInternal()
+        }
 
         fun playSoundPattern(pattern: List<Pair<Int, Int>>) {
             instance?.playSoundPatternInternal(pattern)
@@ -1814,9 +2065,14 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             if (ruta == null) {
                 _isGuiding.value = false
                 _targetWaypoint.value = null
+                _etaToTargetSeconds.value = null
+                _etaToMetaSeconds.value = null
+                _walkingSpeedKmh.value = null
                 _selectedRouteTrace.value = emptyList()
                 announcedAlertsThresholds.clear()
                 instance?.prefs?.activeRouteId = null
+                instance?.metaExpectedArrivalTimeMs = 0L
+                instance?.metaTargetRouteId = null
             }
         }
 
@@ -1859,9 +2115,22 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
             if (rutaId != null) {
                 instance?.prefs?.activeRouteId = rutaId
                 instance?.prefs?.activeRouteForward = !toStart
+                instance?.metaTargetRouteId = rutaId
             }
 
             val destText = if (toStart) "el inicio" else "el final"
+            val effectiveSpeed = if ((instance?.smoothedWalkingSpeedMps ?: 0f) >= 0.35f) instance!!.smoothedWalkingSpeedMps else 1.11f
+            val metaDist = if (target != null && userLoc != null) {
+                com.gaspar.rutassendero.ui.RouteStatsCalculator.calculateRemainingDistanceToMeta(userLoc, target, points, !toStart)
+            } else 0f
+            val metaSec = (metaDist / effectiveSpeed).toLong().coerceAtLeast(0L)
+            val metaEtaSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(metaSec)
+
+            val now = System.currentTimeMillis()
+            instance?.metaExpectedArrivalTimeMs = now + (metaSec * 1000L)
+            instance?.metaInitialEstimatedSec = metaSec
+            instance?.metaExpectedSpeedKmh = if (effectiveSpeed * 3.6f >= 3.0f) effectiveSpeed * 3.6f else 4.0f
+
             val initialTargetMsg = if (target != null && userLoc != null) {
                 val tLoc = Location("").apply {
                     latitude = target.latitud
@@ -1874,7 +2143,12 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
                 val delta = com.gaspar.rutassendero.ui.RouteStatsCalculator.estimateRemainingElevationToTarget(prevPt, target, userLoc, d)
                 val dSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDistanceSpoken(d)
                 val eSuffix = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatElevationSpeechSuffix(delta)
-                "Avance al punto: ${target.descripcion}, distancia a caminar $dSpoken$eSuffix."
+                val tSec = (d / effectiveSpeed).toLong().coerceAtLeast(0L)
+                val tEtaSpoken = com.gaspar.rutassendero.ui.RouteStatsCalculator.formatDurationSpoken(tSec)
+                instance?.targetExpectedArrivalTimeMs?.put(target.id, now + (tSec * 1000L))
+                instance?.targetInitialEstimatedSec?.put(target.id, tSec)
+                instance?.targetExpectedSpeedKmh?.put(target.id, instance?.metaExpectedSpeedKmh ?: 4.0f)
+                "Avance al punto: ${target.descripcion}, a $dSpoken$eSuffix. Llegarás en $tEtaSpoken. Tiempo total a la meta: $metaEtaSpoken."
             } else {
                 "Avance al punto: ${target?.descripcion ?: ""}"
             }
@@ -1884,8 +2158,16 @@ class GpsTrackingService : Service(), TextToSpeech.OnInitListener, android.hardw
         fun stopGuiding() {
             _isGuiding.value = false
             _targetWaypoint.value = null
+            _etaToTargetSeconds.value = null
+            _etaToMetaSeconds.value = null
+            _walkingSpeedKmh.value = null
             announcedAlertsThresholds.clear()
             instance?.prefs?.activeRouteId = null
+            instance?.metaExpectedArrivalTimeMs = 0L
+            instance?.metaTargetRouteId = null
+            instance?.targetExpectedArrivalTimeMs?.clear()
+            instance?.targetInitialEstimatedSec?.clear()
+            instance?.targetExpectedSpeedKmh?.clear()
         }
 
         fun setTargetWaypoint(target: PuntoRutaEntity?) {

@@ -59,5 +59,11 @@ data class EventoEntity(
     val fupdate: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "comentario")
-    val comentario: String? = null
+    val comentario: String? = null,
+
+    @ColumnInfo(name = "es_publico", defaultValue = "1")
+    val esPublico: Boolean = true,
+
+    @ColumnInfo(name = "id_agrupacion")
+    val idAgrupacion: String? = null
 )

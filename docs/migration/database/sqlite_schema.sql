@@ -145,7 +145,9 @@ CREATE TABLE IF NOT EXISTS eventos (
     comprobante_pago BLOB,
     fecha_subida_comprobante TEXT,
     fupdate INTEGER NOT NULL DEFAULT 0,
-    comentario TEXT
+    comentario TEXT,
+    es_publico INTEGER NOT NULL DEFAULT 1,
+    id_agrupacion TEXT
 );
 
 -- 8. TABLA: invitaciones_aceptadas

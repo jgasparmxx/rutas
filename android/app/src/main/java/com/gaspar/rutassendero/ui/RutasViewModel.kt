@@ -135,6 +135,18 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
     val isGuiding: StateFlow<Boolean> = GpsTrackingService.isGuiding
     val guideDirectionForward: StateFlow<Boolean> = GpsTrackingService.guideDirectionForward
     
+    val etaToTargetSeconds: StateFlow<Long?> = GpsTrackingService.etaToTargetSeconds
+    val etaToMetaSeconds: StateFlow<Long?> = GpsTrackingService.etaToMetaSeconds
+    val walkingSpeedKmh: StateFlow<Float?> = GpsTrackingService.walkingSpeedKmh
+
+    fun announceEtaStatus() {
+        GpsTrackingService.announceEtaStatus()
+    }
+
+    fun playJoyfulFanfare() {
+        GpsTrackingService.playJoyfulFanfare()
+    }
+    
     val isVoiceGuidanceEnabled: StateFlow<Boolean> = GpsTrackingService.isVoiceGuidanceEnabled
     fun toggleVoiceGuidance() {
         GpsTrackingService.setVoiceGuidanceEnabled(!isVoiceGuidanceEnabled.value)
@@ -2656,10 +2668,16 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val senderista = senderistaState.value ?: db.senderistaDao().getSenderistaFlow().first()
                 val email = senderista?.email ?: ""
+                val senderistaAgrupacion = senderista?.idAgrupacion?.trim() ?: ""
+                val agrupaciones = db.participantesDao().getAgrupaciones().ifEmpty { agrupacionesList.value }
+                val senderistaAgrupacionNombre = agrupaciones.find { 
+                    it.idAgrupacion.equals(senderistaAgrupacion, ignoreCase = true) 
+                }?.nombre?.trim() ?: ""
                 
                 if (senderista != null) {
                     verifyLocalOutingsWithCloud(senderista)
                 }
+                cleanupPastUnrealizedOutings()
 
                 val rawList = com.gaspar.rutassendero.sync.CloudSyncManager.fetchAvailableInvitations(
                     prefs.rangoDiasBusquedaSalidas,
@@ -2676,6 +2694,28 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                     val idInvRaw = map["id_invitacion"] as? Int ?: 0
                     
                     if (acceptedInvitations.contains(idInvRaw)) return@filter false
+
+                    // Descartar salidas que ya hayan pasado de fecha
+                    val fechaSalidaStr = map["fecha_hora_salida"] as? String
+                    if (!com.gaspar.rutassendero.utils.OutingDateUtils.isFutureOrCurrent(fechaSalidaStr)) {
+                        return@filter false
+                    }
+
+                    // Filtro para eventos (tipo_ruta == "E"):
+                    // Solo si el evento tiene es_publico = true esta invitación se muestra a todos.
+                    // Si no es público, se verifica el id de la agrupación del evento:
+                    // solo si el senderista pertenece a dicha agrupación se le mostrará la invitación.
+                    if (tipoRuta == "E") {
+                        val esPublico = map["es_publico"] as? Boolean ?: true
+                        if (!esPublico) {
+                            val idAgrupEvento = (map["id_agrupacion"] as? String)?.trim() ?: ""
+                            val pertenece = senderistaAgrupacion.isNotEmpty() && (
+                                idAgrupEvento.equals(senderistaAgrupacion, ignoreCase = true) ||
+                                (senderistaAgrupacionNombre.isNotEmpty() && idAgrupEvento.equals(senderistaAgrupacionNombre, ignoreCase = true))
+                            )
+                            if (!pertenece) return@filter false
+                        }
+                    }
                     
                     val rawLat = map["latitud"] as? Double ?: 0.0
                     val rawLng = map["longitud"] as? Double ?: 0.0
@@ -3117,6 +3157,43 @@ class RutasViewModel(application: Application) : AndroidViewModel(application) {
                 Log.w("RutasViewModel", "Error al verificar existencia de la invitación en la nube: ${e.message}")
             }
             onExists()
+        }
+    }
+
+    fun cleanupPastUnrealizedOutings() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val accepted = db.eventosDao().getInvitacionesAceptadas()
+                for (inv in accepted) {
+                    val isPast = !com.gaspar.rutassendero.utils.OutingDateUtils.isFutureOrCurrent(inv.fechaHoraSalida, graceHours = 0L)
+                    // Elimina localmente si es la fecha 2026-10-13 o si ya pasó y no tiene cooperación realizada ni comprobante
+                    if (inv.fechaHoraSalida.contains("2026-10-13") || (isPast && inv.cooperacionRealizada == null && inv.comprobantePago == null)) {
+                        db.eventosDao().deleteInvitacionAceptada(inv)
+                        Log.d("RutasViewModel", "Salida no realizada eliminada localmente: ${inv.idInvitacion} (${inv.fechaHoraSalida})")
+                    }
+                }
+                val eventos = db.eventosDao().getEventos()
+                for (ev in eventos) {
+                    val isPast = !com.gaspar.rutassendero.utils.OutingDateUtils.isFutureOrCurrent(ev.fechaHoraSalida, graceHours = 0L)
+                    if (ev.fechaHoraSalida.contains("2026-10-13") || isPast) {
+                        db.eventosDao().deleteEvento(ev)
+                        Log.d("RutasViewModel", "Evento no realizado eliminado localmente: ${ev.idEvento} (${ev.fechaHoraSalida})")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("RutasViewModel", "Error al limpiar salidas locales no realizadas: ${e.message}")
+            }
+        }
+    }
+
+    fun eliminarSalidaHistorial(outing: InvitacionAceptadaEntity) {
+        viewModelScope.launch {
+            try {
+                db.eventosDao().deleteInvitacionAceptada(outing)
+                Log.d("RutasViewModel", "Salida eliminada del historial local: ${outing.idInvitacion}")
+            } catch (e: Exception) {
+                Log.e("RutasViewModel", "Error al eliminar salida de historial: ${e.message}")
+            }
         }
     }
 

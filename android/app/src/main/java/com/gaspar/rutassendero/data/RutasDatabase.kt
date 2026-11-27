@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [RutaEntity::class, PuntoRutaEntity::class, SenderistaEntity::class, TrazaRutaEntity::class, InvitacionAceptadaEntity::class, EventoEntity::class, FraseDificultadEntity::class, ParticipanteEntity::class, AgrupacionEntity::class], version = 34, exportSchema = false)
+@Database(entities = [RutaEntity::class, PuntoRutaEntity::class, SenderistaEntity::class, TrazaRutaEntity::class, InvitacionAceptadaEntity::class, EventoEntity::class, FraseDificultadEntity::class, ParticipanteEntity::class, AgrupacionEntity::class], version = 35, exportSchema = false)
 abstract class RutasDatabase : RoomDatabase() {
 
     abstract fun rutasDao(): RutasDao
@@ -324,6 +324,13 @@ abstract class RutasDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_34_35 = object : Migration(34, 35) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE eventos ADD COLUMN es_publico INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE eventos ADD COLUMN id_agrupacion TEXT")
+            }
+        }
+
         fun getDatabase(context: Context): RutasDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -338,7 +345,8 @@ abstract class RutasDatabase : RoomDatabase() {
                     MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21,
                     MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25,
                     MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29,
-                    MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32, MIGRATION_32_33, MIGRATION_33_34
+                    MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32, MIGRATION_32_33, MIGRATION_33_34,
+                    MIGRATION_34_35
                 )
                 .fallbackToDestructiveMigration()
                 .build()

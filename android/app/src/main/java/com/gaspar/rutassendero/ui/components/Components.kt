@@ -23,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -7151,6 +7152,7 @@ fun SalidasDialog(
     
     // Confirmación de cancelación state
     var outingToCancelConfirm by remember { mutableStateOf<InvitacionAceptadaEntity?>(null) }
+    var outingToDeleteFromHistory by remember { mutableStateOf<InvitacionAceptadaEntity?>(null) }
 
     val coroutineScope = rememberCoroutineScope()
     var localLoadingMessage by remember { mutableStateOf<String?>(null) }
@@ -7200,7 +7202,7 @@ fun SalidasDialog(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Pestañas (Disponibles vs Mis Salidas)
+                    // Pestañas (Disponibles vs Mis Salidas vs Historial)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -7222,12 +7224,19 @@ fun SalidasDialog(
                         ) {
                             activeTab = 1
                         }
+                        TabButton(
+                            text = "Historial",
+                            isSelected = activeTab == 2,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            activeTab = 2
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
 
                     if (activeTab == 0) {
-                        // TAB DISPONIBLES
+                        // TAB DISPONIBLES (Solo salidas futuras)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -7286,18 +7295,22 @@ fun SalidasDialog(
                                 }
                             }
                         }
-                    } else {
-                        // TAB MIS SALIDAS
-                        if (acceptedOutings.isEmpty()) {
+                    } else if (activeTab == 1) {
+                        // TAB MIS SALIDAS (Pendientes por ir / futuras)
+                        val pendientes = acceptedOutings
+                            .filter { com.gaspar.rutassendero.utils.OutingDateUtils.isFutureOrCurrent(it.fechaHoraSalida) }
+                            .sortedBy { com.gaspar.rutassendero.utils.OutingDateUtils.parseToMillis(it.fechaHoraSalida) ?: Long.MAX_VALUE }
+
+                        if (pendientes.isEmpty()) {
                             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                Text("Aún no has aceptado ninguna salida", color = ColorTextoSecundario, fontSize = 14.sp)
+                                Text("No tienes salidas pendientes por realizar", color = ColorTextoSecundario, fontSize = 14.sp)
                             }
                         } else {
                             LazyColumn(
                                 modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                items(acceptedOutings) { outingEntity ->
+                                items(pendientes) { outingEntity ->
                                     MyOutingItemRow(outing = outingEntity) {
                                         viewModel.verificarExistenciaInvitacion(
                                             idInvitacion = outingEntity.idInvitacion,
@@ -7309,6 +7322,34 @@ fun SalidasDialog(
                                             }
                                         )
                                     }
+                                }
+                            }
+                        }
+                    } else {
+                        // TAB HISTORIAL (Salidas pasadas / concluidas)
+                        val historial = acceptedOutings
+                            .filter { !com.gaspar.rutassendero.utils.OutingDateUtils.isFutureOrCurrent(it.fechaHoraSalida) }
+                            .sortedByDescending { com.gaspar.rutassendero.utils.OutingDateUtils.parseToMillis(it.fechaHoraSalida) ?: 0L }
+
+                        if (historial.isEmpty()) {
+                            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                Text("No hay salidas en el historial", color = ColorTextoSecundario, fontSize = 14.sp)
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                items(historial) { outingEntity ->
+                                    HistoryOutingItemRow(
+                                        outing = outingEntity,
+                                        onClick = {
+                                            selectedMyOutingForDetail = outingEntity
+                                        },
+                                        onDelete = {
+                                            outingToDeleteFromHistory = outingEntity
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -7399,8 +7440,13 @@ fun SalidasDialog(
                     }
 
                     if (tipoRuta == "E") {
+                        val idAgrupEvento = (o["id_agrupacion"] as? String)?.trim() ?: ""
+                        val eventAgrupNombre = agrupaciones.find {
+                            it.idAgrupacion.equals(idAgrupEvento, ignoreCase = true) || it.nombre.equals(idAgrupEvento, ignoreCase = true)
+                        }?.nombre ?: idAgrupEvento.takeIf { it.isNotBlank() } ?: valueText
+
                         EventoDetailContent(
-                            agrupacion = valueText,
+                            agrupacion = eventAgrupNombre,
                             idRuta = rutaNombre,
                             fechaHoraSalida = fechaSalida,
                             instruccionesHtml = instrucciones,
@@ -7740,8 +7786,9 @@ fun SalidasDialog(
                             }
                         }
 
+                        val isPastOuting = !com.gaspar.rutassendero.utils.OutingDateUtils.isFutureOrCurrent(o.fechaHoraSalida)
                         val yaPago = o.comprobantePago != null || (o.cooperacionRealizada != null && o.cooperacionRealizada > 0.0)
-                        if (o.cooperacionMinima > 0.0) {
+                        if (!isPastOuting && o.cooperacionMinima > 0.0) {
                             Button(
                                 onClick = {
                                     coopAmountInput = o.cooperacionMinima.toString()
@@ -7762,7 +7809,21 @@ fun SalidasDialog(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            if (!yaPago) {
+                            if (isPastOuting) {
+                                Button(
+                                    onClick = {
+                                        outingToDeleteFromHistory = o
+                                        selectedMyOutingForDetail = null
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAlert),
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("ELIMINAR", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                }
+                            } else if (!yaPago) {
                                 Button(
                                     onClick = {
                                         outingToCancelConfirm = o
@@ -8093,6 +8154,32 @@ fun SalidasDialog(
             }
         )
     }
+
+    if (outingToDeleteFromHistory != null) {
+        val toDel = outingToDeleteFromHistory!!
+        AlertDialog(
+            onDismissRequest = { outingToDeleteFromHistory = null },
+            title = { Text("Eliminar del Historial", color = ColorTextoPrincipal, fontWeight = FontWeight.Bold) },
+            text = { Text("¿Deseas eliminar la salida '${toDel.nombreRuta}' de tu historial local?", color = ColorTextoSecundario) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        outingToDeleteFromHistory = null
+                        viewModel.eliminarSalidaHistorial(toDel)
+                        Toast.makeText(context, "Salida eliminada del historial.", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAlert)
+                ) {
+                    Text("ELIMINAR", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { outingToDeleteFromHistory = null }) {
+                    Text("CANCELAR", color = ColorTextoSecundario)
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -8146,7 +8233,10 @@ fun OutingItemRow(
             ) {
                 Text(text = rName, color = ColorTextoPrincipal, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
                 val tipoRuta = outing["tipo_ruta"] as? String ?: "S"
-                val displayNivel = if (tipoRuta == "E") "Evento" else nivel
+                val esPublico = outing["es_publico"] as? Boolean ?: true
+                val displayNivel = if (tipoRuta == "E") {
+                    if (esPublico) "Evento" else "Evento (Grupo)"
+                } else nivel
                 Badge(containerColor = ColorTekinsAccent.copy(alpha = 0.2f)) {
                     Text(
                         text = displayNivel, 
@@ -8217,6 +8307,77 @@ fun MyOutingItemRow(
                 Text(
                     text = text,
                     color = if (real != null) ColorTekinsSuccess else ColorTekinsAccent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun HistoryOutingItemRow(
+    outing: InvitacionAceptadaEntity,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = ColorTekinsCardBg),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, ColorTekinsCardMuted),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = outing.nombreRuta,
+                    color = ColorTextoPrincipal,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Badge(containerColor = ColorTekinsAccent.copy(alpha = 0.15f)) {
+                    Text(
+                        text = "Concluida",
+                        color = ColorTekinsAccent,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(4.dp))
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Eliminar de historial",
+                        tint = ColorTekinsAlert.copy(alpha = 0.8f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(4.dp))
+            
+            Text(text = "Fecha: ${outing.fechaHoraSalida}", color = ColorTextoSecundario, fontSize = 12.sp)
+            Text(text = "Punto de Reunión: ${outing.puntoReunion}", color = ColorTextoSecundario, fontSize = 12.sp, maxLines = 1)
+            
+            if (outing.cooperacionMinima > 0.0) {
+                val real = outing.cooperacionRealizada
+                val text = if (real != null) "Cooperación realizada: $$real" else "Sin registro de cooperación"
+                Text(
+                    text = text,
+                    color = if (real != null) ColorTekinsSuccess else ColorTextoSecundario,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
                 )
@@ -8544,6 +8705,158 @@ fun AboutDialog(
                     colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAccent),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth(0.55f)
+                ) {
+                    Text("Cerrar", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Diálogo 'Términos y Condiciones' y 'Aviso de Privacidad Integral'.
+ * Muestra el resumen legal, derechos ARCO, responsabilidades de senderismo y enlace a la documentación web oficial.
+ */
+@Composable
+fun TermsAndConditionsDialog(
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val urlDocumentacion = "https://jgasparmxx.github.io/tkssenderismo-docs/"
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = Color(0xFFFAF9F6),
+            border = BorderStroke(1.5.dp, ColorTekinsAccent.copy(alpha = 0.6f)),
+            shadowElevation = 8.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.85f)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Cabecera con Icono y Título
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Description,
+                        contentDescription = null,
+                        tint = ColorTekinsPrimary,
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Términos y Condiciones",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ColorTekinsDarkBg
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                HorizontalDivider(
+                    color = ColorTekinsCardMuted.copy(alpha = 0.4f),
+                    thickness = 1.dp
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Contenido con scroll
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = "Aviso de Privacidad Integral",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ColorTekinsAccent
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "1. Responsable del Tratamiento:\n" +
+                                "El desarrollador y operador de Rutas Sendero salvaguarda la privacidad, confidencialidad e integridad de la información de los senderistas.\n\n" +
+                                "2. Datos Personales Recabados:\n" +
+                                "• Datos de identificación y contacto (nombre, teléfono, contactos de emergencia).\n" +
+                                "• Datos de salud opcionales (tipo de sangre, alergias, padecimientos crónicos) utilizados estrictamente para seguridad y asistencia en caso de emergencia médica.\n" +
+                                "• Datos telemétricos y de localización GPS en primer y segundo plano para navegación, trazado de rutas y georreferenciación de puntos y fotografías.\n\n" +
+                                "3. Derechos ARCO:\n" +
+                                "El usuario conserva en todo momento el derecho de Acceso, Rectificación, Cancelación y Oposición de sus datos personales.",
+                        fontSize = 13.sp,
+                        color = ColorTekinsDarkBg.copy(alpha = 0.85f),
+                        lineHeight = 18.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "Términos de Uso y Responsabilidad",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ColorTekinsAccent
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "• Práctica Deportiva Responsable: El senderismo y actividades al aire libre conllevan riesgos inherentes al entorno natural. Cada usuario es responsable de evaluar su condición física, verificar el estado del terreno, clima y equipamiento antes de iniciar cualquier ruta.\n\n" +
+                                "• Uso de la Información: Las rutas compartidas o trazadas son guías de referencia comunitaria. Tekins S.A. y los autores de las rutas no se hacen responsables por extravíos o incidentes derivados de imprevistos climáticos o del terreno.\n\n" +
+                                "• Comunidad y Respeto Ambiental: Se promueve el respeto a la naturaleza y a la propiedad privada durante todos los recorridos.",
+                        fontSize = 13.sp,
+                        color = ColorTekinsDarkBg.copy(alpha = 0.85f),
+                        lineHeight = 18.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                HorizontalDivider(
+                    color = ColorTekinsCardMuted.copy(alpha = 0.4f),
+                    thickness = 1.dp
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Botón para abrir el documento web oficial
+                OutlinedButton(
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(urlDocumentacion))
+                        context.startActivity(intent)
+                    },
+                    border = BorderStroke(1.dp, ColorTekinsAccent),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = null,
+                        tint = ColorTekinsAccent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Ver documento completo en la web",
+                        color = ColorTekinsAccent,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Botón Cerrar
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = ColorTekinsAccent),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Cerrar", color = Color.White, fontWeight = FontWeight.Bold)
                 }

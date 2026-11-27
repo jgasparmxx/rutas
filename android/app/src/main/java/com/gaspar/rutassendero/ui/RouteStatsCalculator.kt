@@ -329,4 +329,99 @@ object RouteStatsCalculator {
             else -> "Plano"
         }
     }
+
+    /**
+     * Formatea una duración en segundos a una frase en español natural para locución por voz (TTS).
+     * Ejemplo: "4 minutos", "1 hora y 12 minutos", "menos de un minuto".
+     */
+    fun formatDurationSpoken(seconds: Long): String {
+        if (seconds <= 0) return "menos de un minuto"
+        val hours = seconds / 3600
+        val minutes = (seconds % 3600) / 60
+        val sec = seconds % 60
+        return when {
+            hours > 0 && minutes > 0 -> {
+                val hUnit = if (hours == 1L) "1 hora" else "$hours horas"
+                val mUnit = if (minutes == 1L) "1 minuto" else "$minutes minutos"
+                "$hUnit y $mUnit"
+            }
+            hours > 0 && minutes == 0L -> {
+                if (hours == 1L) "1 hora" else "$hours horas"
+            }
+            minutes > 0 -> {
+                if (minutes == 1L) "1 minuto" else "$minutes minutos"
+            }
+            else -> {
+                if (sec <= 15) "menos de un minuto" else "$sec segundos"
+            }
+        }
+    }
+
+    /**
+     * Formatea una duración en segundos a un texto compacto para encabezados de interfaz de usuario.
+     * Ejemplo: "4 min", "1h 12m", "< 1 min".
+     */
+    fun formatDurationShort(seconds: Long): String {
+        if (seconds <= 0) return "< 1 min"
+        val hours = seconds / 3600
+        val minutes = (seconds % 3600) / 60
+        return when {
+            hours > 0 && minutes > 0 -> "${hours}h ${minutes}m"
+            hours > 0 -> "${hours}h"
+            minutes > 0 -> "${minutes} min"
+            else -> "< 1 min"
+        }
+    }
+
+    /**
+     * Calcula la distancia tridimensional acumulada restante desde la posición actual del senderista
+     * hasta la meta final de la ruta (recorriendo en orden los hitos intermedios).
+     */
+    fun calculateRemainingDistanceToMeta(
+        userLoc: Location,
+        currentTarget: PuntoRutaEntity,
+        puntos: List<PuntoRutaEntity>,
+        forward: Boolean
+    ): Float {
+        val targetLoc = Location("").apply {
+            latitude = currentTarget.latitud
+            longitude = currentTarget.longitud
+        }
+        var totalRemDist = userLoc.distanceTo(targetLoc)
+        val curIdx = puntos.indexOfFirst { it.id == currentTarget.id }
+        if (curIdx != -1) {
+            if (forward) {
+                for (i in curIdx until puntos.size - 1) {
+                    val p1 = puntos[i]
+                    val p2 = puntos[i + 1]
+                    val l1 = Location("").apply { latitude = p1.latitud; longitude = p1.longitud }
+                    val l2 = Location("").apply { latitude = p2.latitud; longitude = p2.longitud }
+                    val d2d = l1.distanceTo(l2)
+                    val dAlt = (p2.altitud - p1.altitud).toFloat()
+                    val d3d = if (abs(dAlt) > 0.05f && abs(dAlt) < 500f) {
+                        kotlin.math.sqrt(d2d * d2d + dAlt * dAlt)
+                    } else {
+                        d2d
+                    }
+                    totalRemDist += d3d
+                }
+            } else {
+                for (i in curIdx downTo 1) {
+                    val p1 = puntos[i]
+                    val p2 = puntos[i - 1]
+                    val l1 = Location("").apply { latitude = p1.latitud; longitude = p1.longitud }
+                    val l2 = Location("").apply { latitude = p2.latitud; longitude = p2.longitud }
+                    val d2d = l1.distanceTo(l2)
+                    val dAlt = (p2.altitud - p1.altitud).toFloat()
+                    val d3d = if (abs(dAlt) > 0.05f && abs(dAlt) < 500f) {
+                        kotlin.math.sqrt(d2d * d2d + dAlt * dAlt)
+                    } else {
+                        d2d
+                    }
+                    totalRemDist += d3d
+                }
+            }
+        }
+        return totalRemDist
+    }
 }

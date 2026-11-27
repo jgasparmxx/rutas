@@ -1565,6 +1565,18 @@ public final class MainViewModel: @unchecked Sendable {
             userName: name
         )
         
+        // 3. Descargar la ruta si no existe localmente (solo para tipo_ruta == "S")
+        if outing.tipoRuta == "S" && !outing.idRuta.isEmpty, let repo = rutasRepository {
+            let existingRoute = try? await repo.getRoute(byId: outing.idRuta)
+            if existingRoute == nil {
+                await MainActor.run {
+                    self.outingsProgressMessage = "Descargando ruta desde la nube..."
+                }
+                _ = try? await CloudSyncService.shared.downloadAndSaveRoute(routeId: outing.idRuta, into: repo)
+                await loadLocalRoutes()
+            }
+        }
+        
         await loadAcceptedOutings()
         await MainActor.run {
             self.outingsProgressMessage = nil

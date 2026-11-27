@@ -216,11 +216,14 @@ public struct SalidasSheetView: View {
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(AppTheme.accent)
+                    .foregroundStyle(viewModel.isLoadingOutings ? AppTheme.textSecondary : AppTheme.accent)
+                    .rotationEffect(.degrees(viewModel.isLoadingOutings ? 360 : 0))
+                    .animation(viewModel.isLoadingOutings ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: viewModel.isLoadingOutings)
                     .padding(10)
                     .background(AppTheme.cardBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
             }
+            .disabled(viewModel.isLoadingOutings)
         }
     }
     
@@ -271,6 +274,9 @@ public struct SalidasSheetView: View {
                         .padding(.horizontal, 16)
                         .padding(.bottom, 24)
                     }
+                    .refreshable {
+                        await viewModel.fetchAvailableOutings()
+                    }
                 }
             }
         }
@@ -318,6 +324,9 @@ public struct SalidasSheetView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 24)
+                }
+                .refreshable {
+                    await viewModel.fetchAvailableOutings()
                 }
             }
         }

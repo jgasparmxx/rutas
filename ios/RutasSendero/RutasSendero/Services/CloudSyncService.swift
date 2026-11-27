@@ -1328,8 +1328,31 @@ public final class CloudSyncService: @unchecked Sendable {
         let startIso = sdfIso.string(from: now.addingTimeInterval(-24 * 3600)) // Margen de gracia 24h
         let endIso = sdfIso.string(from: now.addingTimeInterval(Double(max(1, daysAhead)) * 86400))
         
+        // 0. Consultar participaciones registradas en la nube para excluir las ya aceptadas por el usuario
+        var joinedInvitationIds = Set<Int>()
+        if !cleanEmail.isEmpty,
+           let encodedEmail = cleanEmail.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+           let urlParts = URL(string: "\(baseUrl)/participantes_invitacion?email_senderista=eq.\(encodedEmail)&select=id_invitacion") {
+            do {
+                let (dataParts, respParts) = try await executeGet(url: urlParts)
+                if (200...299).contains(respParts.statusCode),
+                   let partsArray = try JSONSerialization.jsonObject(with: dataParts) as? [[String: Any]] {
+                    for part in partsArray {
+                        if let id = part["id_invitacion"] as? Int {
+                            joinedInvitationIds.insert(id)
+                        }
+                    }
+                } else {
+                    let errBody = String(data: dataParts, encoding: .utf8) ?? ""
+                    print("⚠️ [CloudSync] Servidor devolvió HTTP \(respParts.statusCode) en participantes_invitacion: \(errBody)")
+                }
+            } catch {
+                print("⚠️ [CloudSync] Error consultando participantes_invitacion: \(error.localizedDescription)")
+            }
+        }
+        
         // 1. Fetch invitaciones_ruta
-        let queryInv = "invitaciones_ruta?fecha_hora_salida=gte.\(startIso)&fecha_hora_salida=lte.\(endIso)&select=id_invitacion,id_ruta,telefono,fecha_hora_salida,punto_reunion,link_google_maps,cooperacion_minima,fecha_limite_registro,nivel,instrucciones,latitud,longitud,tipo_ruta,comentario,rutas(nombre,conectividad,distancia_gps,desnivel_positivo,desnivel_negativo,contador_subidas,contador_bajadas,duracion_segundos),participantes_invitacion(email_senderista)&order=fecha_hora_salida.asc"
+        let queryInv = "invitaciones_ruta?fecha_hora_salida=gte.\(startIso)&fecha_hora_salida=lte.\(endIso)&select=id_invitacion,id_ruta,telefono,fecha_hora_salida,punto_reunion,link_google_maps,cooperacion_minima,fecha_limite_registro,nivel,instrucciones,latitud,longitud,tipo_ruta,comentario,es_publico,nombre_agrupacion,rutas(nombre,conectividad,distancia_gps,desnivel_positivo,desnivel_negativo,contador_subidas,contador_bajadas,duracion_segundos)&order=fecha_hora_salida.asc"
         
         if let urlInv = URL(string: "\(baseUrl)/\(queryInv)") {
             do {
@@ -1337,16 +1360,11 @@ public final class CloudSyncService: @unchecked Sendable {
                 if (200...299).contains(httpResp.statusCode),
                    let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
                     for item in array {
-                        // Filtrar si el usuario ya está registrado en los participantes
-                        if let parts = item["participantes_invitacion"] as? [[String: Any]], !cleanEmail.isEmpty {
-                            let alreadyJoined = parts.contains { part in
-                                (part["email_senderista"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == cleanEmail
-                            }
-                            if alreadyJoined { continue }
-                        }
-                        
                         let idInv = item["id_invitacion"] as? Int ?? 0
                         guard idInv != 0 else { continue }
+                        
+                        // Filtrar si el usuario ya está registrado en la nube para esta invitación
+                        if joinedInvitationIds.contains(idInv) { continue }
                         
                         let idRuta = item["id_ruta"] as? String ?? ""
                         let tel = item["telefono"] as? String ?? ""
@@ -1362,16 +1380,19 @@ public final class CloudSyncService: @unchecked Sendable {
                         let tipoRuta = item["tipo_ruta"] as? String ?? "S"
                         let comentario = item["comentario"] as? String
                         
-                        // Parse es_publico y id_agrupacion si existen
+                        // Parse es_publico y nombre_agrupacion / id_agrupacion si existen
                         let esPub: Bool
                         if let b = item["es_publico"] as? Bool {
                             esPub = b
                         } else if let num = item["es_publico"] as? NSNumber {
                             esPub = num.intValue != 0
+                        } else if let str = item["es_publico"] as? String {
+                            let l = str.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                            esPub = !(l == "false" || l == "0" || l == "f")
                         } else {
                             esPub = true
                         }
-                        let idAgrup = (item["id_agrupacion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let idAgrup = (item["nombre_agrupacion"] as? String ?? item["id_agrupacion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
                         
                         var rutaNombre = "Ruta de Senderismo"
                         var conectividad: Float? = nil
@@ -1422,6 +1443,9 @@ public final class CloudSyncService: @unchecked Sendable {
                             )
                         )
                     }
+                } else {
+                    let errBody = String(data: data, encoding: .utf8) ?? ""
+                    print("⚠️ [CloudSync] Servidor devolvió HTTP \(httpResp.statusCode) en invitaciones_ruta: \(errBody)")
                 }
             } catch {
                 print("⚠️ [CloudSync] Error descargando invitaciones_ruta: \(error.localizedDescription)")
@@ -1437,6 +1461,9 @@ public final class CloudSyncService: @unchecked Sendable {
                     for json in array {
                         let idEv = (json["id_invitacion"] as? Int) ?? (json["id_evento"] as? Int) ?? (json["id"] as? Int) ?? 0
                         guard idEv != 0 else { continue }
+                        
+                        // Filtrar si el usuario ya está registrado en la nube para este evento
+                        if joinedInvitationIds.contains(idEv) || joinedInvitationIds.contains(-idEv) { continue }
                         
                         let nombre = (json["id_ruta"] as? String) ?? (json["nombre_agrupacion"] as? String) ?? (json["nombre_evento"] as? String) ?? "Evento"
                         let tel = (json["telefono"] as? String) ?? (json["telefono_creador"] as? String) ?? ""
@@ -1516,6 +1543,9 @@ public final class CloudSyncService: @unchecked Sendable {
                             )
                         )
                     }
+                } else {
+                    let errBody = String(data: data, encoding: .utf8) ?? ""
+                    print("⚠️ [CloudSync] Servidor devolvió HTTP \(httpResp.statusCode) en eventos: \(errBody)")
                 }
             } catch {
                 print("⚠️ [CloudSync] Error descargando eventos: \(error.localizedDescription)")

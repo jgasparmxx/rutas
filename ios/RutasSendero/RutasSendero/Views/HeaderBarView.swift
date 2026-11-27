@@ -65,7 +65,10 @@ public struct HeaderBarView: View {
                 }
                 
                 Button {
-                    viewModel.saveStatusMessage = "Planeación de salidas y eventos programados próximamente."
+                    Task {
+                        await viewModel.loadLocalRoutes()
+                        viewModel.isShowingSalidasSheet = true
+                    }
                 } label: {
                     Label("3. Planeación Salidas", systemImage: "calendar")
                 }

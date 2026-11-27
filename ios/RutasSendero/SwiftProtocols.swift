@@ -334,6 +334,111 @@ public struct PeerBeaconData: Identifiable, Codable, Sendable {
     }
 }
 
+// MARK: - Modelo de Dominio de Salidas e Invitaciones (1:1 Android InvitacionAceptadaEntity / Map<String, Any>)
+
+public struct OutingInvitation: Identifiable, Codable, Sendable, Equatable {
+    public var id: Int { idInvitacion }
+    public var idInvitacion: Int
+    public var idRuta: String
+    public var nombreRuta: String
+    public var telefonoCreador: String
+    public var fechaHoraSalida: String
+    public var puntoReunion: String
+    public var linkGoogleMaps: String?
+    public var cooperacionMinima: Double
+    public var fechaLimiteRegistro: String?
+    public var nivel: String?
+    public var instrucciones: String?
+    public var latitud: Double?
+    public var longitud: Double?
+    public var tipoRuta: String // "S" (senderismo) o "E" (evento)
+    public var comentario: String?
+    public var conectividad: Float?
+    public var distanciaGps: Double?
+    public var desnivelPositivo: Double?
+    public var desnivelNegativo: Double?
+    public var contadorSubidas: Int?
+    public var contadorBajadas: Int?
+    public var duracionSegundos: Int64?
+    public var esPublico: Bool
+    public var idAgrupacion: String?
+    public var cooperacionRealizada: Double?
+    public var fechaCooperacionRealizada: String?
+    public var sincronizadoConNube: Bool
+    public var comprobantePago: Data?
+    public var fechaSubidaComprobante: String?
+    public var fupdate: Int64
+    
+    // Distancia estimada en kilómetros al senderista (calculada localmente)
+    public var distanciaKmAlUsuario: Double?
+
+    public init(
+        idInvitacion: Int,
+        idRuta: String,
+        nombreRuta: String,
+        telefonoCreador: String,
+        fechaHoraSalida: String,
+        puntoReunion: String,
+        linkGoogleMaps: String? = nil,
+        cooperacionMinima: Double = 0.0,
+        fechaLimiteRegistro: String? = nil,
+        nivel: String? = nil,
+        instrucciones: String? = nil,
+        latitud: Double? = nil,
+        longitud: Double? = nil,
+        tipoRuta: String = "S",
+        comentario: String? = nil,
+        conectividad: Float? = nil,
+        distanciaGps: Double? = nil,
+        desnivelPositivo: Double? = nil,
+        desnivelNegativo: Double? = nil,
+        contadorSubidas: Int? = nil,
+        contadorBajadas: Int? = nil,
+        duracionSegundos: Int64? = nil,
+        esPublico: Bool = true,
+        idAgrupacion: String? = nil,
+        cooperacionRealizada: Double? = nil,
+        fechaCooperacionRealizada: String? = nil,
+        sincronizadoConNube: Bool = false,
+        comprobantePago: Data? = nil,
+        fechaSubidaComprobante: String? = nil,
+        fupdate: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+        distanciaKmAlUsuario: Double? = nil
+    ) {
+        self.idInvitacion = idInvitacion
+        self.idRuta = idRuta
+        self.nombreRuta = nombreRuta
+        self.telefonoCreador = telefonoCreador
+        self.fechaHoraSalida = fechaHoraSalida
+        self.puntoReunion = puntoReunion
+        self.linkGoogleMaps = linkGoogleMaps
+        self.cooperacionMinima = cooperacionMinima
+        self.fechaLimiteRegistro = fechaLimiteRegistro
+        self.nivel = nivel
+        self.instrucciones = instrucciones
+        self.latitud = latitud
+        self.longitud = longitud
+        self.tipoRuta = tipoRuta
+        self.comentario = comentario
+        self.conectividad = conectividad
+        self.distanciaGps = distanciaGps
+        self.desnivelPositivo = desnivelPositivo
+        self.desnivelNegativo = desnivelNegativo
+        self.contadorSubidas = contadorSubidas
+        self.contadorBajadas = contadorBajadas
+        self.duracionSegundos = duracionSegundos
+        self.esPublico = esPublico
+        self.idAgrupacion = idAgrupacion
+        self.cooperacionRealizada = cooperacionRealizada
+        self.fechaCooperacionRealizada = fechaCooperacionRealizada
+        self.sincronizadoConNube = sincronizadoConNube
+        self.comprobantePago = comprobantePago
+        self.fechaSubidaComprobante = fechaSubidaComprobante
+        self.fupdate = fupdate
+        self.distanciaKmAlUsuario = distanciaKmAlUsuario
+    }
+}
+
 // MARK: - Protocolos de Repositorio (Capa de Datos)
 
 public protocol RutasRepositoryProtocol: Sendable {
@@ -358,6 +463,16 @@ public protocol PeerTrackingRepositoryProtocol: Sendable {
     func getActivePeers() async throws -> [PeerBeaconData]
     func update(peer: PeerBeaconData) async throws
     func pruneInactivePeers(olderThan date: Date) async throws
+}
+
+public protocol OutingsRepositoryProtocol: Sendable {
+    func getAcceptedOutings() async throws -> [OutingInvitation]
+    func getAcceptedOuting(byId id: Int) async throws -> OutingInvitation?
+    func saveAcceptedOuting(_ outing: OutingInvitation) async throws
+    func deleteAcceptedOuting(byId id: Int) async throws
+    func getLocalEventos() async throws -> [SDEvento]
+    func saveEvento(_ evento: SDEvento) async throws
+    func deletePastUnrealizedOutings() async throws -> Int
 }
 
 // MARK: - Protocolos de Servicios de Hardware (CoreBluetooth y CoreLocation)

@@ -210,6 +210,40 @@ public final class CloudSyncService: @unchecked Sendable {
         }
         return (data, httpResponse)
     }
+    
+    public func executeDelete(url: URL, token: String? = nil) async throws -> (Data, HTTPURLResponse) {
+        func buildRequest(useToken: Bool) -> URLRequest {
+            var req = URLRequest(url: url)
+            req.httpMethod = "DELETE"
+            req.timeoutInterval = 25
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+            if useToken {
+                let jwt = token ?? generateJwtToken()
+                req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+            }
+            return req
+        }
+        
+        let tryJwt = shouldAttemptJwt()
+        let initialReq = buildRequest(useToken: tryJwt)
+        let (data, response) = try await URLSession.shared.data(for: initialReq)
+        let httpResponse = response as? HTTPURLResponse ?? HTTPURLResponse()
+        let bodyStr = String(data: data, encoding: .utf8) ?? ""
+        
+        if tryJwt && isJwtSecretMissingError(statusCode: httpResponse.statusCode, body: bodyStr) {
+            markJwtFailed()
+            let (anonData, anonResponse) = try await URLSession.shared.data(for: buildRequest(useToken: false))
+            guard let anonHttp = anonResponse as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+            return (anonData, anonHttp)
+        }
+        
+        if tryJwt && (200...299).contains(httpResponse.statusCode) {
+            markJwtSuccess()
+        }
+        return (data, httpResponse)
+    }
 
     // MARK: - Descargar Agrupaciones de PostgREST
     public func fetchAgrupaciones() async -> [Agrupacion] {
@@ -1277,5 +1311,257 @@ public final class CloudSyncService: @unchecked Sendable {
         }
         
         print("☁️ [CloudSync] Ruta '\(route.name)' (\(cloudRouteId)) subida exitosamente a la nube.")
+    }
+
+    // MARK: - Gestión y Sincronización de Salidas y Eventos (1:1 Android CloudSyncManager)
+    
+    public func fetchAvailableInvitations(
+        daysAhead: Int = 20,
+        userEmail: String = "",
+        repository: SwiftDataRutasRepository? = nil
+    ) async throws -> [OutingInvitation] {
+        let cleanEmail = userEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var invitations: [OutingInvitation] = []
+        
+        let now = Date()
+        let sdfIso = ISO8601DateFormatter()
+        let startIso = sdfIso.string(from: now.addingTimeInterval(-24 * 3600)) // Margen de gracia 24h
+        let endIso = sdfIso.string(from: now.addingTimeInterval(Double(max(1, daysAhead)) * 86400))
+        
+        // 1. Fetch invitaciones_ruta
+        let queryInv = "invitaciones_ruta?fecha_hora_salida=gte.\(startIso)&fecha_hora_salida=lte.\(endIso)&select=id_invitacion,id_ruta,telefono,fecha_hora_salida,punto_reunion,link_google_maps,cooperacion_minima,fecha_limite_registro,nivel,instrucciones,latitud,longitud,tipo_ruta,comentario,rutas(nombre,conectividad,distancia_gps,desnivel_positivo,desnivel_negativo,contador_subidas,contador_bajadas,duracion_segundos),participantes_invitacion(email_senderista)&order=fecha_hora_salida.asc"
+        
+        if let urlInv = URL(string: "\(baseUrl)/\(queryInv)") {
+            do {
+                let (data, httpResp) = try await executeGet(url: urlInv)
+                if (200...299).contains(httpResp.statusCode),
+                   let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                    for item in array {
+                        // Filtrar si el usuario ya está registrado en los participantes
+                        if let parts = item["participantes_invitacion"] as? [[String: Any]], !cleanEmail.isEmpty {
+                            let alreadyJoined = parts.contains { part in
+                                (part["email_senderista"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == cleanEmail
+                            }
+                            if alreadyJoined { continue }
+                        }
+                        
+                        let idInv = item["id_invitacion"] as? Int ?? 0
+                        guard idInv != 0 else { continue }
+                        
+                        let idRuta = item["id_ruta"] as? String ?? ""
+                        let tel = item["telefono"] as? String ?? ""
+                        let fechaSalida = item["fecha_hora_salida"] as? String ?? ""
+                        let puntoReunion = item["punto_reunion"] as? String ?? ""
+                        let linkMaps = item["link_google_maps"] as? String
+                        let coopMin = item["cooperacion_minima"] as? Double ?? 0.0
+                        let fechaLimite = item["fecha_limite_registro"] as? String
+                        let nivel = item["nivel"] as? String ?? "Intermedio"
+                        let instrucciones = item["instrucciones"] as? String
+                        let lat = item["latitud"] as? Double
+                        let lon = item["longitud"] as? Double
+                        let tipoRuta = item["tipo_ruta"] as? String ?? "S"
+                        let comentario = item["comentario"] as? String
+                        
+                        // Parse es_publico y id_agrupacion si existen
+                        let esPub: Bool
+                        if let b = item["es_publico"] as? Bool {
+                            esPub = b
+                        } else if let num = item["es_publico"] as? NSNumber {
+                            esPub = num.intValue != 0
+                        } else {
+                            esPub = true
+                        }
+                        let idAgrup = (item["id_agrupacion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        
+                        var rutaNombre = "Ruta de Senderismo"
+                        var conectividad: Float? = nil
+                        var distGps: Double? = nil
+                        var desPos: Double? = nil
+                        var desNeg: Double? = nil
+                        var subidas: Int? = nil
+                        var bajadas: Int? = nil
+                        var duracion: Int64? = nil
+                        
+                        if let rObj = item["rutas"] as? [String: Any] {
+                            rutaNombre = rObj["nombre"] as? String ?? rutaNombre
+                            if let c = rObj["conectividad"] as? NSNumber { conectividad = c.floatValue }
+                            distGps = rObj["distancia_gps"] as? Double
+                            desPos = rObj["desnivel_positivo"] as? Double
+                            desNeg = rObj["desnivel_negativo"] as? Double
+                            subidas = rObj["contador_subidas"] as? Int
+                            bajadas = rObj["contador_bajadas"] as? Int
+                            if let d = rObj["duracion_segundos"] as? NSNumber { duracion = d.int64Value }
+                        }
+                        
+                        invitations.append(
+                            OutingInvitation(
+                                idInvitacion: idInv,
+                                idRuta: idRuta,
+                                nombreRuta: rutaNombre,
+                                telefonoCreador: tel,
+                                fechaHoraSalida: fechaSalida,
+                                puntoReunion: puntoReunion,
+                                linkGoogleMaps: linkMaps,
+                                cooperacionMinima: coopMin,
+                                fechaLimiteRegistro: fechaLimite,
+                                nivel: nivel,
+                                instrucciones: instrucciones,
+                                latitud: lat,
+                                longitud: lon,
+                                tipoRuta: tipoRuta,
+                                comentario: comentario,
+                                conectividad: conectividad,
+                                distanciaGps: distGps,
+                                desnivelPositivo: desPos,
+                                desnivelNegativo: desNeg,
+                                contadorSubidas: subidas,
+                                contadorBajadas: bajadas,
+                                duracionSegundos: duracion,
+                                esPublico: esPub,
+                                idAgrupacion: idAgrup
+                            )
+                        )
+                    }
+                }
+            } catch {
+                print("⚠️ [CloudSync] Error descargando invitaciones_ruta: \(error.localizedDescription)")
+            }
+        }
+        
+        // 2. Fetch eventos con select=*
+        if let urlEv = URL(string: "\(baseUrl)/eventos?select=*") {
+            do {
+                let (data, httpResp) = try await executeGet(url: urlEv)
+                if (200...299).contains(httpResp.statusCode),
+                   let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                    for json in array {
+                        let idEv = (json["id_invitacion"] as? Int) ?? (json["id_evento"] as? Int) ?? (json["id"] as? Int) ?? 0
+                        guard idEv != 0 else { continue }
+                        
+                        let nombre = (json["id_ruta"] as? String) ?? (json["nombre_agrupacion"] as? String) ?? (json["nombre_evento"] as? String) ?? "Evento"
+                        let tel = (json["telefono"] as? String) ?? (json["telefono_creador"] as? String) ?? ""
+                        let fechaSalida = json["fecha_hora_salida"] as? String ?? ""
+                        let puntoReunion = json["punto_reunion"] as? String ?? ""
+                        let linkMaps = json["link_google_maps"] as? String
+                        let coopMin = json["cooperacion_minima"] as? Double ?? 0.0
+                        let fechaLimite = json["fecha_limite_registro"] as? String
+                        let instrucciones = json["instrucciones"] as? String
+                        let lat = json["latitud"] as? Double
+                        let lon = json["longitud"] as? Double
+                        let comentario = json["comentario"] as? String
+                        let fupdateMillis: Int64 = {
+                            if let num = json["fupdate"] as? NSNumber { return num.int64Value }
+                            return Int64(Date().timeIntervalSince1970 * 1000)
+                        }()
+                        
+                        // Mapeo solicitado de es_publico (soportando bool, número o string)
+                        let esPublico: Bool = {
+                            if let b = json["es_publico"] as? Bool {
+                                return b
+                            } else if let num = json["es_publico"] as? NSNumber {
+                                return num.intValue != 0
+                            } else if let str = json["es_publico"] as? String {
+                                let l = str.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                                return !(l == "false" || l == "0" || l == "f")
+                            }
+                            return true
+                        }()
+                        
+                        let rawAgrup = (json["id_agrupacion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let idAgrup = (rawAgrup?.isEmpty == false && rawAgrup != "@&" && rawAgrup?.lowercased() != "null") ? rawAgrup : nil
+                        
+                        // Guardar/actualizar en SQLite/SwiftData local (SDEvento)
+                        let sdEvento = SDEvento(
+                            id: idEv,
+                            idRuta: nombre,
+                            fechaHoraSalida: fechaSalida,
+                            instrucciones: instrucciones,
+                            comentario: comentario,
+                            fupdate: fupdateMillis,
+                            esPublico: esPublico,
+                            idAgrupacion: idAgrup
+                        )
+                        if let repo = repository {
+                            try? await repo.saveEvento(sdEvento)
+                        }
+                        
+                        // Mapeo como salida disponible tipo "E" (evento con ID negativo para distinguirlo de invitaciones de ruta)
+                        invitations.append(
+                            OutingInvitation(
+                                idInvitacion: -idEv,
+                                idRuta: "EVENTO",
+                                nombreRuta: nombre,
+                                telefonoCreador: tel,
+                                fechaHoraSalida: fechaSalida,
+                                puntoReunion: puntoReunion,
+                                linkGoogleMaps: linkMaps,
+                                cooperacionMinima: coopMin,
+                                fechaLimiteRegistro: fechaLimite,
+                                nivel: "Evento",
+                                instrucciones: instrucciones,
+                                latitud: lat,
+                                longitud: lon,
+                                tipoRuta: "E",
+                                comentario: comentario,
+                                conectividad: 0.0,
+                                distanciaGps: 0.0,
+                                desnivelPositivo: 0.0,
+                                desnivelNegativo: 0.0,
+                                contadorSubidas: 0,
+                                contadorBajadas: 0,
+                                duracionSegundos: 0,
+                                esPublico: esPublico,
+                                idAgrupacion: idAgrup,
+                                fupdate: fupdateMillis
+                            )
+                        )
+                    }
+                }
+            } catch {
+                print("⚠️ [CloudSync] Error descargando eventos: \(error.localizedDescription)")
+            }
+        }
+        
+        return invitations
+    }
+    
+    public func registerParticipationInCloud(
+        idInvitacion: Int,
+        userEmail: String,
+        userPhone: String,
+        userName: String
+    ) async throws {
+        let cleanEmail = userEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !cleanEmail.isEmpty, idInvitacion > 0, let url = URL(string: "\(baseUrl)/participantes_invitacion") else {
+            return
+        }
+        
+        let sdfIso = ISO8601DateFormatter()
+        let payload: [String: Any] = [
+            "id_invitacion": idInvitacion,
+            "email_senderista": cleanEmail,
+            "telefono_senderista": userPhone,
+            "nombre_senderista": userName,
+            "fecha_registro": sdfIso.string(from: Date())
+        ]
+        
+        let bodyData = try JSONSerialization.data(withJSONObject: payload)
+        let token = generateJwtToken(email: cleanEmail, telefono: userPhone)
+        _ = try? await executePost(url: url, body: bodyData, prefer: "resolution=merge-duplicates", token: token)
+    }
+    
+    public func removeParticipationInCloud(
+        idInvitacion: Int,
+        userEmail: String
+    ) async throws {
+        let cleanEmail = userEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !cleanEmail.isEmpty, idInvitacion > 0,
+              let encodedEmail = cleanEmail.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "\(baseUrl)/participantes_invitacion?id_invitacion=eq.\(idInvitacion)&email_senderista=eq.\(encodedEmail)") else {
+            return
+        }
+        
+        let token = generateJwtToken(email: cleanEmail)
+        _ = try? await executeDelete(url: url, token: token)
     }
 }

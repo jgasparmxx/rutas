@@ -450,5 +450,160 @@ struct RutasSenderoTests {
         // 3. No debe tener navegación de alta precisión en segundo plano
         #expect(viewModel.locationTracker.isTracking == false)
     }
+
+    // MARK: - 8. Pruebas de Reglas de Negocio de Salidas, Fechas Futuras y Privacidad
+    
+    @Test func testOutingDateUtilsFutureAndPastFilters() async throws {
+        // Fechas pasadas (deben descartarse)
+        let pastDate1 = "2020-01-01 10:00:00"
+        let pastDate2 = "2026-10-13 08:30:00"
+        #expect(OutingDateUtils.isFutureOrCurrent(pastDate1) == false)
+        #expect(OutingDateUtils.isFutureOrCurrent(pastDate2) == false)
+        
+        // Fechas futuras lejanas (deben aceptarse)
+        let futureDate1 = "2030-12-31 23:59:59"
+        let futureDate2 = "2030-05-15T09:00:00"
+        #expect(OutingDateUtils.isFutureOrCurrent(futureDate1) == true)
+        #expect(OutingDateUtils.isFutureOrCurrent(futureDate2) == true)
+        
+        // Fecha actual o muy cercana (margen de gracia de 6 horas)
+        let now = Date()
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        df.locale = Locale(identifier: "en_US_POSIX")
+        let todayStr = df.string(from: now)
+        #expect(OutingDateUtils.isFutureOrCurrent(todayStr) == true)
+        
+        let threeHoursAgo = df.string(from: now.addingTimeInterval(-3 * 3600))
+        #expect(OutingDateUtils.isFutureOrCurrent(threeHoursAgo) == true) // dentro del margen de 6h
+        
+        let sevenHoursAgo = df.string(from: now.addingTimeInterval(-7 * 3600))
+        #expect(OutingDateUtils.isFutureOrCurrent(sevenHoursAgo) == false) // fuera del margen de 6h
+    }
+
+    @MainActor
+    @Test func testOutingPrivacyAndGroupRules() async throws {
+        let viewModel = MainViewModel()
+        
+        // Usuario registrado en la agrupación "MH" (Miguel Hidalgo)
+        viewModel.currentHikerProfile = HikerProfile(
+            email: "senderista@rutas.com",
+            name: "Senderista MH",
+            phone: "3121112233",
+            idAgrupacion: "MH",
+            emergencyPhone1: "3120000000"
+        )
+        
+        let farFutureDate = "2030-06-01 07:00:00"
+        
+        // 1. Evento público (esPublico = true) -> Visible para todos
+        let publicEvent = OutingInvitation(
+            idInvitacion: -1,
+            idRuta: "EVENTO",
+            nombreRuta: "Gran Caminata Abierta",
+            telefonoCreador: "3129998877",
+            fechaHoraSalida: farFutureDate,
+            puntoReunion: "Plaza Central",
+            tipoRuta: "E",
+            esPublico: true,
+            idAgrupacion: nil
+        )
+        
+        // 2. Evento privado para la misma agrupación "MH" -> Visible
+        let privateEventSameGroup = OutingInvitation(
+            idInvitacion: -2,
+            idRuta: "EVENTO",
+            nombreRuta: "Ruta Exclusiva MH",
+            telefonoCreador: "3129998877",
+            fechaHoraSalida: farFutureDate,
+            puntoReunion: "Parque MH",
+            tipoRuta: "E",
+            esPublico: false,
+            idAgrupacion: "MH"
+        )
+        
+        // 3. Evento privado para otra agrupación "CL1" -> Oculto
+        let privateEventOtherGroup = OutingInvitation(
+            idInvitacion: -3,
+            idRuta: "EVENTO",
+            nombreRuta: "Ruta Exclusiva Colibrí",
+            telefonoCreador: "3129998877",
+            fechaHoraSalida: farFutureDate,
+            puntoReunion: "Cerro Grande",
+            tipoRuta: "E",
+            esPublico: false,
+            idAgrupacion: "CL1"
+        )
+        
+        // 4. Salida pasada (2026-10-13) -> Descartada
+        let pastEvent = OutingInvitation(
+            idInvitacion: -4,
+            idRuta: "EVENTO",
+            nombreRuta: "Evento Pasado Antiguo",
+            telefonoCreador: "3129998877",
+            fechaHoraSalida: "2026-10-13 08:00:00",
+            puntoReunion: "Auditorio",
+            tipoRuta: "E",
+            esPublico: true,
+            idAgrupacion: nil
+        )
+        
+        viewModel.rawAvailableOutings = [publicEvent, privateEventSameGroup, privateEventOtherGroup, pastEvent]
+        
+        let disponibles = viewModel.availableOutings
+        let disponiblesIds = Set(disponibles.map { $0.idInvitacion })
+        
+        #expect(disponiblesIds.contains(-1)) // Público -> Visible
+        #expect(disponiblesIds.contains(-2)) // Mismo grupo MH -> Visible
+        #expect(!disponiblesIds.contains(-3)) // Grupo diferente CL1 -> Oculto
+        #expect(!disponiblesIds.contains(-4)) // Fecha pasada -> Descartado
+    }
+
+    @MainActor
+    @Test func testOutingTabsSegregation() async throws {
+        let viewModel = MainViewModel()
+        viewModel.currentHikerProfile = HikerProfile(
+            email: "test@rutas.com",
+            name: "Tester",
+            phone: "3121112233",
+            emergencyPhone1: "3120000000"
+        )
+        
+        let futureDate = "2030-08-20 06:00:00"
+        let pastDate = "2020-05-10 07:00:00"
+        
+        let pendingAccepted = OutingInvitation(
+            idInvitacion: 101,
+            idRuta: "R1",
+            nombreRuta: "Salida Pendiente 2030",
+            telefonoCreador: "3120001111",
+            fechaHoraSalida: futureDate,
+            puntoReunion: "Entrada Bosque",
+            tipoRuta: "S"
+        )
+        
+        let historyAccepted = OutingInvitation(
+            idInvitacion: 102,
+            idRuta: "R2",
+            nombreRuta: "Salida Concluida 2020",
+            telefonoCreador: "3120001111",
+            fechaHoraSalida: pastDate,
+            puntoReunion: "Entrada Cascada",
+            tipoRuta: "S",
+            cooperacionRealizada: 50.0
+        )
+        
+        viewModel.acceptedOutings = [pendingAccepted, historyAccepted]
+        
+        // Pestaña 1 - Mis Salidas: Solo pendientes (fecha >= Date())
+        let pendientes = viewModel.pendingAcceptedOutings
+        #expect(pendientes.count == 1)
+        #expect(pendientes.first?.idInvitacion == 101)
+        
+        // Pestaña 2 - Historial: Solo concluidas (fecha < Date())
+        let historial = viewModel.historyAcceptedOutings
+        #expect(historial.count == 1)
+        #expect(historial.first?.idInvitacion == 102)
+    }
 }
 

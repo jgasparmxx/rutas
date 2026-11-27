@@ -249,6 +249,8 @@ public struct MainScreen: View {
             // Verificar si ya existe perfil local de senderista.
             // Si es primera vez, se abre automáticamente la pantalla de registro obligatoria
             await viewModel.checkSenderistaRegistration()
+            await viewModel.loadAcceptedOutings()
+            await viewModel.cleanupPastUnrealizedOutings()
             
             #if targetEnvironment(simulator)
             // En simulador, simular detección de un compañero cercano tras 2 segundos para validar UI
@@ -283,6 +285,8 @@ public struct MainScreen: View {
                 SettingsSheetView(viewModel: viewModel)
             case .termsAndConditions:
                 TermsAndConditionsSheetView()
+            case .salidas:
+                SalidasSheetView(viewModel: viewModel)
             case .recordingDashboard:
                 NavigationStack {
                     RecordingDashboardView(viewModel: viewModel)

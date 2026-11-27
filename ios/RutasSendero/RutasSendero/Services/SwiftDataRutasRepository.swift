@@ -10,7 +10,7 @@ import Foundation
 import SwiftData
 
 @ModelActor
-public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepositoryProtocol {
+public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepositoryProtocol, OutingsRepositoryProtocol {
     
     // MARK: - Clave compuesta determinista para evitar colisiones @Attribute(.unique) entre rutas
     private static func compositeStorageId(routeId: String, localId: Int) -> Int {
@@ -278,6 +278,146 @@ public actor SwiftDataRutasRepository: RutasRepositoryProtocol, HikerProfileRepo
             try modelContext.save()
         }
     }
+    
+    // MARK: - OutingsRepositoryProtocol (1:1 Android EventosDao / InvitacionesAceptadas)
+    
+    public func getAcceptedOutings() async throws -> [OutingInvitation] {
+        let descriptor = FetchDescriptor<SDInvitacionAceptada>(sortBy: [SortDescriptor(\.fechaHoraSalida, order: .forward)])
+        let entities = try modelContext.fetch(descriptor)
+        return entities.map { $0.toDomain() }
+    }
+    
+    public func getAcceptedOuting(byId id: Int) async throws -> OutingInvitation? {
+        let descriptor = FetchDescriptor<SDInvitacionAceptada>(predicate: #Predicate { $0.idInvitacion == id })
+        let entities = try modelContext.fetch(descriptor)
+        return entities.first?.toDomain()
+    }
+    
+    public func saveAcceptedOuting(_ outing: OutingInvitation) async throws {
+        let targetId = outing.idInvitacion
+        let descriptor = FetchDescriptor<SDInvitacionAceptada>(predicate: #Predicate { $0.idInvitacion == targetId })
+        if let existing = try modelContext.fetch(descriptor).first {
+            existing.nombreRuta = outing.nombreRuta
+            existing.telefonoCreador = outing.telefonoCreador
+            existing.fechaHoraSalida = outing.fechaHoraSalida
+            existing.puntoReunion = outing.puntoReunion
+            existing.linkGoogleMaps = outing.linkGoogleMaps
+            existing.cooperacionMinima = outing.cooperacionMinima
+            existing.fechaLimiteRegistro = outing.fechaLimiteRegistro
+            existing.nivel = outing.nivel
+            existing.instrucciones = outing.instrucciones
+            existing.latitud = outing.latitud
+            existing.longitud = outing.longitud
+            existing.cooperacionRealizada = outing.cooperacionRealizada
+            existing.fechaCooperacionRealizada = outing.fechaCooperacionRealizada
+            existing.sincronizadoConNube = outing.sincronizadoConNube
+            existing.conectividad = outing.conectividad
+            existing.distanciaGps = outing.distanciaGps
+            existing.desnivelPositivo = outing.desnivelPositivo
+            existing.desnivelNegativo = outing.desnivelNegativo
+            existing.contadorSubidas = outing.contadorSubidas
+            existing.contadorBajadas = outing.contadorBajadas
+            existing.duracionSegundos = outing.duracionSegundos
+            if let comp = outing.comprobantePago {
+                existing.comprobantePago = comp
+            }
+            existing.fechaSubidaComprobante = outing.fechaSubidaComprobante
+            existing.tipoRuta = outing.tipoRuta
+            existing.comentario = outing.comentario
+            existing.esPublico = outing.esPublico
+            existing.idAgrupacion = outing.idAgrupacion
+            existing.fupdate = Int64(Date().timeIntervalSince1970 * 1000)
+        } else {
+            let entity = SDInvitacionAceptada(
+                idInvitacion: outing.idInvitacion,
+                idRuta: outing.idRuta,
+                nombreRuta: outing.nombreRuta,
+                telefonoCreador: outing.telefonoCreador,
+                fechaHoraSalida: outing.fechaHoraSalida,
+                puntoReunion: outing.puntoReunion,
+                linkGoogleMaps: outing.linkGoogleMaps,
+                cooperacionMinima: outing.cooperacionMinima,
+                fechaLimiteRegistro: outing.fechaLimiteRegistro,
+                nivel: outing.nivel,
+                instrucciones: outing.instrucciones,
+                latitud: outing.latitud,
+                longitud: outing.longitud,
+                cooperacionRealizada: outing.cooperacionRealizada,
+                fechaCooperacionRealizada: outing.fechaCooperacionRealizada,
+                sincronizadoConNube: outing.sincronizadoConNube,
+                conectividad: outing.conectividad,
+                distanciaGps: outing.distanciaGps,
+                desnivelPositivo: outing.desnivelPositivo,
+                desnivelNegativo: outing.desnivelNegativo,
+                contadorSubidas: outing.contadorSubidas,
+                contadorBajadas: outing.contadorBajadas,
+                duracionSegundos: outing.duracionSegundos,
+                comprobantePago: outing.comprobantePago,
+                fechaSubidaComprobante: outing.fechaSubidaComprobante,
+                fupdate: outing.fupdate > 0 ? outing.fupdate : Int64(Date().timeIntervalSince1970 * 1000),
+                tipoRuta: outing.tipoRuta,
+                comentario: outing.comentario,
+                esPublico: outing.esPublico,
+                idAgrupacion: outing.idAgrupacion
+            )
+            modelContext.insert(entity)
+        }
+        try modelContext.save()
+    }
+    
+    public func deleteAcceptedOuting(byId id: Int) async throws {
+        let descriptor = FetchDescriptor<SDInvitacionAceptada>(predicate: #Predicate { $0.idInvitacion == id })
+        if let existing = try modelContext.fetch(descriptor).first {
+            modelContext.delete(existing)
+            try modelContext.save()
+        }
+    }
+    
+    public func getLocalEventos() async throws -> [SDEvento] {
+        let descriptor = FetchDescriptor<SDEvento>(sortBy: [SortDescriptor(\.fechaHoraSalida, order: .forward)])
+        return try modelContext.fetch(descriptor)
+    }
+    
+    public func saveEvento(_ evento: SDEvento) async throws {
+        let targetId = evento.id
+        let descriptor = FetchDescriptor<SDEvento>(predicate: #Predicate { $0.id == targetId })
+        if let existing = try modelContext.fetch(descriptor).first {
+            existing.idRuta = evento.idRuta
+            existing.fechaHoraSalida = evento.fechaHoraSalida
+            existing.instrucciones = evento.instrucciones
+            existing.comentario = evento.comentario
+            existing.fupdate = evento.fupdate
+            existing.esPublico = evento.esPublico
+            existing.idAgrupacion = evento.idAgrupacion
+        } else {
+            modelContext.insert(evento)
+        }
+        try modelContext.save()
+    }
+    
+    /// Limpieza local automática (1:1 Android cleanupPastOutings):
+    /// Elimina salidas aceptadas pasadas que no tengan comprobante ni cooperación realizada.
+    public func deletePastUnrealizedOutings() async throws -> Int {
+        let descriptor = FetchDescriptor<SDInvitacionAceptada>()
+        let all = try modelContext.fetch(descriptor)
+        var deletedCount = 0
+        
+        for inv in all {
+            // Si la fecha ya pasó y no tiene comprobante ni cooperación registrada
+            if !OutingDateUtils.isFutureOrCurrent(inv.fechaHoraSalida) {
+                let hasProof = (inv.comprobantePago != nil) || (inv.fechaSubidaComprobante != nil)
+                let hasPaid = (inv.cooperacionRealizada ?? 0.0) > 0.0
+                if !hasProof && !hasPaid {
+                    modelContext.delete(inv)
+                    deletedCount += 1
+                }
+            }
+        }
+        if deletedCount > 0 {
+            try modelContext.save()
+        }
+        return deletedCount
+    }
 }
 
 // MARK: - Mapeo de Entidades SwiftData a Modelos de Dominio
@@ -396,6 +536,43 @@ extension SDSenderista {
             consentimientoFichaMedica: self.consentimientoFichaMedica,
             consentimientoGpsMultimedia: self.consentimientoGpsMultimedia,
             timestampConsentimientoUtc: self.timestampConsentimientoUtc
+        )
+    }
+}
+
+extension SDInvitacionAceptada {
+    func toDomain() -> OutingInvitation {
+        OutingInvitation(
+            idInvitacion: self.idInvitacion,
+            idRuta: self.idRuta,
+            nombreRuta: self.nombreRuta,
+            telefonoCreador: self.telefonoCreador,
+            fechaHoraSalida: self.fechaHoraSalida,
+            puntoReunion: self.puntoReunion,
+            linkGoogleMaps: self.linkGoogleMaps,
+            cooperacionMinima: self.cooperacionMinima,
+            fechaLimiteRegistro: self.fechaLimiteRegistro,
+            nivel: self.nivel,
+            instrucciones: self.instrucciones,
+            latitud: self.latitud,
+            longitud: self.longitud,
+            tipoRuta: self.tipoRuta,
+            comentario: self.comentario,
+            conectividad: self.conectividad,
+            distanciaGps: self.distanciaGps,
+            desnivelPositivo: self.desnivelPositivo,
+            desnivelNegativo: self.desnivelNegativo,
+            contadorSubidas: self.contadorSubidas,
+            contadorBajadas: self.contadorBajadas,
+            duracionSegundos: self.duracionSegundos,
+            esPublico: self.esPublico,
+            idAgrupacion: self.idAgrupacion,
+            cooperacionRealizada: self.cooperacionRealizada,
+            fechaCooperacionRealizada: self.fechaCooperacionRealizada,
+            sincronizadoConNube: self.sincronizadoConNube,
+            comprobantePago: self.comprobantePago,
+            fechaSubidaComprobante: self.fechaSubidaComprobante,
+            fupdate: self.fupdate
         )
     }
 }

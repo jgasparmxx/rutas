@@ -260,3 +260,135 @@ public final class SDSenderista {
         self.maxPrivadas = maxPrivadas
     }
 }
+
+// MARK: - SDEvento (1:1 Android EventoEntity y PostgREST /eventos)
+@Model
+public final class SDEvento {
+    @Attribute(.unique) public var id: Int
+    public var idRuta: String
+    public var fechaHoraSalida: String
+    public var instrucciones: String?
+    public var comentario: String?
+    public var fupdate: Int64
+    public var esPublico: Bool = true
+    public var idAgrupacion: String? = nil
+
+    public init(
+        id: Int,
+        idRuta: String,
+        fechaHoraSalida: String,
+        instrucciones: String? = nil,
+        comentario: String? = nil,
+        fupdate: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+        esPublico: Bool = true,
+        idAgrupacion: String? = nil
+    ) {
+        self.id = id
+        self.idRuta = idRuta
+        self.fechaHoraSalida = fechaHoraSalida
+        self.instrucciones = instrucciones
+        self.comentario = comentario
+        self.fupdate = fupdate
+        self.esPublico = esPublico
+        self.idAgrupacion = idAgrupacion
+    }
+}
+
+// MARK: - SDInvitacionAceptada (1:1 Android InvitacionAceptadaEntity)
+@Model
+public final class SDInvitacionAceptada {
+    @Attribute(.unique) public var idInvitacion: Int
+    public var idRuta: String
+    public var nombreRuta: String
+    public var telefonoCreador: String
+    public var fechaHoraSalida: String
+    public var puntoReunion: String
+    public var linkGoogleMaps: String?
+    public var cooperacionMinima: Double
+    public var fechaLimiteRegistro: String?
+    public var nivel: String?
+    public var instrucciones: String?
+    public var latitud: Double?
+    public var longitud: Double?
+    public var cooperacionRealizada: Double?
+    public var fechaCooperacionRealizada: String?
+    public var sincronizadoConNube: Bool
+    public var conectividad: Float?
+    public var distanciaGps: Double?
+    public var desnivelPositivo: Double?
+    public var desnivelNegativo: Double?
+    public var contadorSubidas: Int?
+    public var contadorBajadas: Int?
+    public var duracionSegundos: Int64?
+    @Attribute(.externalStorage) public var comprobantePago: Data?
+    public var fechaSubidaComprobante: String?
+    public var fupdate: Int64
+    public var tipoRuta: String // "S" (senderismo) o "E" (evento)
+    public var comentario: String?
+    public var esPublico: Bool = true
+    public var idAgrupacion: String? = nil
+
+    public init(
+        idInvitacion: Int,
+        idRuta: String,
+        nombreRuta: String,
+        telefonoCreador: String,
+        fechaHoraSalida: String,
+        puntoReunion: String,
+        linkGoogleMaps: String? = nil,
+        cooperacionMinima: Double = 0.0,
+        fechaLimiteRegistro: String? = nil,
+        nivel: String? = nil,
+        instrucciones: String? = nil,
+        latitud: Double? = nil,
+        longitud: Double? = nil,
+        cooperacionRealizada: Double? = nil,
+        fechaCooperacionRealizada: String? = nil,
+        sincronizadoConNube: Bool = false,
+        conectividad: Float? = nil,
+        distanciaGps: Double? = nil,
+        desnivelPositivo: Double? = nil,
+        desnivelNegativo: Double? = nil,
+        contadorSubidas: Int? = nil,
+        contadorBajadas: Int? = nil,
+        duracionSegundos: Int64? = nil,
+        comprobantePago: Data? = nil,
+        fechaSubidaComprobante: String? = nil,
+        fupdate: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+        tipoRuta: String = "S",
+        comentario: String? = nil,
+        esPublico: Bool = true,
+        idAgrupacion: String? = nil
+    ) {
+        self.idInvitacion = idInvitacion
+        self.idRuta = idRuta
+        self.nombreRuta = nombreRuta
+        self.telefonoCreador = telefonoCreador
+        self.fechaHoraSalida = fechaHoraSalida
+        self.puntoReunion = puntoReunion
+        self.linkGoogleMaps = linkGoogleMaps
+        self.cooperacionMinima = cooperacionMinima
+        self.fechaLimiteRegistro = fechaLimiteRegistro
+        self.nivel = nivel
+        self.instrucciones = instrucciones
+        self.latitud = latitud
+        self.longitud = longitud
+        self.cooperacionRealizada = cooperacionRealizada
+        self.fechaCooperacionRealizada = fechaCooperacionRealizada
+        self.sincronizadoConNube = sincronizadoConNube
+        self.conectividad = conectividad
+        self.distanciaGps = distanciaGps
+        self.desnivelPositivo = desnivelPositivo
+        self.desnivelNegativo = desnivelNegativo
+        self.contadorSubidas = contadorSubidas
+        self.contadorBajadas = contadorBajadas
+        self.duracionSegundos = duracionSegundos
+        self.comprobantePago = comprobantePago
+        self.fechaSubidaComprobante = fechaSubidaComprobante
+        self.fupdate = fupdate
+        self.tipoRuta = tipoRuta
+        self.comentario = comentario
+        self.esPublico = esPublico
+        self.idAgrupacion = idAgrupacion
+    }
+}

@@ -48,6 +48,7 @@ public enum ActiveSheet: Identifiable, Sendable {
     case recordingDashboard
     case settings
     case termsAndConditions
+    case salidas
     
     public var id: String {
         switch self {
@@ -63,6 +64,7 @@ public enum ActiveSheet: Identifiable, Sendable {
         case .recordingDashboard: return "recordingDashboard"
         case .settings: return "settings"
         case .termsAndConditions: return "termsAndConditions"
+        case .salidas: return "salidas"
         }
     }
 }
@@ -341,6 +343,66 @@ public final class MainViewModel: @unchecked Sendable {
     public var isShowingTermsSheet: Bool {
         get { activeSheet == .termsAndConditions }
         set { activeSheet = newValue ? .termsAndConditions : (activeSheet == .termsAndConditions ? nil : activeSheet) }
+    }
+    public var isShowingSalidasSheet: Bool {
+        get { activeSheet == .salidas }
+        set { activeSheet = newValue ? .salidas : (activeSheet == .salidas ? nil : activeSheet) }
+    }
+    
+    // MARK: - Estado de Salidas y Eventos (1:1 Android)
+    public var rawAvailableOutings: [OutingInvitation] = []
+    public var acceptedOutings: [OutingInvitation] = []
+    public var isLoadingOutings: Bool = false
+    public var outingsProgressMessage: String? = nil
+    
+    /// Pestaña 0 - Disponibles: Solo salidas futuras que cumplan con la regla de evento público o pertenencia a la agrupación
+    public var availableOutings: [OutingInvitation] {
+        let acceptedIds = Set(acceptedOutings.map { $0.idInvitacion })
+        let currentLoc = locationTracker.currentLocation
+        let maxKm = Double(rangoKmBusquedaSalidas)
+        let userAgrup = currentHikerProfile?.idAgrupacion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        return rawAvailableOutings.filter { inv in
+            // 0. Descartar si ya fue aceptada localmente
+            if acceptedIds.contains(inv.idInvitacion) { return false }
+
+            // 1. Filtro de Fecha Futura: Descartar pasadas (OutingDateUtils.isFutureOrCurrent)
+            guard OutingDateUtils.isFutureOrCurrent(inv.fechaHoraSalida) else { return false }
+
+            // 2. Filtro de Privacidad y Agrupación:
+            // Si es_publico == true: la invitación es visible para todos los senderistas.
+            // Si es_publico == false: verificar el idAgrupacion del senderista. Si pertenece, mostrar; si no, ocultar.
+            if inv.tipoRuta == "E" && !inv.esPublico {
+                let invAgrup = inv.idAgrupacion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if userAgrup.isEmpty || !userAgrup.equalsIgnoreCase(invAgrup) {
+                    return false
+                }
+            }
+
+            // 3. Filtro de distancia si aplica a rutas normales
+            if inv.tipoRuta != "E", let lat = inv.latitud, let lng = inv.longitud, (lat != 0.0 || lng != 0.0), let loc = currentLoc {
+                let outingLoc = CLLocation(latitude: lat, longitude: lng)
+                let distKm = loc.distance(from: outingLoc) / 1000.0
+                if distKm > maxKm {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+
+    /// Pestaña 1 - Mis Salidas: Solo salidas aceptadas que estén pendientes por realizar (fecha >= Date())
+    public var pendingAcceptedOutings: [OutingInvitation] {
+        acceptedOutings
+            .filter { OutingDateUtils.isFutureOrCurrent($0.fechaHoraSalida) }
+            .sorted { (OutingDateUtils.parseDate($0.fechaHoraSalida) ?? .distantFuture) < (OutingDateUtils.parseDate($1.fechaHoraSalida) ?? .distantFuture) }
+    }
+
+    /// Pestaña 2 - Historial: Salidas aceptadas concluidas/pasadas (fecha < Date()), ordenadas de la más reciente a la más antigua
+    public var historyAcceptedOutings: [OutingInvitation] {
+        acceptedOutings
+            .filter { !OutingDateUtils.isFutureOrCurrent($0.fechaHoraSalida) }
+            .sorted { (OutingDateUtils.parseDate($0.fechaHoraSalida) ?? .distantPast) > (OutingDateUtils.parseDate($1.fechaHoraSalida) ?? .distantPast) }
     }
     
     public var agrupacionLogoImage: UIImage? = nil
@@ -1419,6 +1481,165 @@ public final class MainViewModel: @unchecked Sendable {
             }
         } catch {
             print("❌ [SwiftData] Error cargando rutas locales: \(error)")
+        }
+    }
+    
+    // MARK: - Gestión de Salidas e Invitaciones (1:1 Android)
+    
+    public func loadAcceptedOutings() async {
+        guard let repo = rutasRepository else { return }
+        do {
+            let list = try await repo.getAcceptedOutings()
+            await MainActor.run {
+                self.acceptedOutings = list
+            }
+        } catch {
+            print("❌ [SwiftData] Error cargando salidas aceptadas: \(error)")
+        }
+    }
+    
+    public func fetchAvailableOutings() async {
+        await MainActor.run {
+            self.isLoadingOutings = true
+            self.outingsProgressMessage = "Buscando salidas disponibles..."
+        }
+        
+        // 1. Cargar salidas aceptadas locales
+        await loadAcceptedOutings()
+        
+        // 2. Limpieza local automática de salidas pasadas no realizadas
+        await cleanupPastUnrealizedOutings()
+        
+        // 3. Consultar PostgREST
+        let email = currentHikerProfile?.email ?? ""
+        do {
+            let rawList = try await CloudSyncService.shared.fetchAvailableInvitations(
+                daysAhead: rangoDiasBusquedaSalidas,
+                userEmail: email,
+                repository: rutasRepository
+            )
+            
+            // 4. Calcular distancias GPS locales si hay ubicación disponible
+            let userLoc = locationTracker.currentLocation
+            let updatedList = rawList.map { inv -> OutingInvitation in
+                var item = inv
+                if let lat = inv.latitud, let lon = inv.longitud, (lat != 0.0 || lon != 0.0), let uLoc = userLoc {
+                    let outLoc = CLLocation(latitude: lat, longitude: lon)
+                    item.distanciaKmAlUsuario = uLoc.distance(from: outLoc) / 1000.0
+                }
+                return item
+            }
+            
+            await MainActor.run {
+                self.rawAvailableOutings = updatedList
+                self.isLoadingOutings = false
+                self.outingsProgressMessage = nil
+            }
+        } catch {
+            await MainActor.run {
+                self.isLoadingOutings = false
+                self.outingsProgressMessage = nil
+                self.saveStatusMessage = "No se pudieron obtener salidas de la nube: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    public func acceptOuting(_ outing: OutingInvitation) async {
+        await MainActor.run {
+            self.outingsProgressMessage = "Aceptando salida..."
+        }
+        
+        // 1. Guardar localmente en SwiftData (SDInvitacionAceptada)
+        if let repo = rutasRepository {
+            try? await repo.saveAcceptedOuting(outing)
+        }
+        
+        // 2. Notificar a PostgREST si es ruta pública
+        let email = currentHikerProfile?.email ?? ""
+        let phone = currentHikerProfile?.phone ?? ""
+        let name = currentHikerProfile?.name ?? ""
+        try? await CloudSyncService.shared.registerParticipationInCloud(
+            idInvitacion: outing.idInvitacion,
+            userEmail: email,
+            userPhone: phone,
+            userName: name
+        )
+        
+        await loadAcceptedOutings()
+        await MainActor.run {
+            self.outingsProgressMessage = nil
+            self.saveStatusMessage = "Salida aceptada exitosamente."
+        }
+    }
+    
+    public func cancelAcceptedOuting(_ outing: OutingInvitation) async {
+        await MainActor.run {
+            self.outingsProgressMessage = "Cancelando asistencia..."
+        }
+        
+        let email = currentHikerProfile?.email ?? ""
+        try? await CloudSyncService.shared.removeParticipationInCloud(
+            idInvitacion: outing.idInvitacion,
+            userEmail: email
+        )
+        
+        if let repo = rutasRepository {
+            try? await repo.deleteAcceptedOuting(byId: outing.idInvitacion)
+        }
+        
+        await loadAcceptedOutings()
+        await MainActor.run {
+            self.outingsProgressMessage = nil
+            self.saveStatusMessage = "Asistencia cancelada."
+        }
+    }
+    
+    public func deleteHistoryOuting(_ outing: OutingInvitation) async {
+        if let repo = rutasRepository {
+            try? await repo.deleteAcceptedOuting(byId: outing.idInvitacion)
+        }
+        await loadAcceptedOutings()
+        await MainActor.run {
+            self.saveStatusMessage = "Registro de historial eliminado."
+        }
+    }
+    
+    public func registerCooperation(
+        for outing: OutingInvitation,
+        amount: Double,
+        receiptData: Data? = nil
+    ) async {
+        var updated = outing
+        updated.cooperacionRealizada = amount
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        updated.fechaCooperacionRealizada = df.string(from: Date())
+        if let receipt = receiptData {
+            updated.comprobantePago = receipt
+            updated.fechaSubidaComprobante = df.string(from: Date())
+        }
+        
+        if let repo = rutasRepository {
+            try? await repo.saveAcceptedOuting(updated)
+        }
+        await loadAcceptedOutings()
+        await MainActor.run {
+            self.saveStatusMessage = "Cooperación registrada exitosamente."
+        }
+    }
+    
+    /// Limpieza local automática (1:1 Android cleanupPastOutings):
+    /// Elimina salidas aceptadas pasadas que no tengan comprobante ni cooperación realizada.
+    public func cleanupPastUnrealizedOutings() async {
+        guard let repo = rutasRepository else { return }
+        do {
+            let deletedCount = try await repo.deletePastUnrealizedOutings()
+            if deletedCount > 0 {
+                print("🧹 [Outings] Se eliminaron localmente \(deletedCount) salidas pasadas no realizadas.")
+                await loadAcceptedOutings()
+            }
+        } catch {
+            print("⚠️ [Outings] Error en limpieza automática de salidas: \(error)")
         }
     }
     

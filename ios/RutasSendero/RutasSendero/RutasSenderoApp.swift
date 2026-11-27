@@ -18,7 +18,9 @@ struct RutasSenderoApp: App {
                 SDCacheRuta.self,
                 SDPuntoRuta.self,
                 SDTrazaRuta.self,
-                SDSenderista.self
+                SDSenderista.self,
+                SDEvento.self,
+                SDInvitacionAceptada.self
             ])
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
             container = try ModelContainer(for: schema, configurations: [modelConfiguration])
